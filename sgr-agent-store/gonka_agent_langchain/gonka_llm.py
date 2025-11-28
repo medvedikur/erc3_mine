@@ -46,14 +46,38 @@ class GonkaChatModel(BaseChatModel):
                 
                 # Extract content and usage
                 message_content = response.choices[0].message.content
-                usage = response.usage
+                usage = getattr(response, "usage", None)
                 
                 # Map usage to dict
-                usage_metadata = {
-                    "prompt_tokens": usage.prompt_tokens,
-                    "completion_tokens": usage.completion_tokens,
-                    "total_tokens": usage.total_tokens
-                } if usage else {}
+                usage_metadata = {}
+                if usage:
+                    # Handle both object (Pydantic) and dict access
+                    if isinstance(usage, dict):
+                        usage_metadata = {
+                            "prompt_tokens": usage.get("prompt_tokens", 0),
+                            "completion_tokens": usage.get("completion_tokens", 0),
+                            "total_tokens": usage.get("total_tokens", 0)
+                        }
+                    else:
+                        usage_metadata = {
+                            "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+                            "completion_tokens": getattr(usage, "completion_tokens", 0),
+                            "total_tokens": getattr(usage, "total_tokens", 0)
+                        }
+                
+                # Fallback estimation if usage is missing or empty
+                if not usage_metadata or usage_metadata.get("total_tokens", 0) == 0:
+                    # Estimate: 1 token ~= 4 chars
+                    est_completion = len(message_content) // 4 if message_content else 0
+                    # Rough prompt estimation from messages
+                    est_prompt = sum(len(m.get('content', '')) for m in openai_messages) // 4
+                    
+                    usage_metadata = {
+                        "prompt_tokens": est_prompt,
+                        "completion_tokens": est_completion,
+                        "total_tokens": est_prompt + est_completion,
+                        "estimated": True
+                    }
 
                 return ChatResult(
                     generations=[ChatGeneration(
@@ -82,7 +106,23 @@ class GonkaChatModel(BaseChatModel):
                     timeout=self.request_timeout
                 )
             except Exception as e:
+                # Check for critical connection errors that should trigger immediate node switch
+                # rather than retrying the same node
+                error_str = str(e).lower()
+                critical_errors = [
+                    "connection aborted", 
+                    "remote end closed", 
+                    "connection refused", 
+                    "connecttimeouterror",
+                    "remotedisconnected"
+                ]
+                
+                if any(ce in error_str for ce in critical_errors):
+                    print(f"{CLI_YELLOW}⚠ Critical network error on node {self._current_node}: {e}{CLI_CLR}")
+                    raise e  # Re-raise to trigger _switch_node in the outer loop
+
                 last_error = e
+                print(f"{CLI_YELLOW}⚠ Retry {attempt+1}/{self.max_retries_per_node} on {self._current_node}: {e}{CLI_CLR}")
                 wait_time = (attempt + 1) * 2
                 if attempt < self.max_retries_per_node - 1:
                     time.sleep(wait_time)

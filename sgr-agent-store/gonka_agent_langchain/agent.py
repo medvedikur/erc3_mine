@@ -11,6 +11,7 @@ from .prompts import SGR_SYSTEM_PROMPT
 from .tools import parse_action
 from .stats import SessionStats, FailureLogger
 from .models import NextStep
+from .handlers import get_executor
 
 CLI_RED = "\x1B[31m"
 CLI_GREEN = "\x1B[32m"
@@ -141,10 +142,23 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
             continue
 
         thoughts = parsed.get("thoughts", "")
+        plan = parsed.get("plan", [])
         action_queue = parsed.get("action_queue", [])
         is_final = parsed.get("is_final", False)
 
         print(f"{CLI_GREEN}[Thoughts]:{CLI_CLR} {thoughts}")
+
+        if plan:
+            print(f"{CLI_GREEN}[Plan]:{CLI_CLR}")
+            for item in plan:
+                if isinstance(item, dict):
+                    status = item.get('status', 'pending')
+                    step = item.get('step', item.get('goal', 'unknown'))
+                    icon = "✓" if status == 'completed' else "○" if status == 'pending' else "▶"
+                    print(f"  {icon} {step} ({status})")
+                else:
+                    print(f"  - {item}")
+
         print(f"{CLI_GREEN}[Actions]:{CLI_CLR} {len(action_queue)} action(s), is_final={is_final}")
         print(f"{CLI_GREEN}[Action Queue]:{CLI_CLR} {json.dumps(action_queue, indent=2)}")
         
@@ -160,6 +174,9 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
         # Execute Actions
         results = []
         stop_execution = False
+        
+        # Initialize executor
+        executor = get_executor(store_api)
 
         for idx, action_dict in enumerate(action_queue):
             if stop_execution:
@@ -175,94 +192,29 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
             action_name = action_model.__class__.__name__
 
             if action_name == "Req_CheckoutBasket":
-                # --- SAFETY VERIFICATION ---
-                args = action_dict.get("args", {})
-                expected_total = args.get("expected_total")
-                expected_coupon = args.get("expected_coupon")
-
-                if expected_total is not None or expected_coupon is not None:
-                    print(f"  {CLI_BLUE}🛡️ Verifying state before checkout...{CLI_CLR}")
-                    try:
-                        # Verify state by viewing basket first
-                        view_res = store_api.dispatch(store.Req_ViewBasket())
-                        
-                        # 1. Check Coupon
-                        if expected_coupon is not None:
-                            actual_coupon = getattr(view_res, "coupon", "") or ""
-                            # Normalize for comparison
-                            if (actual_coupon or "").lower() != (expected_coupon or "").lower():
-                                error_msg = f"SAFETY BLOCK: Expected coupon '{expected_coupon}' but found '{actual_coupon}'. You must re-apply the correct coupon before checkout."
-                                print(f"  {CLI_RED}✗ {error_msg}{CLI_CLR}")
-                                results.append(f"Action {idx+1} (Req_CheckoutBasket): FAILED\nError: {error_msg}")
-                                stop_execution = True
-                                continue
-                        
-                        # 2. Check Total
-                        if expected_total is not None:
-                            actual_total = float(getattr(view_res, "total", 0.0))
-                            target_total = float(expected_total)
-                            # Allow small float difference
-                            if abs(actual_total - target_total) > 0.01:
-                                error_msg = f"SAFETY BLOCK: Expected total {target_total} but found {actual_total}. Your basket state is incorrect."
-                                print(f"  {CLI_RED}✗ {error_msg}{CLI_CLR}")
-                                results.append(f"Action {idx+1} (Req_CheckoutBasket): FAILED\nError: {error_msg}")
-                                stop_execution = True
-                                continue
-                        
-                        print(f"  {CLI_GREEN}✓ Verification passed.{CLI_CLR}")
-
-                    except Exception as e:
-                         # If verification crashes, fail safe (block checkout)
-                         error_msg = f"SAFETY BLOCK: Could not verify basket state: {str(e)}"
-                         print(f"  {CLI_RED}⚠ {error_msg}{CLI_CLR}")
-                         results.append(f"Action {idx+1} (Req_CheckoutBasket): FAILED\nError: {error_msg}")
-                         stop_execution = True
-                         continue
-                # ---------------------------
-
                 if checkout_done:
                      print(f"  {CLI_RED}⚠ BLOCKED: Checkout already succeeded! Task is complete.{CLI_CLR}")
                      results.append(f"Action {idx+1} ({action_name}): BLOCKED - checkout already performed")
                      stop_execution = True
                      continue
 
-            print(f"  {CLI_BLUE}▶ Executing:{CLI_CLR} {action_name}")
-            print(f"     {action_model.model_dump_json()}")
-            
             if stats:
                 stats.add_api_call()
-
-            try:
-                result = store_api.dispatch(action_model)
-                result_json = result.model_dump_json(exclude_none=True)
-                result_dict = result.model_dump(exclude_none=True)
-                
-                print(f"  {CLI_GREEN}✓ SUCCESS:{CLI_CLR}")
-                print(f"     {result_json}")
-                
-                if failure_logger:
-                    failure_logger.log_api_call(task.task_id, action_name, action_model.model_dump(), result_dict)
-                
-                results.append(f"Action {idx+1} ({action_name}): SUCCESS\nResult: {result_json}")
-
-                if action_name == "Req_CheckoutBasket":
+            
+            # Execute with handler
+            ctx = executor.execute(action_dict, action_model)
+            results.extend(ctx.results)
+            
+            if ctx.stop_execution:
+                stop_execution = True
+            
+            if action_name == "Req_CheckoutBasket" and not ctx.stop_execution:
+                 # Check if the execution was actually successful by looking at results
+                 last_result = ctx.results[-1] if ctx.results else ""
+                 if "SUCCESS" in last_result:
                     checkout_done = True
                     print(f"  {CLI_GREEN}✓ CHECKOUT COMPLETE - task finished{CLI_CLR}")
                     stop_execution = True
-
-            except ApiException as e:
-                error_msg = e.api_error.error if e.api_error else str(e)
-                print(f"  {CLI_RED}✗ FAILED:{CLI_CLR} {error_msg}")
-                
-                if failure_logger:
-                    failure_logger.log_api_call(task.task_id, action_name, action_model.model_dump(), {}, error=error_msg)
-                
-                results.append(f"Action {idx+1} ({action_name}): FAILED\nError: {error_msg}")
-                
-                if action_name == "Req_CheckoutBasket":
-                    results.append("[HINT]: Checkout failed. Adjust basket (reduce quantity or change items) and retry checkout.")
-                
-                stop_execution = True
 
         # Feed back results
         if results:

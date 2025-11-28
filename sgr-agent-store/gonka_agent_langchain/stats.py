@@ -16,10 +16,22 @@ class SessionStats:
 
     def add_llm_usage(self, model: str, usage):
         if usage:
-            self.total_prompt_tokens += usage.prompt_tokens
-            self.total_completion_tokens += usage.completion_tokens
+            # Usage is passed as a Pydantic-like object or dict, handle both
+            p_tokens = getattr(usage, 'prompt_tokens', 0)
+            c_tokens = getattr(usage, 'completion_tokens', 0)
+            
+            # If attributes are missing or 0, try dictionary access
+            if p_tokens == 0 and c_tokens == 0 and hasattr(usage, '__dict__'):
+                 p_tokens = usage.__dict__.get('prompt_tokens', 0)
+                 c_tokens = usage.__dict__.get('completion_tokens', 0)
+            elif p_tokens == 0 and c_tokens == 0 and isinstance(usage, dict):
+                 p_tokens = usage.get('prompt_tokens', 0)
+                 c_tokens = usage.get('completion_tokens', 0)
+
+            self.total_prompt_tokens += p_tokens
+            self.total_completion_tokens += c_tokens
             self.llm_requests += 1
-            cost = calculator.calculate_cost(model, usage.prompt_tokens, usage.completion_tokens)
+            cost = calculator.calculate_cost(model, p_tokens, c_tokens)
             self.total_cost_usd += cost
 
     def add_api_call(self):
