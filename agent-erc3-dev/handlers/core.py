@@ -1,0 +1,89 @@
+from typing import List, Any
+from erc3 import ApiException
+from erc3.erc3 import client
+from .base import ToolContext, Middleware, ActionHandler
+
+CLI_RED = "\x1B[31m"
+CLI_GREEN = "\x1B[32m"
+CLI_BLUE = "\x1B[34m"
+CLI_YELLOW = "\x1B[33m"
+CLI_CLR = "\x1B[0m"
+
+class DefaultActionHandler:
+    """Standard handler that executes the action against the API"""
+    def handle(self, ctx: ToolContext) -> None:
+        action_name = ctx.model.__class__.__name__
+        print(f"  {CLI_BLUE}▶ Executing:{CLI_CLR} {action_name}")
+        
+        # Mask potentially large fields in logs if needed, for now just dump
+        # print(f"     {ctx.model.model_dump_json()}")
+        
+        try:
+            # SPECIAL HANDLING: Wiki Search (Local vs Remote)
+            # If the API returns invalid data (e.g. null list), we catch it here.
+            
+            try:
+                result = ctx.api.dispatch(ctx.model)
+            except Exception as e:
+                # Check for "results ... Input should be a valid list" error
+                if "Resp_SearchWiki" in str(e) and "valid list" in str(e):
+                    print(f"  {CLI_YELLOW}⚠ API returned invalid list for wiki search. Treating as empty results.{CLI_CLR}")
+                    # Mock an empty response
+                    from erc3.erc3.dtos import Resp_SearchWiki
+                    result = Resp_SearchWiki(results=[])
+                else:
+                    raise e
+            
+            # Check for Wiki Hash updates in response
+            # Many responses might contain the hash or trigger a need to check it?
+            # Actually only who_am_i and list_wiki return the hash directly.
+            
+            wiki_manager = ctx.shared.get('wiki_manager')
+            if wiki_manager:
+                if isinstance(result, client.Resp_WhoAmI) and result.wiki_sha1:
+                    wiki_manager.sync(result.wiki_sha1)
+                elif isinstance(result, client.Resp_ListWiki) and result.sha1:
+                    wiki_manager.sync(result.sha1)
+
+            # Convert result to JSON
+            result_json = result.model_dump_json(exclude_none=True)
+            
+            print(f"  {CLI_GREEN}✓ SUCCESS{CLI_CLR}")
+            # print(f"     {result_json[:200]}...") # Truncate log
+            
+            ctx.results.append(f"Action ({action_name}): SUCCESS\nResult: {result_json}")
+            
+        except ApiException as e:
+            error_msg = e.api_error.error if e.api_error else str(e)
+            print(f"  {CLI_RED}✗ FAILED:{CLI_CLR} {error_msg}")
+            
+            ctx.results.append(f"Action ({action_name}): FAILED\nError: {error_msg}")
+            
+            # Stop if critical? No, let the agent decide usually.
+            # But if it's an internal error, maybe stop?
+            
+        except Exception as e:
+            print(f"  {CLI_RED}✗ SYSTEM ERROR:{CLI_CLR} {e}")
+            ctx.results.append(f"Action ({action_name}): SYSTEM ERROR\nError: {str(e)}")
+
+
+class ActionExecutor:
+    """Main executor that orchestrates middleware and handlers"""
+    def __init__(self, api, middleware: List[Middleware] = None):
+        self.api = api
+        self.middleware = middleware or []
+        self.handler = DefaultActionHandler()
+    
+    def execute(self, action_dict: dict, action_model: Any) -> ToolContext:
+        ctx = ToolContext(self.api, action_dict, action_model)
+        
+        # Run middleware
+        for mw in self.middleware:
+            mw.process(ctx)
+            if ctx.stop_execution:
+                return ctx
+                
+        # Run handler
+        self.handler.handle(ctx)
+        return ctx
+

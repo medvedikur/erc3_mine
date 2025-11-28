@@ -1,7 +1,10 @@
 --extra-index-url https://erc.timetoact-group.at/
-erc3>=1.0.6
+erc3>=1.0.7
 openai>=2.8.1
 python-dotenv
 requests
 httpx
-
+langchain
+langchain-core
+pydantic
+gonka-openai
