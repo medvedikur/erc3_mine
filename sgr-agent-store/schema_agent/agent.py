@@ -4,7 +4,10 @@ from typing import List, Union, Literal
 from pydantic import BaseModel, Field
 from erc3 import store, ApiException, TaskInfo, ERC3
 from openai import OpenAI
-# Убедись, что файл pricing.py лежит рядом
+# Add parent directory to path to import pricing
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pricing import calculator  
 
 client = OpenAI(

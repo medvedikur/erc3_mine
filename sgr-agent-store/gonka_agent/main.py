@@ -14,9 +14,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
-from store_agent_2_gonka import run_agent, SessionStats, create_gonka_client_with_retry
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from agent import run_agent, SessionStats, create_gonka_client_with_retry
 from erc3 import ERC3
 from pricing import calculator
 
