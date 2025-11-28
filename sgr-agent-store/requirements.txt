@@ -3,3 +3,5 @@ erc3>=1.0.6
 openai>=2.8.1
 python-dotenv
 gonka-openai
+langchain
+langchain-core

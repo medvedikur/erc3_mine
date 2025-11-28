@@ -1,13 +1,14 @@
 import json
 import time
-from typing import List, Optional
+from typing import List, Optional, Any
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
+from pydantic import ValidationError
 
-from erc3 import TaskInfo, ERC3
+from erc3 import TaskInfo, ERC3, ApiException
 from .gonka_llm import GonkaChatModel
 from .prompts import SGR_SYSTEM_PROMPT
-from .tools import parse_action, execute_action
+from .tools import parse_action
 from .stats import SessionStats, FailureLogger
 from .models import NextStep
 
@@ -41,6 +42,30 @@ def extract_json(content: str) -> dict:
             content = content[start:end]
     
     return json.loads(content)
+
+# Define a simple usage class that mimics the OpenAI usage object structure expected by erc3
+class OpenAIUsage:
+    def __init__(self, prompt_tokens=0, completion_tokens=0, total_tokens=0):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = total_tokens
+    
+    # Make model_dump compatible with Pydantic v2 signature used by erc3.util.normalize_usage
+    def model_dump(self, mode: str = 'python', include = None, exclude = None, by_alias: bool = False, exclude_unset: bool = False, exclude_defaults: bool = False, exclude_none: bool = False, round_trip: bool = False, warnings: bool = True):
+        # We ignore most flags as this is a simple DTO, but we must accept them to prevent TypeError
+        data = {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens
+        }
+        
+        # Basic implementation of exclude_defaults/exclude_unset if strictly needed, 
+        # but for usage stats we generally want all fields.
+        # erc3.util.normalize_usage calls: usage.model_dump(exclude_unset=True, exclude_defaults=True)
+        # Since we set defaults in __init__ to 0, if we respect exclude_defaults=True, we might return empty dict if all are 0.
+        # However, looking at erc3 logic, it just flattens the dict.
+        
+        return data
 
 def run_agent(model_name: str, api: ERC3, task: TaskInfo, 
               stats: SessionStats = None, 
@@ -77,27 +102,29 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
             llm_output = result.llm_output or {}
             
             raw_content = generation.text
-            usage = llm_output.get("token_usage")
+            usage = llm_output.get("token_usage", {})
             
-            # Helper class to match usage object structure expected by stats
-            class Usage:
-                def __init__(self, u):
-                    self.prompt_tokens = u.get("prompt_tokens", 0)
-                    self.completion_tokens = u.get("completion_tokens", 0)
-            
-            if stats and usage:
-                stats.add_llm_usage(cost_model_id, Usage(usage))
+            # Create a usage object compatible with ERC3 and stats
+            usage_obj = OpenAIUsage(
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                total_tokens=usage.get("total_tokens", 0)
+            )
+
+            if stats:
+                stats.add_llm_usage(cost_model_id, usage_obj)
 
             # Log to ERC3
             api.log_llm(
                 task_id=task.task_id,
                 model=model_name,
                 duration_sec=time.time() - started,
-                usage=usage
+                usage=usage_obj
             )
 
         except Exception as e:
             print(f"{CLI_RED}✗ LLM call failed: {e}{CLI_CLR}")
+            # If we fail here, we should probably stop the agent to avoid infinite loops or broken state
             break
 
         print(f"{CLI_CYAN}[Raw Response]:{CLI_CLR}")
@@ -119,6 +146,7 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
 
         print(f"{CLI_GREEN}[Thoughts]:{CLI_CLR} {thoughts}")
         print(f"{CLI_GREEN}[Actions]:{CLI_CLR} {len(action_queue)} action(s), is_final={is_final}")
+        print(f"{CLI_GREEN}[Action Queue]:{CLI_CLR} {json.dumps(action_queue, indent=2)}")
         
         if failure_logger:
             failure_logger.log_llm_turn(task.task_id, turn + 1, raw_content, action_queue)
@@ -148,42 +176,48 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
 
             if action_name == "Req_CheckoutBasket":
                 if checkout_done:
+                     print(f"  {CLI_RED}⚠ BLOCKED: Checkout already succeeded! Task is complete.{CLI_CLR}")
                      results.append(f"Action {idx+1} ({action_name}): BLOCKED - checkout already performed")
                      stop_execution = True
                      continue
 
             print(f"  {CLI_BLUE}▶ Executing:{CLI_CLR} {action_name}")
+            print(f"     {action_model.model_dump_json()}")
             
             if stats:
                 stats.add_api_call()
 
-            result_str = execute_action(action_model, store_api)
-            
-            if "ERROR:" in result_str:
-                print(f"  {CLI_RED}✗ FAILED:{CLI_CLR} {result_str}")
-                if failure_logger:
-                    failure_logger.log_api_call(task.task_id, action_name, action_model.model_dump(), {}, error=result_str)
-            else:
+            try:
+                result = store_api.dispatch(action_model)
+                result_json = result.model_dump_json(exclude_none=True)
+                result_dict = result.model_dump(exclude_none=True)
+                
                 print(f"  {CLI_GREEN}✓ SUCCESS:{CLI_CLR}")
-                print(f"     {result_str}")
+                print(f"     {result_json}")
+                
                 if failure_logger:
-                    failure_logger.log_api_call(task.task_id, action_name, action_model.model_dump(), json.loads(result_str))
+                    failure_logger.log_api_call(task.task_id, action_name, action_model.model_dump(), result_dict)
+                
+                results.append(f"Action {idx+1} ({action_name}): SUCCESS\nResult: {result_json}")
 
-            results.append(f"Action {idx+1} ({action_name}): {'FAILED' if 'ERROR:' in result_str else 'SUCCESS'}\nResult: {result_str}")
-
-            if action_name == "Req_CheckoutBasket":
-                if "ERROR:" not in result_str:
+                if action_name == "Req_CheckoutBasket":
                     checkout_done = True
                     print(f"  {CLI_GREEN}✓ CHECKOUT COMPLETE - task finished{CLI_CLR}")
                     stop_execution = True
-                else:
-                    results.append("[HINT]: Checkout failed. Adjust basket and retry.")
-                    stop_execution = True
-            
-            if "ERROR:" in result_str:
-                 # Stop batch on error mostly, but maybe continue? 
-                 # Original logic: stop execution on failure
-                 stop_execution = True
+
+            except ApiException as e:
+                error_msg = e.api_error.error if e.api_error else str(e)
+                print(f"  {CLI_RED}✗ FAILED:{CLI_CLR} {error_msg}")
+                
+                if failure_logger:
+                    failure_logger.log_api_call(task.task_id, action_name, action_model.model_dump(), {}, error=error_msg)
+                
+                results.append(f"Action {idx+1} ({action_name}): FAILED\nError: {error_msg}")
+                
+                if action_name == "Req_CheckoutBasket":
+                    results.append("[HINT]: Checkout failed. Adjust basket (reduce quantity or change items) and retry checkout.")
+                
+                stop_execution = True
 
         # Feed back results
         if results:
@@ -193,4 +227,3 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
              messages.append(HumanMessage(content="[SYSTEM]: No actions executed. Set is_final=true if done, otherwise add actions."))
 
     print(f"\n{CLI_BLUE}═══ Agent finished ═══{CLI_CLR}")
-
