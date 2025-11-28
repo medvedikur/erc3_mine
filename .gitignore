@@ -1,0 +1,6 @@
+venv
+.envrc
+.env
+logs
+__pycache__
+venv-erc3

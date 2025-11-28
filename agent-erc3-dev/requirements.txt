@@ -1,0 +1,7 @@
+--extra-index-url https://erc.timetoact-group.at/
+erc3>=1.0.6
+openai>=2.8.1
+python-dotenv
+requests
+httpx
+
