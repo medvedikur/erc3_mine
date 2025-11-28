@@ -10,7 +10,6 @@ from .gonka_llm import GonkaChatModel
 from .prompts import SGR_SYSTEM_PROMPT
 from .tools import parse_action
 from .stats import SessionStats, FailureLogger
-from .models import NextStep
 from .handlers import get_executor
 
 CLI_RED = "\x1B[31m"
@@ -102,8 +101,22 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
             generation = result.generations[0][0]
             llm_output = result.llm_output or {}
             
+            # DEBUG: Check what we got
+            # print(f"DEBUG: llm_output keys: {llm_output.keys()}")
+            
             raw_content = generation.text
             usage = llm_output.get("token_usage", {})
+            
+            # Double check if usage is empty here
+            if not usage or usage.get("total_tokens", 0) == 0:
+                # Last resort fallback in agent
+                est_completion = len(raw_content) // 4
+                est_prompt = sum(len(m.content) for m in messages) // 4
+                usage = {
+                    "prompt_tokens": est_prompt,
+                    "completion_tokens": est_completion,
+                    "total_tokens": est_prompt + est_completion
+                }
             
             # Create a usage object compatible with ERC3 and stats
             usage_obj = OpenAIUsage(

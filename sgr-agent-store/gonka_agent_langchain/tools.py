@@ -1,9 +1,17 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal
 import json
 from erc3 import store
+from pydantic import BaseModel, Field
 
 CLI_RED = "\x1B[31m"
 CLI_CLR = "\x1B[0m"
+
+class SearchArgs(BaseModel):
+    query: str = Field(..., description="Query to search in the store manual, e.g. 'how do coupons stack'")
+
+class Req_SearchManual(BaseModel):
+    tool: Literal["search_manual"] = "search_manual"
+    query: str
 
 def parse_action(action_dict: dict) -> Optional[Any]:
     """Parse action dict into Pydantic model (SGR dispatch)"""
@@ -19,6 +27,11 @@ def parse_action(action_dict: dict) -> Optional[Any]:
             return store.Req_ListProducts(
                 offset=int(action_dict.get("offset", 0)),
                 limit=int(action_dict.get("limit", 10))
+            )
+        
+        elif tool in ["searchmanual", "manual", "help", "rules"]:
+            return Req_SearchManual(
+                query=action_dict.get("query", "")
             )
         
         elif tool in ["viewbasket", "basket", "cart", "view"]:

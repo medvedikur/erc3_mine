@@ -20,17 +20,22 @@ class SessionStats:
             p_tokens = getattr(usage, 'prompt_tokens', 0)
             c_tokens = getattr(usage, 'completion_tokens', 0)
             
-            # If attributes are missing or 0, try dictionary access
-            if p_tokens == 0 and c_tokens == 0 and hasattr(usage, '__dict__'):
-                 p_tokens = usage.__dict__.get('prompt_tokens', 0)
-                 c_tokens = usage.__dict__.get('completion_tokens', 0)
-            elif p_tokens == 0 and c_tokens == 0 and isinstance(usage, dict):
-                 p_tokens = usage.get('prompt_tokens', 0)
-                 c_tokens = usage.get('completion_tokens', 0)
+            # If attributes are missing or 0, try dictionary access or __dict__
+            if p_tokens == 0 and c_tokens == 0:
+                if isinstance(usage, dict):
+                    p_tokens = usage.get('prompt_tokens', 0)
+                    c_tokens = usage.get('completion_tokens', 0)
+                elif hasattr(usage, '__dict__'):
+                    p_tokens = usage.__dict__.get('prompt_tokens', 0)
+                    c_tokens = usage.__dict__.get('completion_tokens', 0)
 
             self.total_prompt_tokens += p_tokens
             self.total_completion_tokens += c_tokens
             self.llm_requests += 1
+            
+            # DEBUG: Cumulative check
+            # print(f"DEBUG: Total Prompts so far: {self.total_prompt_tokens}")
+
             cost = calculator.calculate_cost(model, p_tokens, c_tokens)
             self.total_cost_usd += cost
 
