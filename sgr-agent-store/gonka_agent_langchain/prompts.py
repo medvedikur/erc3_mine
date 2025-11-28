@@ -54,7 +54,7 @@ Your goal is to complete the user's task efficiently and accurately. You must TH
 | `remove_item_from_basket` | `sku` (str), `quantity` (int) | Remove items. |
 | `apply_coupon` | `coupon` (str) | Apply a code. Overwrites previous. |
 | `remove_coupon` | - | Clear coupon. |
-| `checkout_basket` | - | Finalize purchase. Irreversible. |
+| `checkout_basket` | `expected_total` (number), `expected_coupon` (str) | Finalize purchase. REQUIRED: You MUST provide expected values. |
 
 ## 📋 RESPONSE FORMAT
 

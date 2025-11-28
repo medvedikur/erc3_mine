@@ -5,7 +5,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
-from erc3 import TaskInfo, ERC3, ApiException
+from erc3 import TaskInfo, ERC3, ApiException, store
 from .gonka_llm import GonkaChatModel
 from .prompts import SGR_SYSTEM_PROMPT
 from .tools import parse_action
@@ -175,6 +175,51 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
             action_name = action_model.__class__.__name__
 
             if action_name == "Req_CheckoutBasket":
+                # --- SAFETY VERIFICATION ---
+                args = action_dict.get("args", {})
+                expected_total = args.get("expected_total")
+                expected_coupon = args.get("expected_coupon")
+
+                if expected_total is not None or expected_coupon is not None:
+                    print(f"  {CLI_BLUE}🛡️ Verifying state before checkout...{CLI_CLR}")
+                    try:
+                        # Verify state by viewing basket first
+                        view_res = store_api.dispatch(store.Req_ViewBasket())
+                        
+                        # 1. Check Coupon
+                        if expected_coupon is not None:
+                            actual_coupon = getattr(view_res, "coupon", "") or ""
+                            # Normalize for comparison
+                            if (actual_coupon or "").lower() != (expected_coupon or "").lower():
+                                error_msg = f"SAFETY BLOCK: Expected coupon '{expected_coupon}' but found '{actual_coupon}'. You must re-apply the correct coupon before checkout."
+                                print(f"  {CLI_RED}✗ {error_msg}{CLI_CLR}")
+                                results.append(f"Action {idx+1} (Req_CheckoutBasket): FAILED\nError: {error_msg}")
+                                stop_execution = True
+                                continue
+                        
+                        # 2. Check Total
+                        if expected_total is not None:
+                            actual_total = float(getattr(view_res, "total", 0.0))
+                            target_total = float(expected_total)
+                            # Allow small float difference
+                            if abs(actual_total - target_total) > 0.01:
+                                error_msg = f"SAFETY BLOCK: Expected total {target_total} but found {actual_total}. Your basket state is incorrect."
+                                print(f"  {CLI_RED}✗ {error_msg}{CLI_CLR}")
+                                results.append(f"Action {idx+1} (Req_CheckoutBasket): FAILED\nError: {error_msg}")
+                                stop_execution = True
+                                continue
+                        
+                        print(f"  {CLI_GREEN}✓ Verification passed.{CLI_CLR}")
+
+                    except Exception as e:
+                         # If verification crashes, fail safe (block checkout)
+                         error_msg = f"SAFETY BLOCK: Could not verify basket state: {str(e)}"
+                         print(f"  {CLI_RED}⚠ {error_msg}{CLI_CLR}")
+                         results.append(f"Action {idx+1} (Req_CheckoutBasket): FAILED\nError: {error_msg}")
+                         stop_execution = True
+                         continue
+                # ---------------------------
+
                 if checkout_done:
                      print(f"  {CLI_RED}⚠ BLOCKED: Checkout already succeeded! Task is complete.{CLI_CLR}")
                      results.append(f"Action {idx+1} ({action_name}): BLOCKED - checkout already performed")
