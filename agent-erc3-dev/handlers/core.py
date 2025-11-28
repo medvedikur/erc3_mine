@@ -20,17 +20,49 @@ class DefaultActionHandler:
         
         try:
             # SPECIAL HANDLING: Wiki Search (Local vs Remote)
-            # If the API returns invalid data (e.g. null list), we catch it here.
-            
+            if isinstance(ctx.model, client.Req_SearchWiki):
+                wiki_manager = ctx.shared.get('wiki_manager')
+                if wiki_manager:
+                    print(f"  {CLI_BLUE}🔍 Using Local Wiki Search (Smart RAG){CLI_CLR}")
+                    search_result_text = wiki_manager.search(ctx.model.query_regex)
+                    
+                    # We need to wrap this in a Resp object to match the expected return type structure for logging/history
+                    # But wait, search returns just text? The tool expects a list of results?
+                    # The original API returned Resp_SearchWiki(results=[...])
+                    # We can construct a mock response or just return the text as a successful result string.
+                    # Since we are modifying the handler, we control what goes into ctx.results.
+                    
+                    print(f"  {CLI_GREEN}✓ SUCCESS (Local){CLI_CLR}")
+                    ctx.results.append(f"Action ({action_name}): SUCCESS\nResult: {search_result_text}")
+                    return
+
+            # Default API execution
             try:
                 result = ctx.api.dispatch(ctx.model)
             except Exception as e:
-                # Check for "results ... Input should be a valid list" error
-                if "Resp_SearchWiki" in str(e) and "valid list" in str(e):
-                    print(f"  {CLI_YELLOW}⚠ API returned invalid list for wiki search. Treating as empty results.{CLI_CLR}")
-                    # Mock an empty response
-                    from erc3.erc3.dtos import Resp_SearchWiki
-                    result = Resp_SearchWiki(results=[])
+                error_str = str(e)
+                # Check for "Input should be a valid list" error (Server returning null)
+                if "valid list" in error_str and "NoneType" in error_str:
+                    print(f"  {CLI_YELLOW}⚠ API returned invalid list (null). Patching response.{CLI_CLR}")
+                    
+                    from erc3.erc3.dtos import (
+                        Resp_SearchWiki, Resp_ProjectSearchResults, Resp_SearchEmployees, 
+                        Resp_SearchTimeEntries, Resp_CustomerSearchResults
+                    )
+                    
+                    if "Resp_SearchWiki" in error_str:
+                        result = Resp_SearchWiki(results=[])
+                    elif "Resp_ProjectSearchResults" in error_str:
+                        result = Resp_ProjectSearchResults(projects=[])
+                    elif "Resp_SearchEmployees" in error_str:
+                        result = Resp_SearchEmployees(employees=[])
+                    elif "Resp_SearchTimeEntries" in error_str:
+                        result = Resp_SearchTimeEntries(time_entries=[])
+                    elif "Resp_CustomerSearchResults" in error_str:
+                        result = Resp_CustomerSearchResults(customers=[])
+                    else:
+                        # Unknown list error, re-raise
+                        raise e
                 else:
                     raise e
             
@@ -86,4 +118,3 @@ class ActionExecutor:
         # Run handler
         self.handler.handle(ctx)
         return ctx
-

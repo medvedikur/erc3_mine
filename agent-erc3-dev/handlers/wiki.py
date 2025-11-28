@@ -1,5 +1,5 @@
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from erc3.erc3 import client
 from .base import ToolContext, Middleware
 
@@ -7,11 +7,16 @@ class WikiManager:
     """
     Manages the local cache of the company wiki.
     Syncs with the API when sha1 changes.
+    Implements simple RAG-like search.
     """
-    def __init__(self, api: client.Erc3Client):
+    def __init__(self, api: Optional[client.Erc3Client] = None):
         self.api = api
         self.current_sha1: str = ""
         self.pages: Dict[str, str] = {} # path -> content
+        self.chunks: List[Dict[str, Any]] = [] # list of {content, path, id}
+
+    def set_api(self, api: client.Erc3Client):
+        self.api = api
 
     def sync(self, reported_sha1: str):
         """Check if sync is needed and update if so."""
@@ -20,39 +25,83 @@ class WikiManager:
 
         if self.current_sha1 != reported_sha1:
             print(f"📚 Wiki Sync: Hash changed ({self.current_sha1[:8]} -> {reported_sha1[:8]}). Updating...")
+            if not self.api:
+                print("⚠️ Wiki Sync Failed: No API client set.")
+                return
+
             try:
                 # 1. List all pages
                 list_resp = self.api.list_wiki()
                 self.current_sha1 = list_resp.sha1
                 
-                # 2. Load all pages (for a small wiki this is fine)
-                # If wiki is huge, we might want to lazy load, but for agents having full context is better.
+                # 2. Load all pages
+                self.pages = {}
                 for path in list_resp.paths:
                     print(f"   Downloading {path}...")
                     load_resp = self.api.load_wiki(path)
                     self.pages[path] = load_resp.content
+                
+                # 3. Index/Chunk pages
+                self._reindex()
                     
                 print(f"📚 Wiki Sync Complete: {len(self.pages)} pages loaded.")
                 
             except Exception as e:
                 print(f"⚠️ Wiki Sync Failed: {e}")
 
-    def search(self, query_regex: str) -> str:
-        """Local regex search across cached pages"""
+    def _reindex(self):
+        """Split pages into chunks for search"""
+        self.chunks = []
+        for path, content in self.pages.items():
+            # Simple splitting by double newline (paragraphs)
+            paragraphs = content.split('\n\n')
+            for i, p in enumerate(paragraphs):
+                clean_p = p.strip()
+                if not clean_p: 
+                    continue
+                # Further split long paragraphs if needed? For now keep it simple.
+                self.chunks.append({
+                    "content": clean_p,
+                    "path": path,
+                    "id": f"{path}#{i}",
+                    "tokens": set(re.findall(r'\w+', clean_p.lower())) # Pre-tokenize for Jaccard/BM25
+                })
+
+    def search(self, query: str) -> str:
+        """
+        Smart keyword search across chunks.
+        Uses token overlap ranking.
+        """
+        if not self.chunks:
+            return "Wiki not loaded yet or empty."
+
+        query_tokens = set(re.findall(r'\w+', query.lower()))
+        if not query_tokens:
+            return "Empty search query."
+
         results = []
-        try:
-            pattern = re.compile(query_regex, re.IGNORECASE)
-            for path, content in self.pages.items():
-                for i, line in enumerate(content.split('\n')):
-                    if pattern.search(line):
-                        results.append(f"[{path}:{i+1}] {line.strip()}")
-        except re.error as e:
-            return f"Invalid Regex: {e}"
+        for chunk in self.chunks:
+            # Score: overlap count
+            overlap = len(query_tokens.intersection(chunk["tokens"]))
+            if overlap > 0:
+                results.append((overlap, chunk))
         
-        if not results:
-            return "No matches found in local wiki cache."
+        # Sort by overlap desc
+        results.sort(key=lambda x: x[0], reverse=True)
         
-        return "\n".join(results[:20]) # Limit results
+        # Top 5 chunks
+        top_results = results[:5]
+        
+        if not top_results:
+             return f"No matches found for '{query}' in local wiki cache."
+
+        output = []
+        for score, chunk in top_results:
+            # Truncate content if too long for preview
+            preview = chunk["content"][:500] + "..." if len(chunk["content"]) > 500 else chunk["content"]
+            output.append(f"--- Document: {chunk['path']} (Relevance: {score}) ---\n{preview}\n")
+            
+        return "\n".join(output)
 
     def get_context_summary(self) -> str:
         """Return a summary of available wiki pages for the system prompt"""
@@ -70,14 +119,5 @@ class WikiMiddleware(Middleware):
         self.manager = manager
 
     def process(self, ctx: ToolContext) -> None:
-        # We can't easily intercept the *response* here to get the hash 
-        # because middleware runs *before* execution in this pattern.
-        # However, we can enforce a check if the agent *explicitly* asks for wiki stuff.
-        
-        # ACTUALLY: The best way is to let the DefaultActionHandler execute, 
-        # and then inspect the result? Or pass the manager to the handler?
-        
-        # For now, let's just use this to inject the WikiManager into the context 
-        # so custom handlers can use it.
+        # Inject manager into shared context so handlers can use it
         ctx.shared['wiki_manager'] = self.manager
-

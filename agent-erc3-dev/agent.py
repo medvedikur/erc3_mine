@@ -63,7 +63,8 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
               stats: SessionStats = None, 
               pricing_model: str = None, 
               max_turns: int = 20,
-              failure_logger: FailureLogger = None):
+              failure_logger: FailureLogger = None,
+              wiki_manager: WikiManager = None):
     
     # Initialize LangChain Model
     llm = GonkaChatModel(model=model_name)
@@ -71,8 +72,12 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
     cost_model_id = pricing_model or model_name
 
     # Initialize Managers
-    wiki_manager = WikiManager(erc_client)
-
+    if wiki_manager:
+        wiki_manager.set_api(erc_client)
+    else:
+        # Fallback if not provided (should be provided by main)
+        wiki_manager = WikiManager(erc_client)
+    
     # Initial Messages
     # We add a hint about available tools and the wiki state
     messages = [

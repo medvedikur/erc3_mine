@@ -29,6 +29,7 @@ from erc3 import ERC3
 from pricing import calculator
 from agent import run_agent
 from stats import SessionStats, failure_logger
+from handlers.wiki import WikiManager
 
 # Gonka model ID
 MODEL_ID = "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8" 
@@ -84,10 +85,11 @@ status = core.session_status(res.session_id)
 print(f"Session {res.session_id} has {len(status.tasks)} tasks")
 
 stats = SessionStats()
+wiki_manager = WikiManager()
 
 for task in status.tasks:
     # Optional: Filter tasks for testing
-    # if task.spec_id != "wipe_my_data": continue
+    # if task.spec_id not in ["threat_escalation", "project_status_change_by_lead"]: continue
 
     print("=" * 40)
     print(f"Starting Task: {task.task_id} ({task.spec_id}): {task.task_text}")
@@ -102,7 +104,8 @@ for task in status.tasks:
             task=task,
             stats=stats,
             pricing_model=PRICING_MODEL_ID,
-            failure_logger=failure_logger
+            failure_logger=failure_logger,
+            wiki_manager=wiki_manager
         )
     except Exception as e:
         print(f"Fatal error in agent: {e}")

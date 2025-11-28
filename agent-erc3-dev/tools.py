@@ -12,31 +12,60 @@ class Req_Respond(BaseModel):
 def parse_action(action_dict: dict) -> Optional[Any]:
     """Parse action dict into Pydantic model for Erc3Client"""
     tool = action_dict.get("tool", "").lower().replace("_", "").replace("-", "").replace("/", "")
-    args = action_dict.get("args", {})
     
+    # Flatten args - merge args into action_dict to handle both nested and flat structures
+    args = action_dict.get("args", {})
+    if args:
+        # Create a combined dictionary for lookups, but keep args for backward compat if needed
+        combined_args = {**action_dict, **args}
+    else:
+        combined_args = action_dict
+        
+    # Use combined_args for lookups instead of args
+    # But some existing logic uses 'args' specifically, so we'll update 'args' to be the combined source of truth for params
+    args = combined_args
+
     # Common mappings
     # Employees
     if tool in ["whoami", "me", "identity"]:
         return client.Req_WhoAmI()
     
     if tool in ["employeeslist", "listemployees"]:
-        return client.Req_ListEmployees(
-            offset=int(args.get("offset", 0)),
-            limit=int(args.get("limit", 10))
-        )
+        kwargs = {}
+        # If args limit is set, use it. Otherwise default to 5 (small batch to avoid limits).
+        # We assume server handles pagination.
+        kwargs["offset"] = int(args.get("offset", 0))
+        kwargs["limit"] = int(args.get("limit", 5))
+        return client.Req_ListEmployees(**kwargs)
     
     if tool in ["employeessearch", "searchemployees"]:
+        kwargs = {}
+        kwargs["offset"] = int(args.get("offset", 0))
+        kwargs["limit"] = int(args.get("limit", 5))
         return client.Req_SearchEmployees(
             query=args.get("query"),
             location=args.get("location"),
             department=args.get("department"),
             manager=args.get("manager"),
-            offset=int(args.get("offset", 0)),
-            limit=int(args.get("limit", 10))
+            **kwargs
         )
     
     if tool in ["employeesget", "getemployee"]:
-        return client.Req_GetEmployee(id=args.get("id") or args.get("employee_id"))
+        emp_id = args.get("id") or args.get("employee_id")
+        username = args.get("username")
+        
+        # Smart dispatch: if ID is missing but username is provided, use search instead
+        if not emp_id and username:
+            kwargs = {}
+            kwargs["offset"] = int(args.get("offset", 0))
+            kwargs["limit"] = int(args.get("limit", 0))
+            return client.Req_SearchEmployees(query=username, **kwargs)
+            
+        if not emp_id:
+            print("⚠ 'id' argument missing in 'get_employee'. Skipping to force LLM retry.")
+            return None
+            
+        return client.Req_GetEmployee(id=emp_id)
     
     if tool in ["employeesupdate", "updateemployee"]:
         return client.Req_UpdateEmployeeInfo(
@@ -55,7 +84,11 @@ def parse_action(action_dict: dict) -> Optional[Any]:
         return client.Req_ListWiki()
     
     if tool in ["wikiload", "loadwiki", "readwiki"]:
-        return client.Req_LoadWiki(file=args.get("file") or args.get("path"))
+        file_arg = args.get("file") or args.get("path") or args.get("page")
+        if not file_arg:
+            print("⚠ 'file' argument missing in 'wiki_load'. Skipping to force LLM retry.")
+            return None
+        return client.Req_LoadWiki(file=file_arg)
     
     if tool in ["wikisearch", "searchwiki"]:
         return client.Req_SearchWiki(query_regex=args.get("query_regex") or args.get("query"))
@@ -69,33 +102,47 @@ def parse_action(action_dict: dict) -> Optional[Any]:
 
     # Customers
     if tool in ["customerslist", "listcustomers"]:
-        return client.Req_ListCustomers(
-            offset=int(args.get("offset", 0)),
-            limit=int(args.get("limit", 10))
-        )
+        kwargs = {}
+        kwargs["offset"] = int(args.get("offset", 0))
+        kwargs["limit"] = int(args.get("limit", 5))
+        return client.Req_ListCustomers(**kwargs)
     
     if tool in ["customersget", "getcustomer"]:
-        return client.Req_GetCustomer(id=args.get("id"))
+        cust_id = args.get("id")
+        if not cust_id:
+            print("⚠ 'id' argument missing in 'get_customer'. Skipping to force LLM retry.")
+            return None
+        return client.Req_GetCustomer(id=cust_id)
     
     if tool in ["customerssearch", "searchcustomers"]:
+        kwargs = {}
+        kwargs["offset"] = int(args.get("offset", 0))
+        kwargs["limit"] = int(args.get("limit", 5))
         return client.Req_SearchCustomers(
             query=args.get("query"),
             deal_phase=args.get("deal_phase"),
             locations=args.get("locations"),
             account_managers=args.get("account_managers"),
-            offset=int(args.get("offset", 0)),
-            limit=int(args.get("limit", 10))
+            **kwargs
         )
 
     # Projects
     if tool in ["projectslist", "listprojects"]:
-        return client.Req_ListProjects(
-            offset=int(args.get("offset", 0)),
-            limit=int(args.get("limit", 10))
-        )
+        # Only pass limit/offset if provided, to avoid overriding defaults or hitting strict limits
+        # However, due to API quirks or strict validation, we might need defaults.
+        # If strict limits (limit=0) are enforced, we default to 0.
+        kwargs = {}
+        kwargs["offset"] = int(args.get("offset", 0))
+        kwargs["limit"] = int(args.get("limit", 5))
+        
+        return client.Req_ListProjects(**kwargs)
     
     if tool in ["projectsget", "getproject"]:
-        return client.Req_GetProject(id=args.get("id"))
+        proj_id = args.get("id")
+        if not proj_id:
+            print("⚠ 'id' argument missing in 'get_project'. Skipping to force LLM retry.")
+            return None
+        return client.Req_GetProject(id=proj_id)
     
     if tool in ["projectssearch", "searchprojects"]:
         status_arg = args.get("status")
@@ -105,14 +152,18 @@ def parse_action(action_dict: dict) -> Optional[Any]:
             status = status_arg
         else:
             status = []
+            
+        # Default limit to 0 to avoid "page limit exceeded: 10 > 0"
+        kwargs = {}
+        kwargs["offset"] = int(args.get("offset", 0))
+        kwargs["limit"] = int(args.get("limit", 5))
 
         return client.Req_SearchProjects(
             query=args.get("query"),
             customer_id=args.get("customer_id"),
             status=status,
             include_archived=bool(args.get("include_archived", False)),
-            offset=int(args.get("offset", 0)),
-            limit=int(args.get("limit", 10))
+            **kwargs
         )
     
     if tool in ["projectsteamupdate", "updateprojectteam"]:
@@ -145,17 +196,23 @@ def parse_action(action_dict: dict) -> Optional[Any]:
         )
     
     if tool in ["timeget", "gettime"]:
-        return client.Req_GetTimeEntry(id=args.get("id"))
+        entry_id = args.get("id")
+        if not entry_id:
+            print("⚠ 'id' argument missing in 'get_time'. Skipping to force LLM retry.")
+            return None
+        return client.Req_GetTimeEntry(id=entry_id)
 
     if tool in ["timesearch", "searchtime"]:
+        kwargs = {}
+        kwargs["offset"] = int(args.get("offset", 0))
+        kwargs["limit"] = int(args.get("limit", 5))
         return client.Req_SearchTimeEntries(
             employee=args.get("employee"),
             project=args.get("project"),
             date_from=args.get("date_from"),
             date_to=args.get("date_to"),
             billable=args.get("billable", ""),
-            offset=int(args.get("offset", 0)),
-            limit=int(args.get("limit", 10))
+            **kwargs
         )
         
     if tool in ["timeupdate", "updatetime"]:
@@ -176,12 +233,18 @@ def parse_action(action_dict: dict) -> Optional[Any]:
         if not message:
             # Fallback if the model put the message in a weird place or just forgot
             message = "No message provided."
+        
+        # Require outcome to be explicit
+        outcome = args.get("outcome")
+        if not outcome:
+            # Return None to trigger "Action SKIPPED" and force the agent to retry with correct args
+            print("⚠ 'outcome' argument missing in 'respond'. Skipping to force LLM retry.")
+            return None
             
         return client.Req_ProvideAgentResponse(
             message=str(message),
-            outcome=args.get("outcome", "ok_answer"),
+            outcome=outcome,
             links=args.get("links", [])
         )
 
     return None
-
