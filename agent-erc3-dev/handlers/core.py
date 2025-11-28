@@ -66,6 +66,11 @@ class DefaultActionHandler:
                 else:
                     raise e
             
+            # Update Identity State if response is WhoAmI
+            security_manager = ctx.shared.get('security_manager')
+            if security_manager and isinstance(result, client.Resp_WhoAmI):
+                security_manager.update_identity(result)
+
             # Check for Wiki Hash updates in response
             # Many responses might contain the hash or trigger a need to check it?
             # Actually only who_am_i and list_wiki return the hash directly.
@@ -76,6 +81,10 @@ class DefaultActionHandler:
                     wiki_manager.sync(result.wiki_sha1)
                 elif isinstance(result, client.Resp_ListWiki) and result.sha1:
                     wiki_manager.sync(result.sha1)
+
+            # Apply Security Redaction (if applicable)
+            if security_manager:
+                result = security_manager.redact_result(result)
 
             # Convert result to JSON
             result_json = result.model_dump_json(exclude_none=True)

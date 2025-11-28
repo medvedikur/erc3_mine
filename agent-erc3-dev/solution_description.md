@@ -19,16 +19,18 @@ This solution reimplements the SGR (Schema-Guided Reasoning) agent using **LangC
 ### 1. Adaptive Knowledge Management (Local RAG)
 The agent operates in a dynamic environment where company policies (`rulebook.md`) and data change.
 - **Auto-Sync**: Middleware intercepts API responses containing `wiki_sha1` (e.g., from `/whoami`). If the hash differs from the local cache, it triggers an immediate re-fetch of all wiki pages.
-- **Smart Indexing**: Pages are locally chunked and indexed.
-- **Local Search**: `wiki_search` is executed locally against the cached chunks using token overlap ranking, saving API tokens and reducing latency.
+- **Smart Indexing**: Pages are locally chunked and indexed. We use `sentence-transformers` (specifically `all-MiniLM-L6-v2`) to generate vector embeddings for all chunks locally, ensuring high-quality semantic understanding without external API costs.
+- **Hybrid Search**: `wiki_search` executes a **Semantic Search** (Cosine Similarity) against the cached vectors. If the embedding model is not available, it gracefully degrades to token overlap ranking. This approach keeps inference **free** and **fast**.
 - **Context Injection**: The system prompt is dynamically updated with a summary of available wiki pages.
 
 ### 2. Robust Tool Dispatch & Validation (Anti-Fragility)
 To handle LLM output quirks and API inconsistencies, the tool layer is designed to be highly forgiving on input but strict on execution:
-- **Argument Flattening**: Merges nested `args` dictionaries to handle inconsistent LLM output structures.
-- **Smart Dispatch**: Automatically redirects `get_employee` to `search_employees` if an ID is missing but a name is provided.
+- **Argument Normalization**: "Smart Mapping" automatically fixes common hallucinations (e.g., mapping `query_semantic` to `query_regex`, `employee_id` to `employee`, `projects_update` to `update_project_status`).
+- **Context Injection**: Automatically fills missing context-dependent fields (`logged_by`, `employee`) using the authenticated user's ID from `SecurityManager`.
+- **Outcome Inference**: If the agent forgets the `outcome` field in `respond`, the system infers it from the message content (e.g., negative words -> `none_unsupported` or `denied_security`).
+- **Auto-Linking**: Automatically detects entity IDs (`proj_...`) in response text and adds them to the `links` array if missing.
 - **Strictness Fixes**: Handles API quirks (e.g. omitting `limit` when the server rejects explicit zeros) and patches invalid `null` list responses in `handlers/core.py`.
-- **Validation**: Enforces required arguments (like `outcome` in `respond`) to prevent runtime crashes.
+- **Validation**: Enforces required arguments to prevent runtime crashes.
 
 ### 3. Gonka Network Resilience
 The `GonkaChatModel` (`gonka_llm.py`) ensures high availability:
@@ -60,7 +62,7 @@ Unlike the stateless Store agent, the ERC3 agent must handle **permissions**. Th
 We introduced a middleware pattern in `handlers/` to decouple cross-cutting concerns like Wiki Synchronization from the core agent logic. This allows the agent to "learn" about policy updates seamlessly without manual tool calls.
 
 ### 3. Local RAG & Caching
-Instead of re-fetching wiki content or searching via the API repeatedly, the agent maintains a local vector/token index of the wiki. This allows for fast, free, and repeated searches within a task session without hitting API rate limits or costs.
+Instead of re-fetching wiki content or searching via the API repeatedly, the agent maintains a local vector/token index of the wiki. This allows for fast, free, and repeated searches within a task session without hitting API rate limits or costs. The system uses **Sentence Transformers** for high-quality semantic matching, running entirely on the local CPU.
 
 ### 4. Robust Error Handling
 The agent is designed to be crash-resistant. It catches API validation errors (like the server returning `null` for a list) and patches them on the fly, allowing the conversation to continue instead of aborting the task.

@@ -8,3 +8,6 @@ langchain
 langchain-core
 pydantic
 gonka-openai
+sentence-transformers
+numpy
+scikit-learn

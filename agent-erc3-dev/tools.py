@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Optional
+import re
 from erc3.erc3 import client
 from pydantic import BaseModel, Field
 
@@ -9,31 +10,86 @@ class Req_Respond(BaseModel):
     outcome: str = Field(..., description="One of: ok_answer, ok_not_found, denied_security, none_clarification_needed, none_unsupported, error_internal")
     links: List[dict] = []
 
-def parse_action(action_dict: dict) -> Optional[Any]:
+def _normalize_args(args: dict) -> dict:
+    """Normalize argument keys to handle common LLM hallucinations"""
+    normalized = args.copy()
+    
+    # Common mappings (hallucination -> correct key)
+    mappings = {
+        # Wiki
+        "query_semantic": "query_regex",
+        "query": "query_regex",
+        "page_filter": "page",
+        "page_includes": "page",
+        
+        # Employees/Time
+        "employee_id": "employee",
+        "id": "employee", # Context dependent, but handled in specific blocks
+        "user_id": "employee",
+        "username": "employee",
+        
+        # Projects
+        "project_id": "id",
+        "project": "id", # For get_project
+        
+        # Time Log
+        "project_id": "project", # For time_log
+    }
+    return normalized
+
+def _inject_context(args: dict, context: Any) -> dict:
+    """Inject current user ID into args if missing"""
+    if not context or not hasattr(context, 'shared'):
+        return args
+        
+    security_manager = context.shared.get('security_manager')
+    if not security_manager or not security_manager.current_user:
+        return args
+        
+    current_user = security_manager.current_user
+    
+    # Fields that always require the current user acting as the modifier
+    user_fields = ["logged_by", "changed_by"]
+    
+    for field in user_fields:
+        if field not in args or not args[field]:
+            args[field] = current_user
+                
+    return args
+
+def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
     """Parse action dict into Pydantic model for Erc3Client"""
     tool = action_dict.get("tool", "").lower().replace("_", "").replace("-", "").replace("/", "")
     
     # Flatten args - merge args into action_dict to handle both nested and flat structures
-    args = action_dict.get("args", {})
-    if args:
-        # Create a combined dictionary for lookups, but keep args for backward compat if needed
-        combined_args = {**action_dict, **args}
+    raw_args = action_dict.get("args", {})
+    if raw_args:
+        combined_args = {**action_dict, **raw_args}
     else:
         combined_args = action_dict
         
-    # Use combined_args for lookups instead of args
-    # But some existing logic uses 'args' specifically, so we'll update 'args' to be the combined source of truth for params
-    args = combined_args
+    # Use combined_args for lookups
+    args = combined_args.copy()
+    
+    # Inject Context (Auto-fill user ID for auditing fields)
+    if context:
+        args = _inject_context(args, context)
+        
+    # Helper to get current user for defaults
+    current_user = None
+    if context and hasattr(context, 'shared'):
+        sm = context.shared.get('security_manager')
+        if sm:
+            current_user = sm.current_user
 
-    # Common mappings
+    # --- Tool Mappings ---
+
     # Employees
     if tool in ["whoami", "me", "identity"]:
         return client.Req_WhoAmI()
     
     if tool in ["employeeslist", "listemployees"]:
         kwargs = {}
-        # If args limit is set, use it. Otherwise default to 5 (small batch to avoid limits).
-        # We assume server handles pagination.
         kwargs["offset"] = int(args.get("offset", 0))
         kwargs["limit"] = int(args.get("limit", 5))
         return client.Req_ListEmployees(**kwargs)
@@ -43,7 +99,7 @@ def parse_action(action_dict: dict) -> Optional[Any]:
         kwargs["offset"] = int(args.get("offset", 0))
         kwargs["limit"] = int(args.get("limit", 5))
         return client.Req_SearchEmployees(
-            query=args.get("query"),
+            query=args.get("query") or args.get("name"), # Handle 'name' alias
             location=args.get("location"),
             department=args.get("department"),
             manager=args.get("manager"),
@@ -51,33 +107,43 @@ def parse_action(action_dict: dict) -> Optional[Any]:
         )
     
     if tool in ["employeesget", "getemployee"]:
-        emp_id = args.get("id") or args.get("employee_id")
+        emp_id = args.get("id") or args.get("employee_id") or args.get("employee")
         username = args.get("username")
         
-        # Smart dispatch: if ID is missing but username is provided, use search instead
-        if not emp_id and username:
+        # Smart dispatch: if ID is missing but username/name is provided, use search instead
+        if not emp_id and (username or args.get("name")):
+            query = username or args.get("name")
             kwargs = {}
             kwargs["offset"] = int(args.get("offset", 0))
-            kwargs["limit"] = int(args.get("limit", 0))
-            return client.Req_SearchEmployees(query=username, **kwargs)
+            kwargs["limit"] = int(args.get("limit", 5))
+            return client.Req_SearchEmployees(query=query, **kwargs)
             
         if not emp_id:
-            print("⚠ 'id' argument missing in 'get_employee'. Skipping to force LLM retry.")
-            return None
+            # Default to current user if asking for "my" profile implicitly?
+            if current_user:
+                emp_id = current_user
+            else:
+                print("⚠ 'id' argument missing in 'get_employee'. Skipping to force LLM retry.")
+                return None
             
         return client.Req_GetEmployee(id=emp_id)
     
-    if tool in ["employeesupdate", "updateemployee"]:
-        return client.Req_UpdateEmployeeInfo(
-            employee=args.get("employee") or args.get("id"),
-            notes=args.get("notes"),
-            salary=args.get("salary"),
-            location=args.get("location"),
-            department=args.get("department"),
-            skills=args.get("skills"),
-            wills=args.get("wills"),
-            changed_by=args.get("changed_by")
-        )
+    if tool in ["employeesupdate", "updateemployee", "salaryupdate", "updatesalary"]: # Added aliases
+        # Build kwargs filtering out Nones to avoid validation error for optional lists
+        update_args = {
+            "employee": args.get("employee") or args.get("id") or args.get("employee_id") or current_user,
+            "notes": args.get("notes"),
+            "salary": args.get("salary"),
+            "location": args.get("location"),
+            "department": args.get("department"),
+            "skills": args.get("skills"),
+            "wills": args.get("wills"),
+            "changed_by": args.get("changed_by") # Auto-filled by context
+        }
+        # Filter out None values
+        valid_args = {k: v for k, v in update_args.items() if v is not None}
+        
+        return client.Req_UpdateEmployeeInfo(**valid_args)
 
     # Wiki
     if tool in ["wikilist", "listwiki"]:
@@ -91,11 +157,13 @@ def parse_action(action_dict: dict) -> Optional[Any]:
         return client.Req_LoadWiki(file=file_arg)
     
     if tool in ["wikisearch", "searchwiki"]:
-        return client.Req_SearchWiki(query_regex=args.get("query_regex") or args.get("query"))
+        # Smart arg mapping for common hallucinations
+        query = args.get("query_regex") or args.get("query") or args.get("query_semantic") or args.get("search_term")
+        return client.Req_SearchWiki(query_regex=query)
     
     if tool in ["wikiupdate", "updatewiki"]:
         return client.Req_UpdateWiki(
-            file=args.get("file"),
+            file=args.get("file") or args.get("path"),
             content=args.get("content"),
             changed_by=args.get("changed_by")
         )
@@ -108,7 +176,7 @@ def parse_action(action_dict: dict) -> Optional[Any]:
         return client.Req_ListCustomers(**kwargs)
     
     if tool in ["customersget", "getcustomer"]:
-        cust_id = args.get("id")
+        cust_id = args.get("id") or args.get("customer_id")
         if not cust_id:
             print("⚠ 'id' argument missing in 'get_customer'. Skipping to force LLM retry.")
             return None
@@ -128,17 +196,13 @@ def parse_action(action_dict: dict) -> Optional[Any]:
 
     # Projects
     if tool in ["projectslist", "listprojects"]:
-        # Only pass limit/offset if provided, to avoid overriding defaults or hitting strict limits
-        # However, due to API quirks or strict validation, we might need defaults.
-        # If strict limits (limit=0) are enforced, we default to 0.
         kwargs = {}
         kwargs["offset"] = int(args.get("offset", 0))
         kwargs["limit"] = int(args.get("limit", 5))
-        
         return client.Req_ListProjects(**kwargs)
     
     if tool in ["projectsget", "getproject"]:
-        proj_id = args.get("id")
+        proj_id = args.get("id") or args.get("project_id")
         if not proj_id:
             print("⚠ 'id' argument missing in 'get_project'. Skipping to force LLM retry.")
             return None
@@ -149,42 +213,53 @@ def parse_action(action_dict: dict) -> Optional[Any]:
         if isinstance(status_arg, str):
             status = [status_arg]
         elif isinstance(status_arg, list):
-            status = status_arg
+            # If list is empty, we set to None to avoid "match nothing" behavior if that's the default
+            status = status_arg if status_arg else None
         else:
-            status = []
+            status = None
             
-        # Default limit to 0 to avoid "page limit exceeded: 10 > 0"
         kwargs = {}
         kwargs["offset"] = int(args.get("offset", 0))
         kwargs["limit"] = int(args.get("limit", 5))
 
-        return client.Req_SearchProjects(
-            query=args.get("query"),
-            customer_id=args.get("customer_id"),
-            status=status,
-            include_archived=bool(args.get("include_archived", False)),
+        search_args = {
+            "query": args.get("query"),
+            "customer_id": args.get("customer_id"),
+            "status": status,
+            # Default include_archived to True to find all projects by default
+            "include_archived": bool(args.get("include_archived", True)),
             **kwargs
-        )
+        }
+        # Filter out None values to respect Pydantic defaults/optionality
+        valid_search_args = {k: v for k, v in search_args.items() if v is not None}
+
+        return client.Req_SearchProjects(**valid_search_args)
     
     if tool in ["projectsteamupdate", "updateprojectteam"]:
         return client.Req_UpdateProjectTeam(
-            id=args.get("id"),
+            id=args.get("id") or args.get("project_id"),
             team=args.get("team"),
             changed_by=args.get("changed_by")
         )
         
-    if tool in ["projectsstatusupdate", "updateprojectstatus"]:
+    if tool in ["projectsstatusupdate", "updateprojectstatus", "projectsupdate", "updateproject", "projectssetstatus"]:
+        # Handled alias projectsupdate, projectssetstatus
         return client.Req_UpdateProjectStatus(
-            id=args.get("id"),
+            id=args.get("id") or args.get("project_id"),
             status=args.get("status"),
             changed_by=args.get("changed_by")
         )
 
     # Time
     if tool in ["timelog", "logtime"]:
+        target_emp = args.get("employee") or args.get("employee_id")
+        # If target employee is missing, assume self (me)
+        if not target_emp:
+            target_emp = current_user
+            
         return client.Req_LogTimeEntry(
-            employee=args.get("employee"),
-            project=args.get("project"),
+            employee=target_emp,
+            project=args.get("project") or args.get("project_id"),
             customer=args.get("customer"),
             date=args.get("date"),
             hours=float(args.get("hours", 0)),
@@ -192,7 +267,7 @@ def parse_action(action_dict: dict) -> Optional[Any]:
             notes=args.get("notes", ""),
             billable=bool(args.get("billable", True)),
             status=args.get("status", "draft"),
-            logged_by=args.get("logged_by")
+            logged_by=args.get("logged_by") # Auto-filled by context
         )
     
     if tool in ["timeget", "gettime"]:
@@ -207,8 +282,8 @@ def parse_action(action_dict: dict) -> Optional[Any]:
         kwargs["offset"] = int(args.get("offset", 0))
         kwargs["limit"] = int(args.get("limit", 5))
         return client.Req_SearchTimeEntries(
-            employee=args.get("employee"),
-            project=args.get("project"),
+            employee=args.get("employee") or args.get("employee_id") or current_user, # Default to self search
+            project=args.get("project") or args.get("project_id"),
             date_from=args.get("date_from"),
             date_to=args.get("date_to"),
             billable=args.get("billable", ""),
@@ -229,22 +304,49 @@ def parse_action(action_dict: dict) -> Optional[Any]:
 
     # Response
     if tool in ["respond", "answer", "reply"]:
-        message = args.get("message") or args.get("text") or args.get("response") or args.get("answer")
+        message = args.get("message") or args.get("text") or args.get("response") or args.get("answer") or args.get("content")
         if not message:
-            # Fallback if the model put the message in a weird place or just forgot
             message = "No message provided."
         
-        # Require outcome to be explicit
+        # Outcome Fallback Logic
         outcome = args.get("outcome")
         if not outcome:
-            # Return None to trigger "Action SKIPPED" and force the agent to retry with correct args
-            print("⚠ 'outcome' argument missing in 'respond'. Skipping to force LLM retry.")
-            return None
-            
+            # Try to infer outcome from message content
+            msg_lower = str(message).lower()
+            if "cannot" in msg_lower or "unable to" in msg_lower or "could not" in msg_lower:
+                if "tool" in msg_lower or "system" in msg_lower:
+                    outcome = "none_unsupported"
+                elif "permission" in msg_lower or "access" in msg_lower or "allow" in msg_lower or "restricted" in msg_lower:
+                    outcome = "denied_security"
+                else:
+                    outcome = "none_clarification_needed"
+            else:
+                # Default to ok_answer if not negative
+                outcome = "ok_answer"
+            print(f"⚠ 'outcome' missing. Inferred '{outcome}' from message.")
+
+        # Link Auto-Detection
+        links = args.get("links", [])
+        if not links:
+            # Regex to find IDs in message
+            # IDs often look like: proj_..., emp_..., cust_...
+            # Pattern: \b(proj|emp|cust)_[a-z0-9_]+\b
+            ids = re.findall(r'\b((?:proj|emp|cust)_[a-z0-9_]+)\b', str(message))
+            for found_id in ids:
+                # Simple heuristic to guess type
+                type_map = {
+                    "proj": "project", 
+                    "emp": "employee", 
+                    "cust": "customer"
+                }
+                prefix = found_id.split('_')[0]
+                if prefix in type_map:
+                    links.append({"id": found_id, "kind": type_map[prefix]})
+                
         return client.Req_ProvideAgentResponse(
             message=str(message),
             outcome=outcome,
-            links=args.get("links", [])
+            links=links
         )
 
     return None

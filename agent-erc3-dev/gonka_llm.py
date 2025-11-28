@@ -24,7 +24,7 @@ class GonkaChatModel(BaseChatModel):
     gonka_private_key: str = Field(default_factory=lambda: os.getenv("GONKA_PRIVATE_KEY"))
     max_retries_per_node: int = 3
     max_node_switches: int = 5
-    request_timeout: int = 120
+    request_timeout: int = 30
     
     _client: Optional[GonkaOpenAI] = PrivateAttr(default=None)
     _current_node: Optional[str] = PrivateAttr(default=None)

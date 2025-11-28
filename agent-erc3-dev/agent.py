@@ -11,7 +11,7 @@ from gonka_llm import GonkaChatModel
 from prompts import SGR_SYSTEM_PROMPT
 from tools import parse_action, Req_Respond
 from stats import SessionStats, FailureLogger
-from handlers import get_executor, WikiManager
+from handlers import get_executor, WikiManager, SecurityManager
 
 CLI_RED = "\x1B[31m"
 CLI_GREEN = "\x1B[32m"
@@ -78,11 +78,18 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
         # Fallback if not provided (should be provided by main)
         wiki_manager = WikiManager(erc_client)
     
+    security_manager = SecurityManager()
+    
     # Initial Messages
     # We add a hint about available tools and the wiki state
+    
+    # FIX: Use simulated date for the benchmark environment (2025-04-01)
+    # This prevents the agent from using the real system date (e.g. Nov 2025) which causes failures in date-sensitive tasks.
+    current_date = "2025-04-01" 
+    
     messages = [
         SystemMessage(content=SGR_SYSTEM_PROMPT),
-        HumanMessage(content=f"TASK: {task.task_text}\n\nContext: {wiki_manager.get_context_summary()}")
+        HumanMessage(content=f"TASK: {task.task_text}\n\nContext: {wiki_manager.get_context_summary()}\nCurrent Date: {current_date}")
     ]
 
     task_done = False
@@ -183,7 +190,7 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
         stop_execution = False
         
         # Initialize executor with fresh context managers
-        executor = get_executor(erc_client, wiki_manager)
+        executor = get_executor(erc_client, wiki_manager, security_manager)
 
         for idx, action_dict in enumerate(action_queue):
             if stop_execution:
@@ -191,7 +198,15 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
             
             print(f"\n  {CLI_BLUE}▶ Parsing action {idx+1}:{CLI_CLR} {json.dumps(action_dict)}")
             
-            action_model = parse_action(action_dict)
+            # FIX: Pass a DummyContext with the real security_manager to parse_action
+            # This allows parsing logic to inject current_user if needed
+            class DummyContext:
+                def __init__(self, sm):
+                    self.shared = {'security_manager': sm}
+            
+            dummy_ctx = DummyContext(security_manager)
+            action_model = parse_action(action_dict, context=dummy_ctx)
+            
             if not action_model:
                 results.append(f"Action {idx+1}: SKIPPED (invalid format/unknown tool)")
                 continue
@@ -228,4 +243,3 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
              messages.append(HumanMessage(content="[SYSTEM]: No actions executed. Set is_final=true if done, otherwise add actions."))
 
     print(f"\n{CLI_BLUE}═══ Agent finished ═══{CLI_CLR}")
-

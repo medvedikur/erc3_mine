@@ -1,19 +1,40 @@
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from erc3.erc3 import client
 from .base import ToolContext, Middleware
+
+# Try importing sentence_transformers for local embeddings
+try:
+    from sentence_transformers import SentenceTransformer, util
+    import torch
+    HAS_EMBEDDINGS = True
+except ImportError:
+    HAS_EMBEDDINGS = False
+    print("⚠️ sentence-transformers not found. Falling back to keyword search.")
 
 class WikiManager:
     """
     Manages the local cache of the company wiki.
     Syncs with the API when sha1 changes.
-    Implements simple RAG-like search.
+    Implements simple RAG-like search using local embeddings (if available) or keyword overlap.
     """
     def __init__(self, api: Optional[client.Erc3Client] = None):
         self.api = api
         self.current_sha1: str = ""
         self.pages: Dict[str, str] = {} # path -> content
         self.chunks: List[Dict[str, Any]] = [] # list of {content, path, id}
+        self.corpus_embeddings = None
+        
+        self.model = None
+        if HAS_EMBEDDINGS:
+            try:
+                # Use a small, fast model suitable for local inference
+                model_name = 'all-MiniLM-L6-v2'
+                print(f"🧠 Initializing Local Embedding Model ({model_name})...")
+                self.model = SentenceTransformer(model_name)
+            except Exception as e:
+                print(f"⚠️ Failed to load embedding model: {e}")
+                self.model = None
 
     def set_api(self, api: client.Erc3Client):
         self.api = api
@@ -50,7 +71,7 @@ class WikiManager:
                 print(f"⚠️ Wiki Sync Failed: {e}")
 
     def _reindex(self):
-        """Split pages into chunks for search"""
+        """Split pages into chunks for search and compute embeddings"""
         self.chunks = []
         for path, content in self.pages.items():
             # Simple splitting by double newline (paragraphs)
@@ -64,17 +85,56 @@ class WikiManager:
                     "content": clean_p,
                     "path": path,
                     "id": f"{path}#{i}",
-                    "tokens": set(re.findall(r'\w+', clean_p.lower())) # Pre-tokenize for Jaccard/BM25
+                    "tokens": set(re.findall(r'\w+', clean_p.lower())) # Pre-tokenize for Jaccard fallback
                 })
+        
+        # Compute embeddings if model is available
+        if self.model and self.chunks:
+            print(f"🧠 Computing embeddings for {len(self.chunks)} chunks...")
+            texts = [c["content"] for c in self.chunks]
+            try:
+                self.corpus_embeddings = self.model.encode(texts, convert_to_tensor=True, show_progress_bar=True)
+            except Exception as e:
+                print(f"⚠️ Embedding computation failed: {e}")
+                self.corpus_embeddings = None
 
     def search(self, query: str) -> str:
         """
-        Smart keyword search across chunks.
-        Uses token overlap ranking.
+        Smart search across chunks.
+        Uses Semantic Search (Cosine Similarity) if model loaded,
+        otherwise falls back to token overlap.
         """
         if not self.chunks:
             return "Wiki not loaded yet or empty."
 
+        # 1. Try Vector Search
+        if self.model is not None and self.corpus_embeddings is not None:
+            try:
+                query_emb = self.model.encode(query, convert_to_tensor=True)
+                
+                # Semantic Search
+                hits = util.semantic_search(query_emb, self.corpus_embeddings, top_k=5)
+                top_hits = hits[0] # We only have one query
+                
+                output = []
+                for hit in top_hits:
+                    score = hit['score']
+                    idx = hit['corpus_id']
+                    chunk = self.chunks[idx]
+                    
+                    # Truncate content if too long for preview
+                    preview = chunk["content"][:500] + "..." if len(chunk["content"]) > 500 else chunk["content"]
+                    output.append(f"--- Document: {chunk['path']} (Relevance: {score:.4f}) ---\n{preview}\n")
+                
+                if not output:
+                     return f"No semantic matches found for '{query}'."
+
+                return "\n".join(output)
+            
+            except Exception as e:
+                print(f"⚠️ Vector search error: {e}. Falling back to keyword search.")
+
+        # 2. Fallback: Token Overlap
         query_tokens = set(re.findall(r'\w+', query.lower()))
         if not query_tokens:
             return "Empty search query."
@@ -97,7 +157,6 @@ class WikiManager:
 
         output = []
         for score, chunk in top_results:
-            # Truncate content if too long for preview
             preview = chunk["content"][:500] + "..." if len(chunk["content"]) > 500 else chunk["content"]
             output.append(f"--- Document: {chunk['path']} (Relevance: {score}) ---\n{preview}\n")
             
@@ -107,7 +166,8 @@ class WikiManager:
         """Return a summary of available wiki pages for the system prompt"""
         if not self.pages:
             return "Wiki not loaded yet."
-        return "Available Wiki Pages: " + ", ".join(self.pages.keys())
+        mode = "Semantic Search" if (self.model and self.corpus_embeddings is not None) else "Keyword Search"
+        return f"Available Wiki Pages: {', '.join(self.pages.keys())} (Mode: {mode})"
 
 
 class WikiMiddleware(Middleware):
