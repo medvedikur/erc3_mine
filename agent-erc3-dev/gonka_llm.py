@@ -152,11 +152,14 @@ class GonkaChatModel(BaseChatModel):
                     "connecttimeouterror",
                     "remotedisconnected",
                     "transfer agent capacity reached",
-                    "429"
+                    "429",
+                    "signature is too old"
                 ]
                 
                 if any(ce in error_str for ce in critical_errors):
                     print(f"{CLI_YELLOW}⚠ Critical error on node {self._current_node}: {e}{CLI_CLR}")
+                    if "signature is too old" in error_str:
+                        print(f"{CLI_RED}⚠ System time might be out of sync (computer slept?). Check your clock.{CLI_CLR}")
                     raise e  # Re-raise to trigger _switch_node in the outer loop
 
                 last_error = e
