@@ -1,5 +1,6 @@
 from typing import Any, Dict, List, Optional
 import re
+import datetime
 from erc3.erc3 import client
 from pydantic import BaseModel, Field
 
@@ -39,7 +40,45 @@ try:
     print("🔧 Patched Req_UpdateEmployeeInfo to support optional skills/wills.")
 except Exception as e:
     print(f"⚠️ Failed to patch Req_UpdateEmployeeInfo: {e}")
-# -------------------------------------
+
+# --- SAFE MODEL WRAPPERS ---
+class SafeReq_UpdateEmployeeInfo(client.Req_UpdateEmployeeInfo):
+    """
+    Wrapper to ensure we don't send null values for optional fields,
+    which would overwrite existing data with nulls/defaults in the backend.
+    """
+    def model_dump(self, **kwargs):
+        # Always exclude None to prevent overwriting with nulls
+        kwargs['exclude_none'] = True
+        data = super().model_dump(**kwargs)
+        # Also remove empty lists for skills/wills to prevent clearing them
+        if 'skills' in data and data['skills'] == []:
+            del data['skills']
+        if 'wills' in data and data['wills'] == []:
+            del data['wills']
+        return data
+    
+    def dict(self, **kwargs):
+        # Fallback for Pydantic v1 or older usage
+        kwargs['exclude_none'] = True
+        data = super().dict(**kwargs)
+        if 'skills' in data and data['skills'] == []:
+            del data['skills']
+        if 'wills' in data and data['wills'] == []:
+            del data['wills']
+        return data
+
+    def model_dump_json(self, **kwargs):
+        # Ensure JSON serialization also excludes None and empty lists
+        # We can't easily modify the JSON string output of super().model_dump_json
+        # So we dump to dict first, then json.dumps?
+        # Or rely on the fact that dispatch might use model_dump/dict?
+        # If dispatch uses model_dump_json, we are in trouble if we can't hook it.
+        # But we can use our model_dump logic!
+        import json
+        data = self.model_dump(**kwargs)
+        return json.dumps(data)
+# ---------------------------
 
 def _normalize_args(args: dict) -> dict:
     """Normalize argument keys to handle common LLM hallucinations"""
@@ -183,7 +222,7 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
         # Filter out None values
         valid_args = {k: v for k, v in update_args.items() if v is not None}
         
-        return client.Req_UpdateEmployeeInfo(**valid_args)
+        return SafeReq_UpdateEmployeeInfo(**valid_args)
 
     # Wiki
     if tool in ["wikilist", "listwiki"]:
@@ -297,11 +336,22 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
         if not target_emp:
             target_emp = current_user
             
+        # Determine date: Explicit arg > Simulated Date > Real Today
+        date_val = args.get("date")
+        if not date_val:
+            if context and hasattr(context, 'shared'):
+                sm = context.shared.get('security_manager')
+                if sm and hasattr(sm, 'today') and sm.today:
+                    date_val = sm.today
+        
+        if not date_val:
+            date_val = datetime.date.today().isoformat()
+            
         return client.Req_LogTimeEntry(
             employee=target_emp,
             project=args.get("project") or args.get("project_id"),
             customer=args.get("customer"),
-            date=args.get("date"),
+            date=date_val,
             hours=float(args.get("hours", 0)),
             work_category=args.get("work_category", "dev"),
             notes=args.get("notes", ""),

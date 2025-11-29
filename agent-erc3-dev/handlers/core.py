@@ -59,13 +59,16 @@ class DefaultActionHandler:
                 except ApiException as e:
                     # Check for page limit exceeded error
                     # Example error: "page limit exceeded: 10 > -1" or similar
-                    error_str = str(e)
+                    error_str = str(e).lower()
                     if "page limit exceeded" in error_str and has_limit:
                         print(f"  {CLI_YELLOW}⚠ Page limit exceeded. Retrying with limit=1.{CLI_CLR}")
                         # Mutate the model to set limit to 1 (safe fallback)
                         ctx.model.limit = 1
                         result = ctx.api.dispatch(ctx.model)
                     else:
+                        # Debug: Print error if it looks like a limit error but didn't match
+                        if "limit" in error_str:
+                             print(f"  {CLI_YELLOW}⚠ Potential limit error not caught: {error_str}{CLI_CLR}")
                         raise e
 
             except Exception as e:

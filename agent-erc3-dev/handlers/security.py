@@ -9,6 +9,7 @@ class SecurityManager:
     def __init__(self):
         self.is_public = False
         self.current_user = None
+        self.today = None
 
     def update_identity(self, who_am_i_resp: client.Resp_WhoAmI):
         """Update identity state from API response"""
@@ -39,7 +40,11 @@ class SecurityManager:
         else:
             self.current_user = None
             
-        print(f"🔒 Security State Updated: Public={self.is_public}, User={self.current_user}")
+        # Capture simulated date
+        if hasattr(who_am_i_resp, 'today') and who_am_i_resp.today:
+            self.today = who_am_i_resp.today
+            
+        print(f"🔒 Security State Updated: Public={self.is_public}, User={self.current_user}, Date={self.today}")
 
     def redact_result(self, result: Any) -> Any:
         """

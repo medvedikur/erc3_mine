@@ -23,12 +23,15 @@ class GonkaChatModel(BaseChatModel):
     model_name: str = Field(alias="model")
     gonka_private_key: str = Field(default_factory=lambda: os.getenv("GONKA_PRIVATE_KEY"))
     max_retries_per_node: int = 3
-    max_node_switches: int = 5
+    max_node_switches: int = 10
     request_timeout: int = 10
     
     _client: Optional[GonkaOpenAI] = PrivateAttr(default=None)
     _current_node: Optional[str] = PrivateAttr(default=None)
     _tried_nodes: set = PrivateAttr(default_factory=set)
+    
+    # Class-level cache for persistence across instances
+    _last_successful_node: Optional[str] = None
 
     def _generate(
         self,
