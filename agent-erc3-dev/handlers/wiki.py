@@ -57,10 +57,31 @@ class WikiManager:
                 
                 # 2. Load all pages
                 self.pages = {}
+                import os
+                # Ensure dump directory exists relative to CWD
+                dump_dir = "wiki_dump"
+                if not os.path.exists(dump_dir):
+                    # Try creating it, fallback to just "wiki_dump" if running from subdir
+                    try:
+                        os.makedirs(dump_dir, exist_ok=True)
+                    except OSError:
+                        dump_dir = "wiki_dump"
+                        os.makedirs(dump_dir, exist_ok=True)
+                
                 for path in list_resp.paths:
                     print(f"   Downloading {path}...")
                     load_resp = self.api.load_wiki(path)
                     self.pages[path] = load_resp.content
+                    
+                    # DEBUG: Dump raw content to file
+                    try:
+                        safe_name = path.replace("/", "_").replace("\\", "_")
+                        if not safe_name.endswith(".md"): safe_name += ".md"
+                        with open(f"{dump_dir}/{safe_name}", "w", encoding="utf-8") as f:
+                            f.write(f"--- PATH: {path} ---\n\n")
+                            f.write(load_resp.content)
+                    except Exception as e:
+                        print(f"⚠️ Failed to dump wiki page {path}: {e}")
                 
                 # 3. Index/Chunk pages
                 self._reindex()

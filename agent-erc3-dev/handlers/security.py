@@ -93,6 +93,8 @@ class SecurityMiddleware(Middleware):
 
         # 1. Project Modifications (Status/Team) require Lead/Owner role
         if isinstance(ctx.model, (client.Req_UpdateProjectStatus, client.Req_UpdateProjectTeam)):
+            # Special case: If status is 'archived', allow any team member? NO.
+            # Only Leads can archive.
             self._enforce_project_ownership(ctx, ctx.model.id, current_user)
 
     def _enforce_project_ownership(self, ctx: ToolContext, project_id: str, user_id: str):
@@ -104,21 +106,33 @@ class SecurityMiddleware(Middleware):
             except TypeError:
                 project = ctx.api.get_project(project_id=project_id)
             
-            # Normalize lead/owner fields (handle string or object)
-            lead = getattr(project, 'lead', None)
-            owner = getattr(project, 'owner', None)
-            
-            if hasattr(lead, 'id'): lead = lead.id
-            if hasattr(owner, 'id'): owner = owner.id
-            
+            # Unpack Resp_GetProject wrapper if needed (it contains 'project' field)
+            if hasattr(project, 'project') and project.project:
+                project = project.project
+
             # Check authorization
             is_authorized = False
-            if lead and lead == user_id: is_authorized = True
-            if owner and owner == user_id: is_authorized = True
+            
+            # Check team list for Lead role
+            if project.team:
+                for member in project.team:
+                    # member is a Workload object
+                    # We need to check if member.employee == user_id AND member.role == "Lead"
+                    if member.employee == user_id and member.role == "Lead":
+                        is_authorized = True
+                        break
             
             if not is_authorized:
+                # CRITICAL: Always block unauthorized actions, even if the state is already set.
+                # The agent might try to be "smart" and skip the action, but we need to ensure
+                # the security check fails explicitly if they try.
+                # Wait, if the middleware blocks execution, the agent receives "FAILED".
+                # But if the agent *doesn't* call the tool, the middleware doesn't run.
+                # The problem is the agent decides NOT to call the tool because "it's already done".
+                # So we can't fix that here. The middleware only runs if the tool is called.
+                
                 ctx.stop_execution = True
-                msg = f"Security Violation: User '{user_id}' is not the Lead/Owner of project '{project_id}' (Lead: {lead}). Action denied."
+                msg = f"Security Violation: User '{user_id}' is not a Lead of project '{project_id}'. Action denied."
                 print(f"🛑 {msg}")
                 ctx.results.append(f"Action ({ctx.model.__class__.__name__}): FAILED\nError: {msg}")
                 

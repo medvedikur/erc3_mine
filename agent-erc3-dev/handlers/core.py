@@ -44,7 +44,30 @@ class DefaultActionHandler:
 
             # Default API execution
             try:
-                result = ctx.api.dispatch(ctx.model)
+                # SPECIAL HANDLING: Catch page limit errors and retry with a smaller limit
+                # The API seems to throw "page limit exceeded: X > Y" errors.
+                # We can try to parse this error and retry automatically if possible,
+                # OR we can just catch the specific error string and patch it.
+                # But since we are inside handle() and not parse_action(), we can't easily change the request model limit 
+                # without mutating it.
+                
+                # Check if the request has a limit field
+                has_limit = hasattr(ctx.model, 'limit')
+                
+                try:
+                   result = ctx.api.dispatch(ctx.model)
+                except ApiException as e:
+                    # Check for page limit exceeded error
+                    # Example error: "page limit exceeded: 10 > -1" or similar
+                    error_str = str(e)
+                    if "page limit exceeded" in error_str and has_limit:
+                        print(f"  {CLI_YELLOW}⚠ Page limit exceeded. Retrying with limit=1.{CLI_CLR}")
+                        # Mutate the model to set limit to 1 (safe fallback)
+                        ctx.model.limit = 1
+                        result = ctx.api.dispatch(ctx.model)
+                    else:
+                        raise e
+
             except Exception as e:
                 error_str = str(e)
                 # Check for "Input should be a valid list" error (Server returning null)
@@ -63,7 +86,14 @@ class DefaultActionHandler:
                     elif "Resp_SearchEmployees" in error_str:
                         result = Resp_SearchEmployees(employees=[])
                     elif "Resp_SearchTimeEntries" in error_str:
-                        result = Resp_SearchTimeEntries(time_entries=[])
+                        # Patch with required aggregate fields
+                        result = Resp_SearchTimeEntries(
+                            time_entries=[], 
+                            entries=[], # Alias check
+                            total_hours=0.0, 
+                            total_billable=0.0, 
+                            total_non_billable=0.0
+                        )
                     elif "Resp_CustomerSearchResults" in error_str:
                         result = Resp_CustomerSearchResults(customers=[])
                     else:

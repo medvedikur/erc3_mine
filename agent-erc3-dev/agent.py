@@ -83,13 +83,12 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
     # Initial Messages
     # We add a hint about available tools and the wiki state
     
-    # FIX: Use simulated date for the benchmark environment (2025-04-01)
-    # This prevents the agent from using the real system date (e.g. Nov 2025) which causes failures in date-sensitive tasks.
-    current_date = "2025-04-01" 
+    # We don't provide a simulated date initially, forcing the agent to check via who_am_i
+    # This prevents the agent from hallucinating or using a stale date from a previous run
     
     messages = [
         SystemMessage(content=SGR_SYSTEM_PROMPT),
-        HumanMessage(content=f"TASK: {task.task_text}\n\nContext: {wiki_manager.get_context_summary()}\nCurrent Date: {current_date}")
+        HumanMessage(content=f"TASK: {task.task_text}\n\nContext: {wiki_manager.get_context_summary()}")
     ]
 
     task_done = False
