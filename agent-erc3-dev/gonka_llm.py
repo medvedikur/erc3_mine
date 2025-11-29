@@ -24,7 +24,7 @@ class GonkaChatModel(BaseChatModel):
     gonka_private_key: str = Field(default_factory=lambda: os.getenv("GONKA_PRIVATE_KEY"))
     max_retries_per_node: int = 3
     max_node_switches: int = 10
-    request_timeout: int = 10
+    request_timeout: int = 30
     
     _client: Optional[GonkaOpenAI] = PrivateAttr(default=None)
     _current_node: Optional[str] = PrivateAttr(default=None)
@@ -32,6 +32,21 @@ class GonkaChatModel(BaseChatModel):
     
     # Class-level cache for persistence across instances
     _last_successful_node: Optional[str] = None
+
+    def _extract_hint_url(self, error_msg: str) -> Optional[str]:
+        """Extract URL from 'Try another TA from <url>' error message"""
+        if "Try another TA from" in error_msg:
+            try:
+                import re
+                # Extract http://.../participants
+                match = re.search(r'(http://[^\s]+/participants)', error_msg)
+                if match:
+                    # We need the base URL, so strip the path
+                    full_url = match.group(1)
+                    return full_url.split("/v1/")[0]
+            except Exception:
+                pass
+        return None
 
     def _generate(
         self,
@@ -53,6 +68,10 @@ class GonkaChatModel(BaseChatModel):
             try:
                 response = self._call_with_retry(openai_messages, stop, **kwargs)
                 
+                # Update last successful node
+                if self._current_node:
+                    GonkaChatModel._last_successful_node = self._current_node
+
                 # Extract content and usage
                 message_content = response.choices[0].message.content
                 usage = getattr(response, "usage", None)
@@ -96,9 +115,16 @@ class GonkaChatModel(BaseChatModel):
                 )
 
             except Exception as e:
+                error_str = str(e)
                 print(f"{CLI_YELLOW}⚠ Node {self._current_node} failed: {e}{CLI_CLR}")
+                
+                # Check for hint in 429 errors
+                hint_node = self._extract_hint_url(error_str)
+                if hint_node:
+                    print(f"{CLI_CYAN}💡 Found hint node in error: {hint_node}{CLI_CLR}")
+                
                 # Switch node
-                if not self._switch_node():
+                if not self._switch_node(hint_node=hint_node):
                     raise e
         
         raise Exception("All Gonka nodes failed.")
@@ -124,11 +150,13 @@ class GonkaChatModel(BaseChatModel):
                     "remote end closed", 
                     "connection refused", 
                     "connecttimeouterror",
-                    "remotedisconnected"
+                    "remotedisconnected",
+                    "transfer agent capacity reached",
+                    "429"
                 ]
                 
                 if any(ce in error_str for ce in critical_errors):
-                    print(f"{CLI_YELLOW}⚠ Critical network error on node {self._current_node}: {e}{CLI_CLR}")
+                    print(f"{CLI_YELLOW}⚠ Critical error on node {self._current_node}: {e}{CLI_CLR}")
                     raise e  # Re-raise to trigger _switch_node in the outer loop
 
                 last_error = e
@@ -146,9 +174,24 @@ class GonkaChatModel(BaseChatModel):
             self._current_node = fixed_node
             return
 
+        # Try last successful node first if available
+        if GonkaChatModel._last_successful_node:
+            node = GonkaChatModel._last_successful_node
+            try:
+                print(f"{CLI_CYAN}🔗 Reusing last successful node: {node}{CLI_CLR}")
+                self._client = GonkaOpenAI(gonka_private_key=self.gonka_private_key, source_url=node)
+                self._current_node = node
+                self._tried_nodes.add(node)
+                return
+            except Exception as e:
+                print(f"{CLI_YELLOW}⚠ Last successful node {node} failed: {e}{CLI_CLR}")
+                # Continue to standard discovery
+
         # Try to find a working node
         nodes = get_available_nodes()
         for node in nodes[:3]:
+            if node in self._tried_nodes:
+                continue
             try:
                 print(f"{CLI_YELLOW}🔗 Connecting to: {node}{CLI_CLR}")
                 self._client = GonkaOpenAI(gonka_private_key=self.gonka_private_key, source_url=node)
@@ -164,8 +207,29 @@ class GonkaChatModel(BaseChatModel):
         self._current_node = fallback
         self._tried_nodes.add(fallback)
 
-    def _switch_node(self) -> bool:
+    def _switch_node(self, hint_node: str = None) -> bool:
         """Switch to a new node. Returns True if successful."""
+        
+        # If we have a hint, try fetching fresh nodes from it first
+        if hint_node:
+            print(f"{CLI_CYAN}🔄 Fetching fresh nodes from hint: {hint_node}{CLI_CLR}")
+            from utils import fetch_active_nodes
+            fresh_nodes = fetch_active_nodes(source_node=hint_node)
+            # We don't update all available nodes globally here (unless we change utils), 
+            # but we can prioritize these fresh nodes
+            if fresh_nodes:
+                # Try one of the fresh nodes
+                for node in fresh_nodes:
+                    if node not in self._tried_nodes:
+                        print(f"{CLI_CYAN}🔄 Switching to fresh node from hint: {node}{CLI_CLR}")
+                        try:
+                            self._client = GonkaOpenAI(gonka_private_key=self.gonka_private_key, source_url=node)
+                            self._current_node = node
+                            self._tried_nodes.add(node)
+                            return True
+                        except Exception:
+                            continue
+
         available_nodes = get_available_nodes()
         new_node = None
         

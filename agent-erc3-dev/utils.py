@@ -6,11 +6,12 @@ from typing import List
 GENESIS_NODES = [
     "http://node1.gonka.ai:8000",
     "http://node2.gonka.ai:8000", 
-    "http://node3.gonka.ai:8000",
+    #"http://node3.gonka.ai:8000",
     "http://185.216.21.98:8000",
     "http://47.236.26.199:8000",
-    "http://47.236.19.22:18000",
+    #"http://47.236.19.22:18000",
     "http://gonka.spv.re:8000",
+    "http://85.234.91.172:8000",
 ]
 
 CLI_RED = "\x1B[31m"
@@ -22,22 +23,37 @@ CLI_CLR = "\x1B[0m"
 
 def fetch_active_nodes(source_node: str = None) -> List[str]:
     """Fetch list of active participant nodes from current epoch"""
-    if source_node is None:
-        source_node = random.choice(GENESIS_NODES)
-    
-    try:
-        response = requests.get(
-            f"{source_node}/v1/epochs/current/participants",
-            timeout=10
-        )
-        if response.status_code == 200:
-            data = response.json()
-            participants = data.get("participants", [])
-            nodes = [p.get("inference_url") for p in participants if p.get("inference_url")]
-            if nodes:
-                return nodes
-    except Exception as e:
-        print(f"{CLI_YELLOW}⚠ Could not fetch participants from {source_node}: {e}{CLI_CLR}")
+    # If source_node provided, try only that. Otherwise try random genesis nodes.
+    sources = [source_node] if source_node else list(GENESIS_NODES)
+    if not source_node:
+        random.shuffle(sources)
+        # Limit to checking 3 random genesis nodes to avoid long delays if all are down
+        sources = sources[:3]
+
+    for source in sources:
+        if not source:
+            continue
+            
+        try:
+            # Handle full URL in source_node (e.g. from error message) or just base URL
+            url = source if source.endswith("/participants") else f"{source}/v1/epochs/current/participants"
+            
+            response = requests.get(
+                url,
+                timeout=5
+            )
+            if response.status_code == 200:
+                data = response.json()
+                participants = data.get("participants", [])
+                nodes = [p.get("inference_url") for p in participants if p.get("inference_url")]
+                if nodes:
+                    if not source_node:
+                         print(f"{CLI_CYAN}✓ Fetched {len(nodes)} active nodes from {source}{CLI_CLR}")
+                    return nodes
+        except Exception as e:
+            if source_node: # Only print error if we were targeting a specific node
+                print(f"{CLI_YELLOW}⚠ Could not fetch participants from {source}: {e}{CLI_CLR}")
+            continue
     
     return []
 
