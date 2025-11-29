@@ -14,8 +14,8 @@ class SecurityManager:
         """Update identity state from API response"""
         self.is_public = getattr(who_am_i_resp, 'is_public', False)
         # Handle different possible attribute names for user_id based on API version
-        # Try: user_id, id, employee_id, username, employee
-        candidates = ['user_id', 'id', 'employee_id', 'username']
+        # Try: user_id, id, employee_id, username, employee, current_user
+        candidates = ['user_id', 'id', 'employee_id', 'username', 'current_user']
         
         user_id = None
         for attr in candidates:
@@ -29,9 +29,9 @@ class SecurityManager:
             user_obj = getattr(who_am_i_resp, 'user', None)
             if user_obj:
                 if isinstance(user_obj, dict):
-                    user_id = user_obj.get('id') or user_obj.get('user_id')
+                    user_id = user_obj.get('id') or user_obj.get('user_id') or user_obj.get('employee_id') or user_obj.get('username')
                 else:
-                    user_id = getattr(user_obj, 'id', getattr(user_obj, 'user_id', None))
+                    user_id = getattr(user_obj, 'id', getattr(user_obj, 'user_id', getattr(user_obj, 'employee_id', getattr(user_obj, 'username', None))))
 
         # IMPORTANT: Ensure user_id is a string if it exists
         if user_id:
@@ -98,7 +98,11 @@ class SecurityMiddleware(Middleware):
     def _enforce_project_ownership(self, ctx: ToolContext, project_id: str, user_id: str):
         try:
             # Bypass middleware chain to fetch project details directly from API
-            project = ctx.api.get_project(id=project_id)
+            # Try positional arg first, then project_id kwarg
+            try:
+                project = ctx.api.get_project(project_id)
+            except TypeError:
+                project = ctx.api.get_project(project_id=project_id)
             
             # Normalize lead/owner fields (handle string or object)
             lead = getattr(project, 'lead', None)

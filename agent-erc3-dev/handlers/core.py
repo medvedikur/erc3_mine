@@ -15,9 +15,15 @@ class DefaultActionHandler:
         action_name = ctx.model.__class__.__name__
         print(f"  {CLI_BLUE}▶ Executing:{CLI_CLR} {action_name}")
         
-        # Mask potentially large fields in logs if needed, for now just dump
-        # print(f"     {ctx.model.model_dump_json()}")
-        
+        # Link Auto-Detection for Respond Action
+        if isinstance(ctx.model, client.Req_ProvideAgentResponse) and not ctx.model.links:
+            # If no links provided, try to find relevant entities from context history
+            # This is a fallback if regex in tools.py missed them or they weren't in the text
+            # We can scan the previous results in ctx (though ctx is fresh per action)
+            # OR we can scan the shared context if we stored history there.
+            # Currently we don't store full history in shared.
+            pass
+
         try:
             # SPECIAL HANDLING: Wiki Search (Local vs Remote)
             if isinstance(ctx.model, client.Req_SearchWiki):

@@ -99,7 +99,7 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
         kwargs["offset"] = int(args.get("offset", 0))
         kwargs["limit"] = int(args.get("limit", 5))
         return client.Req_SearchEmployees(
-            query=args.get("query") or args.get("name"), # Handle 'name' alias
+            query=args.get("query") or args.get("name") or args.get("query_regex"), # Handle 'name' and 'query_regex' alias
             location=args.get("location"),
             department=args.get("department"),
             manager=args.get("manager"),
@@ -187,7 +187,7 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
         kwargs["offset"] = int(args.get("offset", 0))
         kwargs["limit"] = int(args.get("limit", 5))
         return client.Req_SearchCustomers(
-            query=args.get("query"),
+            query=args.get("query") or args.get("query_regex"),
             deal_phase=args.get("deal_phase"),
             locations=args.get("locations"),
             account_managers=args.get("account_managers"),
@@ -223,7 +223,7 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
         kwargs["limit"] = int(args.get("limit", 5))
 
         search_args = {
-            "query": args.get("query"),
+            "query": args.get("query") or args.get("query_regex"),
             "customer_id": args.get("customer_id"),
             "status": status,
             # Default include_archived to True to find all projects by default
