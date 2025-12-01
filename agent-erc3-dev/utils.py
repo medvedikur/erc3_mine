@@ -40,7 +40,7 @@ def fetch_active_nodes(source_node: str = None) -> List[str]:
             
             response = requests.get(
                 url,
-                timeout=5
+                timeout=10
             )
             if response.status_code == 200:
                 data = response.json()

@@ -51,21 +51,21 @@ class SafeReq_UpdateEmployeeInfo(client.Req_UpdateEmployeeInfo):
         # Always exclude None to prevent overwriting with nulls
         kwargs['exclude_none'] = True
         data = super().model_dump(**kwargs)
-        # Also remove empty lists for skills/wills to prevent clearing them
-        if 'skills' in data and data['skills'] == []:
-            del data['skills']
-        if 'wills' in data and data['wills'] == []:
-            del data['wills']
+        # Also remove empty lists for skills/wills/notes to prevent clearing them/triggering events
+        keys_to_remove = ['skills', 'wills', 'notes', 'location', 'department']
+        for k in keys_to_remove:
+            if k in data and (data[k] == [] or data[k] == "" or data[k] is None):
+                del data[k]
         return data
     
     def dict(self, **kwargs):
         # Fallback for Pydantic v1 or older usage
         kwargs['exclude_none'] = True
         data = super().dict(**kwargs)
-        if 'skills' in data and data['skills'] == []:
-            del data['skills']
-        if 'wills' in data and data['wills'] == []:
-            del data['wills']
+        keys_to_remove = ['skills', 'wills', 'notes', 'location', 'department']
+        for k in keys_to_remove:
+            if k in data and (data[k] == [] or data[k] == "" or data[k] is None):
+                del data[k]
         return data
 
     def model_dump_json(self, **kwargs):
@@ -301,10 +301,23 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
         kwargs["offset"] = int(args.get("offset", 0))
         kwargs["limit"] = int(args.get("limit", 5))
 
+        # Handle team filter (member parameter)
+        # API expects ProjectTeamFilter with employee_id, role, min_time_slice
+        team_filter = None
+        member_id = args.get("member") or args.get("team_member") or args.get("employee_id")
+        if member_id:
+            from erc3.erc3 import dtos
+            team_filter = dtos.ProjectTeamFilter(
+                employee_id=member_id,
+                role=args.get("role"),  # Optional: filter by role (Lead, Engineer, etc.)
+                min_time_slice=float(args.get("min_time_slice", 0.0))
+            )
+
         search_args = {
             "query": args.get("query") or args.get("query_regex"),
             "customer_id": args.get("customer_id"),
             "status": status,
+            "team": team_filter,
             # Default include_archived to True to find all projects by default
             "include_archived": bool(args.get("include_archived", True)),
             **kwargs
