@@ -430,15 +430,12 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
 
         # Link Auto-Detection
         links = args.get("links", [])
-        if not links:
-            # ONLY auto-detect links if outcome is ok_answer
-            # For denied_security, we specifically DON'T want to leak IDs if the user isn't allowed to see them.
-            if outcome == "ok_answer":
-                # 1. Add Current User (Requester) explicitly
-                if current_user:
-                    links.append({"id": current_user, "kind": "employee"})
-
-                # 2. Regex to find IDs in message
+        
+        # For ok_answer outcomes, we need to ensure links are properly populated
+        if outcome == "ok_answer":
+            # Step 1: If agent didn't provide any links, auto-detect from message text
+            if not links:
+                # Regex to find IDs in message
                 # IDs often look like: proj_..., emp_..., cust_...
                 # Pattern: \b(proj|emp|cust)_[a-z0-9_]+\b
                 ids = re.findall(r'\b((?:proj|emp|cust)_[a-z0-9_]+)\b', str(message))
@@ -464,6 +461,17 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
                     if pu.startswith('emp_'):
                          real_id = pu[4:]
                          links.append({"id": real_id, "kind": "employee"})
+            
+            # Step 2: ALWAYS add current user to links (they are the actor who performed the action)
+            # This is needed even if the agent already provided some links (e.g., for time logging,
+            # the agent might include the target employee but forget the person who logged the time)
+            if current_user:
+                current_user_in_links = any(
+                    link.get("id") == current_user and link.get("kind") == "employee"
+                    for link in links
+                )
+                if not current_user_in_links:
+                    links.append({"id": current_user, "kind": "employee"})
                 
         return client.Req_ProvideAgentResponse(
             message=str(message),

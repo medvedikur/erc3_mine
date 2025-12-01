@@ -20,7 +20,12 @@ This solution reimplements the SGR (Schema-Guided Reasoning) agent using **LangC
 The agent operates in a dynamic environment where company policies (`rulebook.md`) and data change.
 - **Auto-Sync**: Middleware intercepts API responses containing `wiki_sha1` (e.g., from `/whoami`). If the hash differs from the local cache, it triggers an immediate re-fetch of all wiki pages.
 - **Smart Indexing**: Pages are locally chunked and indexed. We use `sentence-transformers` (specifically `all-MiniLM-L6-v2`) to generate vector embeddings for all chunks locally, ensuring high-quality semantic understanding without external API costs.
-- **Hybrid Search**: `wiki_search` executes a **Semantic Search** (Cosine Similarity) against the cached vectors. If the embedding model is not available, it gracefully degrades to token overlap ranking. This approach keeps inference **free** and **fast**.
+- **Hybrid Search**: `wiki_search` executes a **multi-stream search** that combines:
+    1. **Regex Stream**: Pattern matching for structured queries (e.g. `"salary|privacy|expense"`)
+    2. **Semantic Stream**: Vector similarity (Cosine) against cached embeddings with cleaned query
+    3. **Keyword Stream**: Token overlap fallback for broad matching
+  
+  Results from all streams are merged, deduplicated by chunk ID, and ranked by combined score. This approach handles both precise regex patterns from the LLM and natural language queries effectively.
 - **Context Injection**: The system prompt is dynamically updated with a summary of available wiki pages.
 
 ### 2. Robust Tool Dispatch & Validation (Anti-Fragility)
@@ -66,6 +71,17 @@ Instead of re-fetching wiki content or searching via the API repeatedly, the age
 
 ### 4. Robust Error Handling
 The agent is designed to be crash-resistant. It catches API validation errors (like the server returning `null` for a list) and patches them on the fly, allowing the conversation to continue instead of aborting the task.
+
+### 5. True Hybrid Search (Regex + Semantic + Keyword)
+The original implementation had a mismatch: LLM was trained to use `query_regex` syntax (e.g. `"project.*notable|award"`), but the search function passed this directly to the embedding model, which doesn't understand regex operators. 
+
+The new hybrid search:
+- **Detects regex syntax** in the query and performs actual pattern matching
+- **Cleans the query** (removes regex operators) before semantic encoding
+- **Runs all three streams in parallel** and merges results with deduplication
+- **Scores results** by source priority: regex matches (0.95), semantic (0.25-1.0), keyword (0.0-0.6)
+
+This ensures that queries like `"salary|privacy"` correctly match documents containing either word, while also leveraging semantic understanding for natural language queries.
 
 ## Developer Guide
 

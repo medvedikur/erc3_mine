@@ -189,7 +189,7 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
         stop_execution = False
         
         # Initialize executor with fresh context managers
-        executor = get_executor(erc_client, wiki_manager, security_manager)
+        executor = get_executor(erc_client, wiki_manager, security_manager, task=task)
 
         for idx, action_dict in enumerate(action_queue):
             if stop_execution:

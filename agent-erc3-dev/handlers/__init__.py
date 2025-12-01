@@ -3,7 +3,7 @@ from .wiki import WikiManager, WikiMiddleware
 from .security import SecurityManager, SecurityMiddleware
 from .safety import ProjectMembershipMiddleware
 
-def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManager):
+def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManager, task=None):
     middleware = [
         WikiMiddleware(wiki_manager),
         ProjectMembershipMiddleware()
@@ -13,5 +13,6 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         
     return ActionExecutor(
         api=api,
-        middleware=middleware
+        middleware=middleware,
+        task=task
     )

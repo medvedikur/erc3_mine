@@ -1,4 +1,5 @@
-from typing import List, Any, Dict, Tuple
+import re
+from typing import List, Any, Dict, Tuple, Optional, Iterable
 from erc3 import ApiException
 from erc3.erc3 import client, dtos
 from .base import ToolContext, Middleware, ActionHandler
@@ -46,24 +47,37 @@ class DefaultActionHandler:
             # Ensure empty lists for skills/wills/notes/location/department are removed before dispatch
             # to prevent accidental wiping or event triggering.
             if isinstance(ctx.model, client.Req_UpdateEmployeeInfo):
-                # Convert to dict, clean it, and re-instantiate or patch the object if possible.
-                # Or better: If the library dispatch uses model_dump_json, we can just trust our SafeReq wrapper?
-                # If the SafeReq wrapper isn't working (maybe library uses .dict()), we intercept here.
-                # But we can't easily modify the internal state of the pydantic model to remove fields effectively 
-                # if they are set to default values.
-                # However, if we are using the generated client, `ctx.api.dispatch` takes the model.
-                # Let's try to force specific fields to None if they are empty lists/strings.
-                
-                # Aggressive cleaning
-                for field in ['skills', 'wills']:
-                    val = getattr(ctx.model, field, None)
-                    if val == []:
+                task_text = getattr(ctx.shared.get("task"), "task_text", "") or ""
+                intent_lower = task_text.lower()
+                salary_only = ("salary" in intent_lower or "compensation" in intent_lower) and (
+                    "raise" in intent_lower or "increase" in intent_lower
+                ) and all(keyword not in intent_lower for keyword in ["skill", "note", "location", "department"])
+
+                bonus_policy = self._lookup_bonus_policy(ctx, task_text)
+                if bonus_policy:
+                    current_salary = self._fetch_employee_salary(ctx, ctx.model.employee)
+                    if current_salary is not None:
+                        target_salary = self._apply_bonus_policy(current_salary, bonus_policy)
+                        if target_salary is not None:
+                            if ctx.model.salary is None or abs(ctx.model.salary - target_salary) > 0.01:
+                                ctx.model.salary = target_salary
+                                ctx.results.append(bonus_policy["message"])
+
+                if salary_only:
+                    # For salary-only updates, explicitly null out ALL other fields to prevent
+                    # accidental updates that trigger unwanted events (notes, skills, location, etc.)
+                    # We modify in place rather than recreating to preserve the SafeReq wrapper's behavior
+                    current_user = ctx.shared.get('security_manager').current_user if ctx.shared.get('security_manager') else None
+                    if not getattr(ctx.model, "changed_by", None):
+                        ctx.model.changed_by = current_user
+                    # Explicitly clear all non-salary fields
+                    for field in ['skills', 'wills', 'notes', 'location', 'department']:
                         setattr(ctx.model, field, None)
-                
-                for field in ['notes', 'location', 'department']:
-                    val = getattr(ctx.model, field, None)
-                    if val == "":
-                        setattr(ctx.model, field, None)
+                else:
+                    for field in ['skills', 'wills', 'notes', 'location', 'department']:
+                        val = getattr(ctx.model, field, None)
+                        if val in ([], "", None):
+                            setattr(ctx.model, field, None)
 
             # Default API execution
             try:
@@ -207,6 +221,7 @@ class DefaultActionHandler:
                 print(f"     {result_json[:500]}...")
             
             ctx.results.append(f"Action ({action_name}): SUCCESS\nResult: {result_json}")
+            self._maybe_hint_archived_logging(ctx, ctx.model, result)
 
             # Inject automatic disambiguation hints for project searches
             if isinstance(ctx.model, client.Req_SearchProjects):
@@ -279,6 +294,43 @@ class DefaultActionHandler:
                 "where you are Lead/account manager instead of asking for clarification."
             )
 
+        ctx.results.append(hint)
+
+    def _maybe_hint_archived_logging(self, ctx: ToolContext, request_model: Any, response: Any) -> None:
+        task = ctx.shared.get("task")
+        task_text = getattr(task, "task_text", "") if task else ""
+        instructions = task_text.lower()
+        # Check for time-related keywords: "log" AND ("time" OR "hour")
+        # This catches both "log time" and "log 3 hours" phrasings
+        if "log" not in instructions:
+            return
+        if "time" not in instructions and "hour" not in instructions:
+            return
+
+        projects: List[Any] = []
+        if isinstance(request_model, client.Req_SearchProjects):
+            projects = getattr(response, "projects", None) or []
+        elif isinstance(request_model, client.Req_GetProject):
+            project = getattr(response, "project", None)
+            if project:
+                projects = [project]
+        else:
+            return
+
+        archived = [
+            p for p in projects
+            if getattr(p, "status", "").lower() == "archived"
+        ]
+
+        if not archived:
+            return
+
+        project_labels = ", ".join(self._format_project_label(p) for p in archived)
+        hint = (
+            f"AUTO-HINT: {project_labels} is archived, yet your instructions explicitly ask to log time. "
+            "Use `/time/log` with the provided project ID to backfill the requested hours — archival usually "
+            "means delivery wrapped up, not that historical time entries are disallowed."
+        )
         ctx.results.append(hint)
 
     def _build_unique_overlap_hint(self, project: Any, project_id: str, current_user: str, target_employee: str) -> str:
@@ -369,16 +421,117 @@ class DefaultActionHandler:
         self._project_detail_cache[project_id] = project
         return project
 
+    def _fetch_employee_salary(self, ctx: ToolContext, employee_id: Optional[str]) -> Optional[float]:
+        if not employee_id:
+            return None
+        try:
+            resp = ctx.api.get_employee(employee_id)
+            employee = getattr(resp, "employee", None)
+            if employee and hasattr(employee, "salary"):
+                return float(employee.salary)
+        except Exception as e:
+            print(f"  {CLI_YELLOW}⚠️ Salary helper failed to fetch current salary for {employee_id}: {e}{CLI_CLR}")
+        return None
+
+    def _lookup_bonus_policy(self, ctx: ToolContext, instructions: str) -> Optional[Dict[str, Any]]:
+        text = (instructions or "").lower()
+        keywords = ["ny bonus", "new year bonus", "holiday bonus", "eoy bonus", "bonus tradition"]
+        mentions_bonus = any(k in text for k in keywords)
+
+        wiki_manager = ctx.shared.get('wiki_manager')
+        if mentions_bonus and wiki_manager and wiki_manager.pages:
+            search_terms = ["bonus", "NY bonus", "New Year bonus", "EoY bonus"]
+            snippets = self._search_wiki_for_bonus(wiki_manager, search_terms)
+            parsed = self._parse_bonus_snippet_list(snippets)
+            if parsed:
+                return parsed
+
+        value = self._parse_bonus_from_instructions(text)
+        if value:
+            return {
+                "type": value["type"],
+                "amount": value["amount"],
+                "message": f"AUTO-HINT: Interpreting '+{value['raw']}' from instructions as {value['type']} bonus."
+            }
+        return None
+
+    def _parse_bonus_from_instructions(self, text: str) -> Optional[Dict[str, Any]]:
+        if not text:
+            return None
+        percentage = re.search(r"\+\s*(\d+)\s*%", text)
+        if percentage:
+            return {"type": "percent", "amount": float(percentage.group(1)), "raw": percentage.group(1) + "%"}
+        flat = re.search(r"\+\s*\$?(\d+)(?!\s*%)", text)
+        if flat:
+            return {"type": "flat", "amount": float(flat.group(1)), "raw": flat.group(1)}
+        return None
+
+    def _search_wiki_for_bonus(self, wiki_manager: Any, terms: Iterable[str]) -> List[str]:
+        snippets = []
+        for term in terms:
+            try:
+                response = wiki_manager.search(term, top_k=3)
+                snippets.append(response)
+            except Exception as e:
+                print(f"  {CLI_YELLOW}⚠️ Wiki bonus search failed for '{term}': {e}{CLI_CLR}")
+        return snippets
+
+    def _parse_bonus_snippet(self, snippet: str) -> Optional[Dict[str, Any]]:
+        if not snippet:
+            return None
+        percent = re.search(r"(\d+)\s*%", snippet)
+        if percent:
+            return {"type": "percent", "amount": float(percent.group(1)), "message": f"AUTO-HINT: Wiki snippet suggests +{percent.group(1)}%: {snippet.strip()[:120]}..."}
+        flat_currency = re.search(r"(\d+)\s*(?:EUR|euro|bucks|usd)", snippet, re.I)
+        if flat_currency:
+            return {"type": "flat", "amount": float(flat_currency.group(1)), "message": f"AUTO-HINT: Wiki snippet suggests +{flat_currency.group(1)} currency: {snippet.strip()[:120]}..."}
+        flat_plain = re.search(r"\b\+?(\d+)\b", snippet)
+        if flat_plain:
+            return {"type": "flat", "amount": float(flat_plain.group(1)), "message": f"AUTO-HINT: Wiki snippet suggests +{flat_plain.group(1)} units: {snippet.strip()[:120]}..."}
+        return None
+
+    def _parse_bonus_snippet_list(self, snippets: List[str]) -> Optional[Dict[str, Any]]:
+        for snippet in snippets:
+            parsed = self._parse_bonus_snippet(snippet)
+            if parsed:
+                return parsed
+        return None
+
+    def _search_wiki_for_bonus(self, wiki_manager: Any, terms: Iterable[str]) -> List[str]:
+        snippets = []
+        for term in terms:
+            try:
+                response = wiki_manager.search(term, top_k=3)
+                if response:
+                    snippets.append(response)
+            except Exception as e:
+                print(f"  {CLI_YELLOW}⚠️ Wiki bonus search failed for '{term}': {e}{CLI_CLR}")
+        return snippets
+
+    def _apply_bonus_policy(self, current_salary: float, policy: Dict[str, Any]) -> Optional[float]:
+        amount = policy.get("amount")
+        if amount is None:
+            return None
+        if policy.get("type") == "flat":
+            return current_salary + amount
+        if policy.get("type") == "percent":
+            return current_salary * (1 + amount / 100.0)
+        return None
+
+
 
 class ActionExecutor:
     """Main executor that orchestrates middleware and handlers"""
-    def __init__(self, api, middleware: List[Middleware] = None):
+    def __init__(self, api, middleware: List[Middleware] = None, task: Any = None):
         self.api = api
         self.middleware = middleware or []
         self.handler = DefaultActionHandler()
+        self.task = task
     
     def execute(self, action_dict: dict, action_model: Any) -> ToolContext:
         ctx = ToolContext(self.api, action_dict, action_model)
+        if self.task:
+            ctx.shared['task'] = self.task
         
         # Run middleware
         for mw in self.middleware:
