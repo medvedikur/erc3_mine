@@ -53,27 +53,24 @@ class DefaultActionHandler:
                     "raise" in intent_lower or "increase" in intent_lower
                 ) and all(keyword not in intent_lower for keyword in ["skill", "note", "location", "department"])
 
-                bonus_policy = self._lookup_bonus_policy(ctx, task_text)
-                if bonus_policy:
-                    current_salary = self._fetch_employee_salary(ctx, ctx.model.employee)
-                    if current_salary is not None:
-                        target_salary = self._apply_bonus_policy(current_salary, bonus_policy)
-                        if target_salary is not None:
-                            if ctx.model.salary is None or abs(ctx.model.salary - target_salary) > 0.01:
-                                ctx.model.salary = target_salary
-                                ctx.results.append(bonus_policy["message"])
+                # Ensure salary is always an integer (API requirement)
+                # We trust the agent's calculation - don't override with bonus policy
+                if ctx.model.salary is not None:
+                    ctx.model.salary = int(round(ctx.model.salary))
 
+                # For ALL employee updates, ensure unwanted fields are not sent
+                # Set all non-essential fields to None - SafeReq_UpdateEmployeeInfo.model_dump() 
+                # will exclude None values from the serialization
+                current_user = ctx.shared.get('security_manager').current_user if ctx.shared.get('security_manager') else None
+                if not getattr(ctx.model, "changed_by", None):
+                    ctx.model.changed_by = current_user
+                
                 if salary_only:
-                    # For salary-only updates, explicitly null out ALL other fields to prevent
-                    # accidental updates that trigger unwanted events (notes, skills, location, etc.)
-                    # We modify in place rather than recreating to preserve the SafeReq wrapper's behavior
-                    current_user = ctx.shared.get('security_manager').current_user if ctx.shared.get('security_manager') else None
-                    if not getattr(ctx.model, "changed_by", None):
-                        ctx.model.changed_by = current_user
-                    # Explicitly clear all non-salary fields
+                    # For salary-only updates, explicitly clear all other fields
                     for field in ['skills', 'wills', 'notes', 'location', 'department']:
                         setattr(ctx.model, field, None)
                 else:
+                    # For other updates, only clear empty fields  
                     for field in ['skills', 'wills', 'notes', 'location', 'department']:
                         val = getattr(ctx.model, field, None)
                         if val in ([], "", None):
@@ -135,6 +132,130 @@ class DefaultActionHandler:
                     )
                     print(f"  {CLI_BLUE}🔍 Merged {len(projects_map)} unique projects.{CLI_CLR}")
 
+                # SPECIAL HANDLING: Employee Update - API requires ALL fields to be sent
+                # Otherwise missing fields are cleared! We must fetch current data first.
+                elif isinstance(ctx.model, client.Req_UpdateEmployeeInfo):
+                    employee_id = ctx.model.employee
+                    
+                    # Step 1: Fetch current employee data to preserve existing values
+                    try:
+                        current_data = ctx.api.get_employee(employee_id)
+                        emp = current_data.employee
+                        
+                        # Step 2: Build complete payload - start with current data
+                        payload = {
+                            'employee': employee_id,
+                            'notes': emp.notes if emp.notes else "",
+                            'location': emp.location if emp.location else "",
+                            'department': emp.department if emp.department else "",
+                            'skills': emp.skills if emp.skills else [],
+                            'wills': emp.wills if emp.wills else [],
+                        }
+                        
+                        # Step 3: Override with new values from the request
+                        if ctx.model.salary is not None:
+                            payload['salary'] = int(ctx.model.salary)
+                        if ctx.model.changed_by:
+                            payload['changed_by'] = ctx.model.changed_by
+                        # Override other fields only if explicitly set (not None/empty)
+                        if getattr(ctx.model, 'notes', None) is not None:
+                            payload['notes'] = ctx.model.notes
+                        if getattr(ctx.model, 'location', None) is not None:
+                            payload['location'] = ctx.model.location
+                        if getattr(ctx.model, 'department', None) is not None:
+                            payload['department'] = ctx.model.department
+                        if getattr(ctx.model, 'skills', None) is not None:
+                            payload['skills'] = ctx.model.skills
+                        if getattr(ctx.model, 'wills', None) is not None:
+                            payload['wills'] = ctx.model.wills
+                            
+                    except Exception as e:
+                        print(f"  {CLI_YELLOW}⚠ Could not fetch current employee data: {e}. Using request data only.{CLI_CLR}")
+                        # Fallback: use only what we have
+                        payload = {
+                            'employee': employee_id,
+                        }
+                        if ctx.model.salary is not None:
+                            payload['salary'] = int(ctx.model.salary)
+                        if ctx.model.changed_by:
+                            payload['changed_by'] = ctx.model.changed_by
+                    
+                    # Create model with complete payload
+                    update_model = client.Req_UpdateEmployeeInfo(**payload)
+                    result = ctx.api.dispatch(update_model)
+                
+                # SPECIAL HANDLING: Project Team Update - API replaces entire team
+                # If agent wants to add/remove members, we must merge with current team
+                elif isinstance(ctx.model, client.Req_UpdateProjectTeam):
+                    project_id = ctx.model.id
+                    new_team = ctx.model.team or []
+                    
+                    # For project team updates, we typically want to REPLACE the team,
+                    # not merge. The agent should provide the complete new team.
+                    # However, log a warning if team is empty (might be accidental)
+                    if not new_team:
+                        print(f"  {CLI_YELLOW}⚠ Warning: Updating project team with empty team list!{CLI_CLR}")
+                    
+                    result = ctx.api.dispatch(ctx.model)
+                
+                # SPECIAL HANDLING: Time Entry Update - API may clear unset fields
+                # Fetch current entry and merge with new values
+                elif isinstance(ctx.model, client.Req_UpdateTimeEntry):
+                    entry_id = ctx.model.id
+                    
+                    # Try to fetch current time entry to preserve existing values
+                    try:
+                        # Search for this specific entry
+                        search_result = ctx.api.dispatch(client.Req_SearchTimeEntries(
+                            employee=None,
+                            limit=100  # Should find our entry
+                        ))
+                        
+                        current_entry = None
+                        if hasattr(search_result, 'entries') and search_result.entries:
+                            for entry in search_result.entries:
+                                if entry.id == entry_id:
+                                    current_entry = entry
+                                    break
+                        
+                        if current_entry:
+                            # Build payload starting with current data
+                            payload = {
+                                'id': entry_id,
+                                'date': current_entry.date,
+                                'hours': current_entry.hours,
+                                'work_category': current_entry.work_category or "",
+                                'notes': current_entry.notes or "",
+                                'billable': current_entry.billable,
+                                'status': current_entry.status or "",
+                            }
+                            
+                            # Override with new values
+                            if ctx.model.date is not None:
+                                payload['date'] = ctx.model.date
+                            if ctx.model.hours is not None:
+                                payload['hours'] = ctx.model.hours
+                            if ctx.model.work_category is not None:
+                                payload['work_category'] = ctx.model.work_category
+                            if ctx.model.notes is not None:
+                                payload['notes'] = ctx.model.notes
+                            if ctx.model.billable is not None:
+                                payload['billable'] = ctx.model.billable
+                            if ctx.model.status is not None:
+                                payload['status'] = ctx.model.status
+                            if ctx.model.changed_by:
+                                payload['changed_by'] = ctx.model.changed_by
+                            
+                            update_model = client.Req_UpdateTimeEntry(**payload)
+                            result = ctx.api.dispatch(update_model)
+                        else:
+                            # Entry not found, proceed with original request
+                            result = ctx.api.dispatch(ctx.model)
+                            
+                    except Exception as e:
+                        print(f"  {CLI_YELLOW}⚠ Could not fetch current time entry: {e}. Using request data only.{CLI_CLR}")
+                        result = ctx.api.dispatch(ctx.model)
+                    
                 else:
                     # Standard Dispatch
                     # Check if the request has a limit field for retry logic
@@ -146,9 +267,26 @@ class DefaultActionHandler:
                         # Check for page limit exceeded error
                         error_str = str(e).lower()
                         if "page limit exceeded" in error_str and has_limit:
-                            print(f"  {CLI_YELLOW}⚠ Page limit exceeded. Retrying with limit=1.{CLI_CLR}")
-                            ctx.model.limit = 1
-                            result = ctx.api.dispatch(ctx.model)
+                            # Parse max limit from error like "page limit exceeded: 5 > 3" or "1 > -1"
+                            import re
+                            match = re.search(r'(\d+)\s*>\s*(-?\d+)', str(e))
+                            if match:
+                                max_limit = int(match.group(2))
+                                if max_limit <= 0:
+                                    # API says no pagination allowed at all - this is a system restriction
+                                    print(f"  {CLI_YELLOW}⚠ API forbids pagination (max_limit={max_limit}). Cannot retrieve data.{CLI_CLR}")
+                                    # Re-raise original exception to preserve proper error handling
+                                    raise e
+                                else:
+                                    # Retry with allowed limit
+                                    print(f"  {CLI_YELLOW}⚠ Page limit exceeded. Retrying with limit={max_limit}.{CLI_CLR}")
+                                    ctx.model.limit = max_limit
+                                    result = ctx.api.dispatch(ctx.model)
+                            else:
+                                # Can't parse, try with limit=1
+                                print(f"  {CLI_YELLOW}⚠ Page limit exceeded. Retrying with limit=1.{CLI_CLR}")
+                                ctx.model.limit = 1
+                                result = ctx.api.dispatch(ctx.model)
                         else:
                             if "limit" in error_str:
                                  print(f"  {CLI_YELLOW}⚠ Potential limit error not caught: {error_str}{CLI_CLR}")

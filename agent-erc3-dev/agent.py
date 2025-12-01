@@ -179,8 +179,66 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
 
         messages.append(AIMessage(content=raw_content))
 
-        # Check explicit stop condition
+        # Check explicit stop condition - agent wants to stop but may have forgotten to call respond
         if is_final and not action_queue:
+            # Agent might put respond info in different places:
+            # 1. Top-level "outcome" field
+            # 2. Inside "args" dict (when agent puts tool/args at top level instead of action_queue)
+            outcome = parsed.get("outcome")
+            message = parsed.get("message") or thoughts
+            
+            # Check if agent put tool/args at top level (common LLM mistake)
+            if not outcome and parsed.get("tool") == "respond":
+                args = parsed.get("args", {})
+                outcome = args.get("outcome")
+                message = args.get("message") or message
+            
+            # Also check nested args
+            if not outcome and "args" in parsed:
+                outcome = parsed["args"].get("outcome")
+                message = parsed["args"].get("message") or message
+            
+            # HEURISTIC: If agent didn't specify outcome, try to infer from thoughts/context
+            if not outcome and thoughts:
+                thoughts_lower = thoughts.lower()
+                # Check for error indicators
+                if any(word in thoughts_lower for word in ["internal error", "system error", "system failure", "technical error", "cannot retrieve", "failed to", "service error"]):
+                    outcome = "error_internal"
+                    print(f"{CLI_CYAN}⚠ Inferred outcome 'error_internal' from thoughts{CLI_CLR}")
+                elif any(word in thoughts_lower for word in ["no permission", "denied", "not allowed", "unauthorized", "access denied"]):
+                    outcome = "denied_security"
+                    print(f"{CLI_CYAN}⚠ Inferred outcome 'denied_security' from thoughts{CLI_CLR}")
+                elif any(word in thoughts_lower for word in ["not found", "no results", "does not exist", "couldn't find"]):
+                    outcome = "ok_not_found"
+                    print(f"{CLI_CYAN}⚠ Inferred outcome 'ok_not_found' from thoughts{CLI_CLR}")
+            
+            if outcome and not task_done:
+                # Agent forgot to call respond - do it automatically!
+                print(f"{CLI_CYAN}⚠ Agent set is_final=true with outcome '{outcome}' but no respond action. Auto-submitting...{CLI_CLR}")
+                
+                try:
+                    # Build respond action
+                    respond_model = client.Req_ProvideAgentResponse(
+                        message=message or f"Task completed with outcome: {outcome}",
+                        outcome=outcome,
+                        links=parsed.get("links", [])
+                    )
+                    
+                    # Execute respond
+                    executor = get_executor(erc_client, wiki_manager, security_manager, task=task)
+                    from handlers.core import ActionContext
+                    ctx = ActionContext(
+                        api=erc_client,
+                        model=respond_model,
+                        raw_action={"tool": "respond", "args": {"outcome": outcome, "message": message}},
+                        shared={'security_manager': security_manager, 'wiki_manager': wiki_manager}
+                    )
+                    result = erc_client.dispatch(respond_model)
+                    task_done = True
+                    print(f"  {CLI_GREEN}✓ AUTO-SUBMITTED RESPONSE: {outcome}{CLI_CLR}")
+                except Exception as e:
+                    print(f"  {CLI_RED}✗ Auto-submit failed: {e}{CLI_CLR}")
+            
             print(f"{CLI_GREEN}✓ Agent decided to stop.{CLI_CLR}")
             break
 

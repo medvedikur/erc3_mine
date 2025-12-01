@@ -15,31 +15,49 @@ class Req_Respond(BaseModel):
 # The erc3 library enforces non-optional lists for skills/wills in Req_UpdateEmployeeInfo,
 # causing empty lists to be sent (and triggering events) even when we only want to update salary.
 # We patch the model definition at runtime to make them Optional.
+def _patch_update_employee_model(model_class, class_name):
+    """Patch a Req_UpdateEmployeeInfo model to make skills/wills/notes/location/department Optional."""
+    from typing import Optional, List
+    try:
+        if hasattr(model_class, 'model_fields'):
+            # Pydantic v2
+            fields_to_patch = ['skills', 'wills', 'notes', 'location', 'department']
+            for field in fields_to_patch:
+                if field in model_class.model_fields:
+                    model_class.model_fields[field].default = None
+                    # For list types, make them Optional
+                    if field in ['skills', 'wills']:
+                        from erc3.erc3 import dtos
+                        model_class.model_fields[field].annotation = Optional[List[dtos.SkillLevel]]
+                    else:
+                        model_class.model_fields[field].annotation = Optional[str]
+            # Rebuild model
+            if hasattr(model_class, 'model_rebuild'):
+                model_class.model_rebuild()
+        else:
+            # Pydantic v1
+            fields_to_patch = ['skills', 'wills', 'notes', 'location', 'department']
+            for field in fields_to_patch:
+                if field in model_class.__fields__:
+                    model_class.__fields__[field].required = False
+                    model_class.__fields__[field].default = None
+        print(f"🔧 Patched {class_name} to support optional fields.")
+        return True
+    except Exception as e:
+        print(f"⚠️ Failed to patch {class_name}: {e}")
+        return False
+
 try:
     from erc3.erc3 import dtos
-    from typing import Optional, List
-    
-    # Check if we need to patch (Pydantic v2 style or v1)
-    if hasattr(dtos.Req_UpdateEmployeeInfo, 'model_fields'):
-        # Pydantic v2
-        dtos.Req_UpdateEmployeeInfo.model_fields['skills'].annotation = Optional[List[dtos.SkillLevel]]
-        dtos.Req_UpdateEmployeeInfo.model_fields['skills'].default = None
-        dtos.Req_UpdateEmployeeInfo.model_fields['wills'].annotation = Optional[List[dtos.SkillLevel]]
-        dtos.Req_UpdateEmployeeInfo.model_fields['wills'].default = None
-    else:
-        # Pydantic v1
-        dtos.Req_UpdateEmployeeInfo.__fields__['skills'].required = False
-        dtos.Req_UpdateEmployeeInfo.__fields__['skills'].default = None
-        dtos.Req_UpdateEmployeeInfo.__fields__['wills'].required = False
-        dtos.Req_UpdateEmployeeInfo.__fields__['wills'].default = None
-    
-    # Rebuild model if necessary (v2)
-    if hasattr(dtos.Req_UpdateEmployeeInfo, 'model_rebuild'):
-        dtos.Req_UpdateEmployeeInfo.model_rebuild()
-        
-    print("🔧 Patched Req_UpdateEmployeeInfo to support optional skills/wills.")
+    _patch_update_employee_model(dtos.Req_UpdateEmployeeInfo, "dtos.Req_UpdateEmployeeInfo")
 except Exception as e:
-    print(f"⚠️ Failed to patch Req_UpdateEmployeeInfo: {e}")
+    print(f"⚠️ Failed to patch dtos.Req_UpdateEmployeeInfo: {e}")
+
+try:
+    # Also patch client.Req_UpdateEmployeeInfo since SafeReq inherits from it
+    _patch_update_employee_model(client.Req_UpdateEmployeeInfo, "client.Req_UpdateEmployeeInfo")
+except Exception as e:
+    print(f"⚠️ Failed to patch client.Req_UpdateEmployeeInfo: {e}")
 
 # --- SAFE MODEL WRAPPERS ---
 class SafeReq_UpdateEmployeeInfo(client.Req_UpdateEmployeeInfo):
