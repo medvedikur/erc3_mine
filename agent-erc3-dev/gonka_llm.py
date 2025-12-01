@@ -154,6 +154,7 @@ class GonkaChatModel(BaseChatModel):
                     "transfer agent capacity reached",
                     "429",
                     "signature is too old",
+                    "signature is in the future",
                     "unable to validate request",
                     "invalid signature",
                     "request timed out",
@@ -163,7 +164,9 @@ class GonkaChatModel(BaseChatModel):
                 if any(ce in error_str for ce in critical_errors):
                     print(f"{CLI_YELLOW}⚠ Critical error on node {self._current_node}: {e}{CLI_CLR}")
                     if "signature is too old" in error_str or "invalid signature" in error_str:
-                        print(f"{CLI_RED}⚠ System time might be out of sync (computer slept?). Check your clock.{CLI_CLR}")
+                        print(f"{CLI_RED}⚠ System clock is behind! Run: sudo sntp -sS time.apple.com{CLI_CLR}")
+                    if "signature is in the future" in error_str:
+                        print(f"{CLI_RED}⚠ System clock is ahead! Run: sudo sntp -sS time.apple.com{CLI_CLR}")
                     raise e  # Re-raise to trigger _switch_node in the outer loop
 
                 last_error = e

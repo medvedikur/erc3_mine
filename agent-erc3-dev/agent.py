@@ -224,15 +224,7 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
                         links=parsed.get("links", [])
                     )
                     
-                    # Execute respond
-                    executor = get_executor(erc_client, wiki_manager, security_manager, task=task)
-                    from handlers.core import ActionContext
-                    ctx = ActionContext(
-                        api=erc_client,
-                        model=respond_model,
-                        raw_action={"tool": "respond", "args": {"outcome": outcome, "message": message}},
-                        shared={'security_manager': security_manager, 'wiki_manager': wiki_manager}
-                    )
+                    # Execute respond directly via API
                     result = erc_client.dispatch(respond_model)
                     task_done = True
                     print(f"  {CLI_GREEN}✓ AUTO-SUBMITTED RESPONSE: {outcome}{CLI_CLR}")
