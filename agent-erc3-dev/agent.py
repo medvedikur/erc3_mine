@@ -10,7 +10,7 @@ from erc3 import TaskInfo, ERC3, ApiException
 from erc3.erc3 import client
 from llm_provider import get_llm
 from prompts import SGR_SYSTEM_PROMPT
-from tools import parse_action, Req_Respond, ParseError
+from tools import parse_action, Req_Respond, ParseError, SafeReq_UpdateEmployeeInfo
 from stats import SessionStats, FailureLogger
 from handlers import get_executor, WikiManager, SecurityManager
 
@@ -194,6 +194,7 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
 
     task_done = False
     who_am_i_called = False  # Track if identity was verified - CRITICAL for security
+    had_mutations = False  # Track if any mutation operation was performed (persists across turns)
 
     for turn in range(max_turns):
         if task_done:
@@ -320,6 +321,17 @@ DO NOT set is_final=true until respond is in action_queue!"""))
         stop_execution = False
         had_errors = False  # Track if any action failed
         
+        # Mutation operation types - these modify state and require current_user in links
+        MUTATION_TYPES = (
+            client.Req_LogTimeEntry,
+            client.Req_UpdateEmployeeInfo,
+            SafeReq_UpdateEmployeeInfo,  # Wrapper class used in tools.py
+            client.Req_UpdateProjectStatus,
+            client.Req_UpdateProjectTeam,
+            client.Req_UpdateWiki,
+            client.Req_UpdateTimeEntry,
+        )
+        
         # Initialize executor with fresh context managers
         executor = get_executor(erc_client, wiki_manager, security_manager, task=task)
 
@@ -329,17 +341,25 @@ DO NOT set is_final=true until respond is in action_queue!"""))
             
             print(f"\n  {CLI_BLUE}▶ Parsing action {idx+1}:{CLI_CLR} {json.dumps(action_dict)}")
             
-            # FIX: Pass a DummyContext with the real security_manager to parse_action
-            # This allows parsing logic to inject current_user if needed
+            # FIX: Pass a DummyContext with security_manager and mutation tracking
+            # This allows parsing logic to inject current_user for mutation operations
             class DummyContext:
-                def __init__(self, sm):
-                    self.shared = {'security_manager': sm}
+                def __init__(self, sm, mutations):
+                    self.shared = {'security_manager': sm, 'had_mutations': mutations}
             
-            dummy_ctx = DummyContext(security_manager)
-            action_model = parse_action(action_dict, context=dummy_ctx)
+            dummy_ctx = DummyContext(security_manager, had_mutations)
+            
+            # Wrap parse_action to catch ValidationError (e.g., invalid role like "Tester")
+            try:
+                action_model = parse_action(action_dict, context=dummy_ctx)
+            except ValidationError as ve:
+                error_msg = f"Validation error: {ve.errors()[0]['msg'] if ve.errors() else str(ve)}"
+                print(f"  {CLI_RED}✗ Validation error: {error_msg}{CLI_CLR}")
+                results.append(f"Action {idx+1} VALIDATION ERROR: {error_msg}. Check the parameter values against allowed options.")
+                had_errors = True
+                continue
             
             # Check for ParseError (helpful error message for LLM)
-            if isinstance(action_model, ParseError):
                 error_msg = str(action_model)
                 print(f"  {CLI_RED}✗ Parse error: {error_msg}{CLI_CLR}")
                 results.append(f"Action {idx+1} ERROR: {error_msg}")
@@ -381,6 +401,12 @@ DO NOT set is_final=true until respond is in action_queue!"""))
             # Check if execution failed
             if any("FAILED" in r or "ERROR" in r for r in ctx.results):
                 had_errors = True
+            
+            # Track successful mutation operations
+            if isinstance(action_model, MUTATION_TYPES) and not any("FAILED" in r or "ERROR" in r for r in ctx.results):
+                had_mutations = True
+                # Update context for subsequent respond calls
+                dummy_ctx.shared['had_mutations'] = True
             
             if ctx.stop_execution:
                 stop_execution = True

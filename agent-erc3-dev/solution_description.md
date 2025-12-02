@@ -90,11 +90,12 @@ OpenAI models often use PascalCase in tool arguments:
 {"Outcome": "ok_answer", "Message": "..."}       # OpenAI style
 ```
 
-#### Auto-Linking
+#### Auto-Linking with Mutation Awareness
 Automatically detects entity IDs in response text and populates the `links` array:
 - Detects `proj_...`, `emp_...`, `cust_...` patterns
-- Adds current user to links for audit trail
+- Detects employee usernames like `felix_baum`, `jonas_weiss`
 - Normalizes link format from OpenAI models
+- **Mutation-aware**: Only adds `current_user` to links when mutation operations were performed (see Section 9)
 
 #### Runtime Patching
 Patches `Req_UpdateEmployeeInfo` at runtime to make `skills`, `wills`, `notes`, `location`, `department` truly optional, preventing accidental data wipes.
@@ -224,6 +225,71 @@ The agent follows a strict "Mental Protocol" defined in `prompts.py`:
 - **Identity Check**: Always verifies current user role (`who_am_i`) to determine permissions.
 - **Permissions**: Explicitly instructs NOT to deny based solely on job title, but to check entity ownership (e.g. Project Lead).
 - **Data Source Separation**: Enforces using Database tools for entities (Projects, People) and Wiki for rules/policies.
+
+### 9. Mutation Tracking for Links (`agent.py` + `tools.py`)
+
+The benchmark expects different behavior for `links` based on operation type:
+- **Read-only queries** (e.g., "Who is the CV lead?"): Only link the found entities
+- **Mutation operations** (e.g., "Log time", "Raise salary"): Link found entities **+ current_user** who performed the action
+
+#### What is a Mutation?
+
+A **mutation** is an operation that **changes system state**. In contrast to **read-only** operations that only retrieve data.
+
+| Type | Operations | Example |
+|------|------------|---------|
+| **Read-only** | `who_am_i`, `employees_search`, `projects_get`, `wiki_search` | "Find the CEO" |
+| **Mutation** | `time_log`, `employees_update`, `projects_status_update`, `projects_team_update`, `wiki_update`, `time_update` | "Log 3 hours", "Raise salary" |
+
+#### Implementation
+
+**1. Tracking in `agent.py`:**
+```python
+MUTATION_TYPES = (
+    client.Req_LogTimeEntry,
+    client.Req_UpdateEmployeeInfo,
+    client.Req_UpdateProjectStatus,
+    client.Req_UpdateProjectTeam,
+    client.Req_UpdateWiki,
+    client.Req_UpdateTimeEntry,
+)
+
+# After successful execution:
+if isinstance(action_model, MUTATION_TYPES) and not errors:
+    had_mutations = True
+```
+
+**2. Conditional linking in `tools.py`:**
+```python
+# Only add current_user to links if mutations were performed
+had_mutations = context.shared.get('had_mutations', False)
+
+if had_mutations and current_user:
+    links.append({"id": current_user, "kind": "employee"})
+```
+
+#### Why This Matters
+
+Without mutation tracking:
+- ❌ Read-only query "Who is the CV lead?" would incorrectly add the querying user to links
+- ❌ Mutation "Log time for Felix" would miss the current user who authorized the action
+
+With mutation tracking:
+- ✅ Read-only: Only the found lead is linked
+- ✅ Mutation: Both the target employee AND the current user are linked
+
+### 10. Dynamic Wiki Injection (`handlers/wiki.py` + `handlers/core.py`)
+
+When the Wiki changes mid-task (detected via `wiki_sha1` change), critical policy documents are automatically injected into the agent's context:
+
+```python
+# In core.py after wiki sync:
+if wiki_changed:
+    critical_docs = wiki_manager.get_critical_docs()  # rulebook.md, merger.md, hierarchy.md
+    ctx.results.append(f"⚠️ WIKI UPDATED! Read these policies:\n{critical_docs}")
+```
+
+This ensures the agent always has access to current policies without hardcoding specific rules in the system prompt.
 
 ## Handling Ambiguity & Data Conflicts
 

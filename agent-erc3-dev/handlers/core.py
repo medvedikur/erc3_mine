@@ -335,11 +335,24 @@ class DefaultActionHandler:
             # Actually only who_am_i and list_wiki return the hash directly.
             
             wiki_manager = ctx.shared.get('wiki_manager')
+            wiki_changed = False
             if wiki_manager:
                 if isinstance(result, client.Resp_WhoAmI) and result.wiki_sha1:
-                    wiki_manager.sync(result.wiki_sha1)
+                    wiki_changed = wiki_manager.sync(result.wiki_sha1)
                 elif isinstance(result, client.Resp_ListWiki) and result.sha1:
-                    wiki_manager.sync(result.sha1)
+                    wiki_changed = wiki_manager.sync(result.sha1)
+            
+            # 🔥 DYNAMIC WIKI INJECTION: When wiki changes, inject critical docs
+            # This replaces hardcoded rules in prompts.py with actual wiki content
+            if wiki_changed and wiki_manager:
+                critical_docs = wiki_manager.get_critical_docs()
+                if critical_docs:
+                    print(f"  {CLI_YELLOW}📚 Wiki changed! Injecting critical docs into context...{CLI_CLR}")
+                    ctx.results.append(
+                        f"\n⚠️ WIKI UPDATED! You MUST read these policy documents before proceeding:\n\n"
+                        f"{critical_docs}\n\n"
+                        f"Action based on outdated rules will be REJECTED."
+                    )
 
             # Apply Security Redaction (if applicable)
             if security_manager:

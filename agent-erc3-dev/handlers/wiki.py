@@ -5,6 +5,10 @@ from typing import Dict, List, Optional, Tuple, Any
 from erc3.erc3 import client
 from .base import ToolContext, Middleware
 
+# Console color codes
+CLI_YELLOW = "\x1B[33m"
+CLI_CLR = "\x1B[0m"
+
 # Try importing sentence_transformers for local embeddings
 try:
     from sentence_transformers import SentenceTransformer, util
@@ -220,6 +224,10 @@ class WikiManager:
         self.chunks: List[Dict[str, Any]] = []
         self.corpus_embeddings = None
         
+        # Track wiki changes for dynamic injection
+        self._last_synced_sha1: Optional[str] = None
+        self._sha1_change_count: int = 0
+        
         # Initialize version store
         self.store = WikiVersionStore()
         
@@ -237,13 +245,26 @@ class WikiManager:
     def set_api(self, api: client.Erc3Client):
         self.api = api
 
-    def sync(self, reported_sha1: str):
-        """Check if sync is needed and update if so."""
+    def sync(self, reported_sha1: str) -> bool:
+        """
+        Check if sync is needed and update if so.
+        
+        Returns:
+            True if wiki hash CHANGED (agent should re-read critical docs)
+            False if wiki was already at this version
+        """
         if not reported_sha1:
-            return
+            return False
 
         if self.current_sha1 != reported_sha1:
             print(f"📚 Wiki Sync: Hash changed ({self.current_sha1[:8] if self.current_sha1 else 'none'} -> {reported_sha1[:8]})")
+            
+            # Track wiki changes for debugging
+            if self._last_synced_sha1 and self._last_synced_sha1 != reported_sha1:
+                self._sha1_change_count += 1
+                print(f"  {CLI_YELLOW}⚠️ Wiki changed! ({self._sha1_change_count} times this session){CLI_CLR}")
+            
+            self._last_synced_sha1 = reported_sha1
             
             # Check if we already have this version cached
             if self.store.version_exists(reported_sha1):
@@ -253,7 +274,13 @@ class WikiManager:
                 print(f"   ↓ New version. Downloading from API...")
                 self._download_and_save(reported_sha1)
             
+            old_sha1 = self.current_sha1
             self.current_sha1 = reported_sha1
+            
+            # Return True only if we had a previous version (not first load)
+            return old_sha1 is not None
+        
+        return False
 
     def _load_from_cache(self, sha1: str):
         """Load a wiki version from local cache."""
@@ -431,6 +458,39 @@ class WikiManager:
     def list_versions(self) -> List[Dict[str, Any]]:
         """List all cached wiki versions."""
         return self.store.get_all_versions()
+    
+    def get_critical_docs(self) -> str:
+        """
+        Return content of critical policy documents that should be read after wiki changes.
+        These are dynamically loaded from the wiki, NOT hardcoded rules.
+        """
+        critical_paths = [
+            "rulebook.md",      # Always contains core policies
+            "merger.md",        # May contain post-M&A rules (if exists)
+            "hierarchy.md",     # Org structure and permissions
+        ]
+        
+        docs = []
+        for path in critical_paths:
+            if path in self.pages:
+                content = self.pages[path]
+                # Truncate very long documents
+                if len(content) > 2000:
+                    content = content[:2000] + "\n... [truncated, use wiki_load for full content]"
+                docs.append(f"=== {path} ===\n{content}")
+        
+        if not docs:
+            return ""
+        
+        return "\n\n".join(docs)
+    
+    def has_page(self, path: str) -> bool:
+        """Check if a wiki page exists."""
+        return path in self.pages
+    
+    def get_page(self, path: str) -> Optional[str]:
+        """Get a wiki page content directly."""
+        return self.pages.get(path)
 
 
 class WikiMiddleware(Middleware):

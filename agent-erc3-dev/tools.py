@@ -369,13 +369,36 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
                 min_time_slice=float(args.get("min_time_slice", 0.0))
             )
 
+        # Smart include_archived logic:
+        # 1. If searching for "archived" status → MUST be True
+        # 2. If query contains archive-related keywords → True
+        # 3. If explicitly provided → use that value  
+        # 4. Default → True (to find all projects including archived)
+        include_archived_arg = args.get("include_archived")
+        query_val = args.get("query") or args.get("query_regex") or ""
+        query_lower = query_val.lower() if query_val else ""
+        
+        # Keywords that suggest searching for archived/completed projects
+        archive_keywords = ["archived", "archive", "completed", "wrapped up", "finished", "closed", "ended"]
+        query_suggests_archived = any(kw in query_lower for kw in archive_keywords)
+        
+        if status and "archived" in status:
+            # Searching for archived projects requires include_archived=True
+            include_archived = True
+        elif query_suggests_archived:
+            # Query suggests looking for archived projects
+            include_archived = True
+        elif include_archived_arg is not None:
+            include_archived = bool(include_archived_arg)
+        else:
+            include_archived = True  # Default to True
+            
         search_args = {
             "query": args.get("query") or args.get("query_regex"),
             "customer_id": args.get("customer_id"),
             "status": status,
             "team": team_filter,
-            # Default include_archived to True to find all projects by default
-            "include_archived": bool(args.get("include_archived", True)),
+            "include_archived": include_archived,
             **kwargs
         }
         # Filter out None values to respect Pydantic defaults/optionality
@@ -384,9 +407,46 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
         return client.Req_SearchProjects(**valid_search_args)
     
     if tool in ["projectsteamupdate", "updateprojectteam"]:
+        # Normalize team roles to valid TeamRole values
+        # Valid: 'Lead', 'Engineer', 'Designer', 'QA', 'Ops', 'Other'
+        team_data = args.get("team") or []
+        normalized_team = []
+        role_mappings = {
+            "tester": "QA",
+            "testing": "QA",
+            "quality": "QA",
+            "quality control": "QA",
+            "qc": "QA",
+            "qa": "QA",
+            "developer": "Engineer",
+            "dev": "Engineer",
+            "devops": "Ops",
+            "operations": "Ops",
+            "ui": "Designer",
+            "ux": "Designer",
+            "lead": "Lead",
+            "manager": "Lead",
+            "engineer": "Engineer",
+            "designer": "Designer",
+            "ops": "Ops",
+            "other": "Other",
+        }
+        for member in team_data:
+            if isinstance(member, dict):
+                role = member.get("role", "Other")
+                normalized_role = role_mappings.get(role.lower(), role)
+                # Validate role is in allowed set
+                if normalized_role not in ["Lead", "Engineer", "Designer", "QA", "Ops", "Other"]:
+                    normalized_role = "Other"
+                normalized_team.append({
+                    "employee": member.get("employee"),
+                    "time_slice": member.get("time_slice", 0.0),
+                    "role": normalized_role
+                })
+        
         return client.Req_UpdateProjectTeam(
             id=args.get("id") or args.get("project_id"),
-            team=args.get("team"),
+            team=normalized_team,
             changed_by=args.get("changed_by")
         )
         
@@ -404,15 +464,49 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
             changed_by=args.get("changed_by")
         )
     
-    # Handle unsupported "projects_update" - there's no general metadata update API
+    # Handle "projects_update" - redirect to appropriate tool based on args
     if tool in ["projectsupdate", "updateproject"]:
-        # This is often hallucinated by LLMs - no such API exists
-        return ParseError(
-            "Tool 'projects_update' does not exist. There is no API for updating project metadata. "
-            "Available project tools: projects_status_update (change status), projects_team_update (change team). "
-            "If you need to add dependencies or metadata, this feature is NOT SUPPORTED.",
-            tool="projects_update"
-        )
+        # If team is provided, redirect to projects_team_update
+        if args.get("team"):
+            # Normalize team roles and delegate to projects_team_update logic
+            team_data = args.get("team") or []
+            normalized_team = []
+            role_mappings = {
+                "tester": "QA", "testing": "QA", "quality control": "QA", "qc": "QA",
+                "developer": "Engineer", "dev": "Engineer",
+                "pm": "Lead", "project manager": "Lead", "manager": "Lead"
+            }
+            for member in team_data:
+                role = member.get("role", "Other")
+                normalized_role = role_mappings.get(role.lower(), role) if role else "Other"
+                # Validate against TeamRole enum
+                valid_roles = ["Lead", "Engineer", "Designer", "QA", "Ops", "Other"]
+                if normalized_role not in valid_roles:
+                    normalized_role = "Other"
+                normalized_team.append({
+                    "employee": member.get("employee"),
+                    "time_slice": member.get("time_slice", 0.0),
+                    "role": normalized_role
+                })
+            return client.Req_UpdateProjectTeam(
+                id=args.get("id") or args.get("project_id"),
+                team=normalized_team,
+                changed_by=args.get("changed_by")
+            )
+        # If status is provided, redirect to projects_status_update
+        elif args.get("status"):
+            return client.Req_UpdateProjectStatus(
+                id=args.get("id") or args.get("project_id"),
+                status=args.get("status"),
+                changed_by=args.get("changed_by")
+            )
+        else:
+            # No recognized update field
+            return ParseError(
+                "Tool 'projects_update' requires either 'team' (to update team members) or 'status' (to change status). "
+                "Use: projects_team_update for team changes, projects_status_update for status changes.",
+                tool="projects_update"
+            )
 
     # Time
     if tool in ["timelog", "logtime"]:
@@ -550,10 +644,14 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
                          real_id = pu[4:]
                          links.append({"id": real_id, "kind": "employee"})
             
-            # Step 2: ALWAYS add current user to links (they are the actor who performed the action)
-            # This is needed even if the agent already provided some links (e.g., for time logging,
-            # the agent might include the target employee but forget the person who logged the time)
-            if current_user:
+            # Step 2: Add current_user to links ONLY if mutation operations were performed
+            # This distinguishes between:
+            # - Read-only queries (e.g., "Who is the CV lead?") → NO current_user in links
+            # - Mutation operations (e.g., "Log time", "Raise salary") → current_user in links
+            had_mutations = context.shared.get('had_mutations', False) if context else False
+            
+            if had_mutations and current_user:
+                # Check if current_user is already in links
                 current_user_in_links = any(
                     link.get("id") == current_user and link.get("kind") == "employee"
                     for link in links

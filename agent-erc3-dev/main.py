@@ -13,7 +13,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Parse command line arguments FIRST (before loading env)
-parser = argparse.ArgumentParser(description='ERC3-DEV Agent')
+parser = argparse.ArgumentParser(description='ERC3-TEST Agent')
 parser.add_argument('-openrouter', '--openrouter', action='store_true', 
                     help='Use OpenRouter API instead of Gonka Network')
 parser.add_argument('-task', '--task', type=str, default=None,
@@ -95,23 +95,30 @@ backend_name = "OpenRouter" if USE_OPENROUTER else "Gonka Network"
 
 print(f"""
 ╔════════════════════════════════════════════════════════════════════╗
-║  {backend_emoji} ERC3-DEV Agent - {backend_name:<20} + SGR + LangChain      ║
+║  {backend_emoji} ERC3-TEST Agent - {backend_name:<19} + SGR + LangChain      ║
 ║  Model: {MODEL_ID:<52} ║
 ║  Pricing: {PRICING_MODEL_ID:<50} ║
 ╚════════════════════════════════════════════════════════════════════╝
 """)
 
+# Validate required environment variable
+ERC3_API_KEY = os.environ.get("ERC3_API_KEY")
+if not ERC3_API_KEY:
+    print("❌ ERC3_API_KEY not found in environment!")
+    print("   Set it in .env: ERC3_API_KEY=key-...")
+    sys.exit(1)
+
 core = ERC3(
-    key=os.environ.get("ERC3_API_KEY", "key-7ePHVSyN3b2ntJ5fRxYbKHU61r7MWF"),
+    key=ERC3_API_KEY,
     base_url="https://erc.timetoact-group.at"
 )
 
 # Start session with appropriate architecture description
 architecture_desc = f"SGR Agent ({backend_name} {MODEL_ID})"
 res = core.start_session(
-    benchmark="erc3-dev",
-    workspace="dev-workspace-1",
-    name="@mishka ERC3-Dev Agent",
+    benchmark="erc3-test",
+    workspace="test-workspace-1",
+    name="@mishka ERC3-Test Agent",
     architecture=architecture_desc
 )
 
