@@ -11,6 +11,21 @@ class Req_Respond(BaseModel):
     outcome: str = Field(..., description="One of: ok_answer, ok_not_found, denied_security, none_clarification_needed, none_unsupported, error_internal")
     links: List[dict] = []
 
+
+class ParseError:
+    """
+    Represents a parsing error with a message to return to the LLM.
+    Used instead of None to provide meaningful feedback.
+    """
+    def __init__(self, message: str, tool: str = None):
+        self.message = message
+        self.tool = tool
+    
+    def __str__(self):
+        if self.tool:
+            return f"Tool '{self.tool}': {self.message}"
+        return self.message
+
 # --- RUNTIME PATCH FOR LIBRARY BUG ---
 # The erc3 library enforces non-optional lists for skills/wills in Req_UpdateEmployeeInfo,
 # causing empty lists to be sent (and triggering events) even when we only want to update salary.
@@ -151,6 +166,24 @@ def _inject_context(args: dict, context: Any) -> dict:
                 
     return args
 
+def _detect_placeholders(args: dict) -> Optional[str]:
+    """Detect placeholder values in arguments that indicate the model is trying to use values it doesn't have yet."""
+    placeholder_patterns = [
+        "<<<", ">>>",           # <<<FILL_FROM_SEARCH>>>
+        "FILL_", "PLACEHOLDER", # Common placeholders
+        "{RESULT", "{VALUE",    # Template-style
+        "TBD", "TODO",          # To be determined
+        "...",                  # Ellipsis placeholder
+    ]
+    
+    for key, value in args.items():
+        if isinstance(value, str):
+            value_upper = value.upper()
+            for pattern in placeholder_patterns:
+                if pattern in value_upper:
+                    return f"Argument '{key}' contains placeholder value '{value}'. You cannot use placeholders! Wait for the previous tool results before calling dependent tools. Execute tools one at a time when values depend on previous results."
+    return None
+
 def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
     """Parse action dict into Pydantic model for Erc3Client"""
     tool = action_dict.get("tool", "").lower().replace("_", "").replace("-", "").replace("/", "")
@@ -164,6 +197,11 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
         
     # Use combined_args for lookups
     args = combined_args.copy()
+    
+    # SAFETY: Detect placeholder values before processing
+    placeholder_error = _detect_placeholders(args)
+    if placeholder_error:
+        return ParseError(placeholder_error, tool=tool)
     
     # Normalize args
     args = _normalize_args(args)
@@ -352,12 +390,28 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
             changed_by=args.get("changed_by")
         )
         
-    if tool in ["projectsstatusupdate", "updateprojectstatus", "projectsupdate", "updateproject", "projectssetstatus"]:
-        # Handled alias projectsupdate, projectssetstatus
+    if tool in ["projectsstatusupdate", "updateprojectstatus", "projectssetstatus"]:
+        # Only status updates - requires valid status
+        status = args.get("status")
+        if not status:
+            return ParseError(
+                "projects_status_update requires 'status' field. Valid values: 'idea', 'exploring', 'active', 'paused', 'archived'",
+                tool="projects_status_update"
+            )
         return client.Req_UpdateProjectStatus(
             id=args.get("id") or args.get("project_id"),
-            status=args.get("status"),
+            status=status,
             changed_by=args.get("changed_by")
+        )
+    
+    # Handle unsupported "projects_update" - there's no general metadata update API
+    if tool in ["projectsupdate", "updateproject"]:
+        # This is often hallucinated by LLMs - no such API exists
+        return ParseError(
+            "Tool 'projects_update' does not exist. There is no API for updating project metadata. "
+            "Available project tools: projects_status_update (change status), projects_team_update (change team). "
+            "If you need to add dependencies or metadata, this feature is NOT SUPPORTED.",
+            tool="projects_update"
         )
 
     # Time
@@ -425,12 +479,17 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
 
     # Response
     if tool in ["respond", "answer", "reply"]:
-        message = args.get("message") or args.get("text") or args.get("response") or args.get("answer") or args.get("content")
+        # OpenAI models often use PascalCase - handle both cases
+        message = (args.get("message") or args.get("Message") or 
+                   args.get("text") or args.get("Text") or 
+                   args.get("response") or args.get("Response") or 
+                   args.get("answer") or args.get("Answer") or 
+                   args.get("content") or args.get("Content"))
         if not message:
             message = "No message provided."
         
-        # Outcome Fallback Logic
-        outcome = args.get("outcome")
+        # Outcome Fallback Logic - handle PascalCase
+        outcome = args.get("outcome") or args.get("Outcome")
         if not outcome:
             # Try to infer outcome from message content
             msg_lower = str(message).lower()
@@ -446,8 +505,18 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
                 outcome = "ok_answer"
             print(f"⚠ 'outcome' missing. Inferred '{outcome}' from message.")
 
-        # Link Auto-Detection
-        links = args.get("links", [])
+        # Link Auto-Detection - handle PascalCase
+        links = args.get("links") or args.get("Links") or []
+        
+        # Normalize links format if using PascalCase (Kind/ID instead of kind/id)
+        if links:
+            normalized_links = []
+            for link in links:
+                normalized_links.append({
+                    "kind": link.get("kind") or link.get("Kind", ""),
+                    "id": link.get("id") or link.get("ID", "")
+                })
+            links = normalized_links
         
         # For ok_answer outcomes, we need to ensure links are properly populated
         if outcome == "ok_answer":
@@ -468,9 +537,10 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
                     if prefix in type_map:
                         links.append({"id": found_id, "kind": type_map[prefix]})
                 
-                # Special fallback for simple employee usernames like 'felix_baum' that lack 'emp_' prefix
+                # Special fallback for simple employee usernames like 'felix_baum' or 'timo_van_dijk' that lack 'emp_' prefix
                 # This is risky as it might match common words, but for this benchmark we know the format.
-                potential_users = re.findall(r'\b([a-z]+_[a-z]+)\b', str(message))
+                # Pattern: one or more lowercase word segments separated by underscores (handles 2, 3, or more parts)
+                potential_users = re.findall(r'\b([a-z]+(?:_[a-z]+)+)\b', str(message))
                 for pu in potential_users:
                     if not pu.startswith('proj_') and not pu.startswith('emp_') and not pu.startswith('cust_'):
                          links.append({"id": pu, "kind": "employee"})
@@ -497,4 +567,11 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
             links=links
         )
 
-    return None
+    # Unknown tool - return helpful error
+    return ParseError(
+        f"Unknown tool '{tool}'. Available tools: employees_list, employees_get, employees_update, "
+        f"projects_list, projects_get, projects_status_update, projects_team_update, "
+        f"time_list, time_add, time_update, wiki_search, respond. "
+        f"Check tool name spelling.",
+        tool=tool
+    )

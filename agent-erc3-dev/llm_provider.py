@@ -1,20 +1,23 @@
+"""
+LLM Provider Module - Unified interface for multiple LLM backends.
+
+Supports:
+- Gonka Network (decentralized inference with automatic node failover)
+- OpenRouter (commercial API with multiple model providers)
+"""
+
 import os
 import time
 import random
-from typing import Any, List, Optional, Dict, Iterator
+from typing import Any, List, Optional, Dict
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, AIMessage, SystemMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatResult, ChatGeneration
 from pydantic import Field, PrivateAttr
 
-# We need a client wrapper similar to the original solution.
-# The original used `from gonka_openai import GonkaOpenAI`.
-# Since we don't have that package installed in our venv yet, and it seems to be a custom wrapper
-# in the other project's venv, let's look at how to replicate or install it.
-# For now, let's assume we can use standard OpenAI client but configured for Gonka.
-
 from gonka_openai import GonkaOpenAI
 from utils import get_available_nodes, GENESIS_NODES, CLI_RED, CLI_YELLOW, CLI_CYAN, CLI_CLR
+
 
 class GonkaChatModel(BaseChatModel):
     """
@@ -28,20 +31,22 @@ class GonkaChatModel(BaseChatModel):
     
     _client: Optional[GonkaOpenAI] = PrivateAttr(default=None)
     _current_node: Optional[str] = PrivateAttr(default=None)
-    _tried_nodes: set = PrivateAttr(default_factory=set)
+    _tried_nodes: Optional[set] = PrivateAttr(default=None)
     
     # Class-level cache for persistence across instances
     _last_successful_node: Optional[str] = None
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._tried_nodes = set()  # Initialize here to avoid Pydantic issues
 
     def _extract_hint_url(self, error_msg: str) -> Optional[str]:
         """Extract URL from 'Try another TA from <url>' error message"""
         if "Try another TA from" in error_msg:
             try:
                 import re
-                # Extract http://.../participants
                 match = re.search(r'(http://[^\s]+/participants)', error_msg)
                 if match:
-                    # We need the base URL, so strip the path
                     full_url = match.group(1)
                     return full_url.split("/v1/")[0]
             except Exception:
@@ -56,30 +61,23 @@ class GonkaChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         
-        # Convert LangChain messages to OpenAI format
         openai_messages = self._convert_messages(messages)
         
-        # Ensure we have a client
         if self._client is None:
             self._connect_initial()
 
         for node_attempt in range(self.max_node_switches):
-            # Try current node with retries
             try:
                 response = self._call_with_retry(openai_messages, stop, **kwargs)
                 
-                # Update last successful node
                 if self._current_node:
                     GonkaChatModel._last_successful_node = self._current_node
 
-                # Extract content and usage
                 message_content = response.choices[0].message.content
                 usage = getattr(response, "usage", None)
                 
-                # Map usage to dict
                 usage_metadata = {}
                 if usage:
-                    # Handle both object (Pydantic) and dict access
                     if isinstance(usage, dict):
                         usage_metadata = {
                             "prompt_tokens": usage.get("prompt_tokens", 0),
@@ -93,11 +91,8 @@ class GonkaChatModel(BaseChatModel):
                             "total_tokens": getattr(usage, "total_tokens", 0)
                         }
                 
-                # Fallback estimation if usage is missing or empty
                 if not usage_metadata or usage_metadata.get("total_tokens", 0) == 0:
-                    # Estimate: 1 token ~= 4 chars
                     est_completion = len(message_content) // 4 if message_content else 0
-                    # Rough prompt estimation from messages
                     est_prompt = sum(len(m.get('content', '')) for m in openai_messages) // 4
                     
                     usage_metadata = {
@@ -118,12 +113,10 @@ class GonkaChatModel(BaseChatModel):
                 error_str = str(e)
                 print(f"{CLI_YELLOW}⚠ Node {self._current_node} failed: {e}{CLI_CLR}")
                 
-                # Check for hint in 429 errors
                 hint_node = self._extract_hint_url(error_str)
                 if hint_node:
                     print(f"{CLI_CYAN}💡 Found hint node in error: {hint_node}{CLI_CLR}")
                 
-                # Switch node
                 if not self._switch_node(hint_node=hint_node):
                     raise e
         
@@ -133,7 +126,6 @@ class GonkaChatModel(BaseChatModel):
         last_error = None
         for attempt in range(self.max_retries_per_node):
             try:
-                # Standard OpenAI call
                 return self._client.chat.completions.create(
                     model=self.model_name,
                     messages=messages,
@@ -142,8 +134,6 @@ class GonkaChatModel(BaseChatModel):
                     timeout=self.request_timeout
                 )
             except Exception as e:
-                # Check for critical connection errors that should trigger immediate node switch
-                # rather than retrying the same node
                 error_str = str(e).lower()
                 critical_errors = [
                     "connection aborted", 
@@ -167,7 +157,7 @@ class GonkaChatModel(BaseChatModel):
                         print(f"{CLI_RED}⚠ System clock is behind! Run: sudo sntp -sS time.apple.com{CLI_CLR}")
                     if "signature is in the future" in error_str:
                         print(f"{CLI_RED}⚠ System clock is ahead! Run: sudo sntp -sS time.apple.com{CLI_CLR}")
-                    raise e  # Re-raise to trigger _switch_node in the outer loop
+                    raise e
 
                 last_error = e
                 print(f"{CLI_YELLOW}⚠ Retry {attempt+1}/{self.max_retries_per_node} on {self._current_node}: {e}{CLI_CLR}")
@@ -184,7 +174,6 @@ class GonkaChatModel(BaseChatModel):
             self._current_node = fixed_node
             return
 
-        # Try last successful node first if available
         if GonkaChatModel._last_successful_node:
             node = GonkaChatModel._last_successful_node
             try:
@@ -195,9 +184,7 @@ class GonkaChatModel(BaseChatModel):
                 return
             except Exception as e:
                 print(f"{CLI_YELLOW}⚠ Last successful node {node} failed: {e}{CLI_CLR}")
-                # Continue to standard discovery
 
-        # Try to find a working node
         nodes = get_available_nodes()
         for node in nodes[:3]:
             if node in self._tried_nodes:
@@ -211,7 +198,6 @@ class GonkaChatModel(BaseChatModel):
             except Exception:
                 continue
         
-        # Fallback
         fallback = GENESIS_NODES[0]
         self._client = GonkaOpenAI(gonka_private_key=self.gonka_private_key, source_url=fallback)
         self._current_node = fallback
@@ -220,15 +206,11 @@ class GonkaChatModel(BaseChatModel):
     def _switch_node(self, hint_node: str = None) -> bool:
         """Switch to a new node. Returns True if successful."""
         
-        # If we have a hint, try fetching fresh nodes from it first
         if hint_node:
             print(f"{CLI_CYAN}🔄 Fetching fresh nodes from hint: {hint_node}{CLI_CLR}")
             from utils import fetch_active_nodes
             fresh_nodes = fetch_active_nodes(source_node=hint_node)
-            # We don't update all available nodes globally here (unless we change utils), 
-            # but we can prioritize these fresh nodes
             if fresh_nodes:
-                # Try one of the fresh nodes
                 for node in fresh_nodes:
                     if node not in self._tried_nodes:
                         print(f"{CLI_CYAN}🔄 Switching to fresh node from hint: {node}{CLI_CLR}")
@@ -243,7 +225,6 @@ class GonkaChatModel(BaseChatModel):
         available_nodes = get_available_nodes()
         new_node = None
         
-        # Find unused node
         for node in available_nodes:
             if node not in self._tried_nodes:
                 new_node = node
@@ -284,3 +265,144 @@ class GonkaChatModel(BaseChatModel):
     @property
     def _llm_type(self) -> str:
         return "gonka-chat-model"
+
+
+class OpenRouterChatModel(BaseChatModel):
+    """
+    LangChain ChatModel wrapper for OpenRouter API.
+    Uses standard OpenAI-compatible API with OpenRouter base URL.
+    
+    Environment variables:
+        OPENAI_API_KEY: OpenRouter API key (sk-or-...)
+        OPENAI_BASE_URL: OpenRouter base URL (https://openrouter.ai/api/v1)
+        HTTP_REFERER: For OpenRouter leaderboard (optional)
+        X_TITLE: App title for OpenRouter (optional)
+    """
+    model_name: str = Field(alias="model")
+    api_key: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
+    base_url: str = Field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"))
+    max_retries: int = 3
+    request_timeout: int = 120
+    
+    _client: Any = PrivateAttr(default=None)
+    _http_referer: str = PrivateAttr(default=None)
+    _x_title: str = PrivateAttr(default=None)
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._http_referer = os.getenv("HTTP_REFERER", "https://erc3.timetoact.at")
+        self._x_title = os.getenv("X_TITLE", "ERC3-dev")
+        self._init_client()
+    
+    def _init_client(self):
+        """Initialize OpenAI client configured for OpenRouter."""
+        from openai import OpenAI
+        
+        self._client = OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            timeout=self.request_timeout
+        )
+        print(f"🌐 OpenRouter client initialized for model: {self.model_name}")
+        print(f"   Base URL: {self.base_url}")
+    
+    def _generate(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager: Any = None,
+        **kwargs
+    ) -> ChatResult:
+        """Generate response using OpenRouter API."""
+        openai_messages = self._convert_messages(messages)
+        
+        last_error = None
+        for attempt in range(self.max_retries):
+            try:
+                response = self._client.chat.completions.create(
+                    model=self.model_name,
+                    messages=openai_messages,
+                    stop=stop,
+                    temperature=kwargs.get("temperature", 0.0),
+                    max_tokens=kwargs.get("max_tokens", 4096),
+                    extra_headers={
+                        "HTTP-Referer": self._http_referer,
+                        "X-Title": self._x_title
+                    }
+                )
+                
+                content = response.choices[0].message.content or ""
+                generation = ChatGeneration(
+                    message=AIMessage(content=content),
+                    generation_info={
+                        "model": response.model,
+                        "finish_reason": response.choices[0].finish_reason
+                    }
+                )
+                
+                usage = {}
+                if response.usage:
+                    usage = {
+                        "prompt_tokens": response.usage.prompt_tokens,
+                        "completion_tokens": response.usage.completion_tokens,
+                        "total_tokens": response.usage.total_tokens
+                    }
+                
+                return ChatResult(
+                    generations=[generation],
+                    llm_output={"token_usage": usage, "model_name": response.model}
+                )
+                
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+                
+                if "rate" in error_str or "429" in error_str:
+                    wait_time = (attempt + 1) * 5
+                    print(f"{CLI_YELLOW}⚠ Rate limited. Waiting {wait_time}s...{CLI_CLR}")
+                    time.sleep(wait_time)
+                    continue
+                
+                print(f"{CLI_YELLOW}⚠ OpenRouter error (attempt {attempt+1}/{self.max_retries}): {e}{CLI_CLR}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(2)
+        
+        raise last_error or Exception("OpenRouter API call failed")
+    
+    def _convert_messages(self, messages: List[BaseMessage]) -> List[Dict]:
+        """Convert LangChain messages to OpenAI format."""
+        openai_msgs = []
+        for m in messages:
+            if isinstance(m, SystemMessage):
+                openai_msgs.append({"role": "system", "content": m.content})
+            elif isinstance(m, HumanMessage):
+                openai_msgs.append({"role": "user", "content": m.content})
+            elif isinstance(m, AIMessage):
+                openai_msgs.append({"role": "assistant", "content": m.content})
+            elif isinstance(m, ToolMessage):
+                openai_msgs.append({"role": "tool", "content": m.content, "tool_call_id": m.tool_call_id})
+            else:
+                openai_msgs.append({"role": "user", "content": m.content})
+        return openai_msgs
+    
+    @property
+    def _llm_type(self) -> str:
+        return "openrouter-chat-model"
+
+
+def get_llm(model_name: str, backend: str = "gonka") -> BaseChatModel:
+    """
+    Factory function to get the appropriate LLM based on backend.
+    
+    Args:
+        model_name: Model identifier
+        backend: "gonka" or "openrouter"
+    
+    Returns:
+        LangChain ChatModel instance
+    """
+    if backend == "openrouter":
+        return OpenRouterChatModel(model=model_name)
+    else:
+        return GonkaChatModel(model=model_name)
+
