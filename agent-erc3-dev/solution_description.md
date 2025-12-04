@@ -96,9 +96,46 @@ Automatically detects entity IDs in response text and populates the `links` arra
 - Detects employee usernames like `felix_baum`, `jonas_weiss`
 - Normalizes link format from OpenAI models
 - **Mutation-aware**: Only adds `current_user` to links when mutation operations were performed (see Section 9)
+- **Error-aware**: For `error_internal` outcomes (system failures), links are automatically cleared - infrastructure errors don't reference entities
 
 #### Runtime Patching
 Patches `Req_UpdateEmployeeInfo` at runtime to make `skills`, `wills`, `notes`, `location`, `department` truly optional, preventing accidental data wipes.
+
+#### Fail-First Philosophy for Parameter Learning
+**No automatic field swapping** - agent learns from API errors:
+```python
+# Old approach (overfit):
+if not customer_val.startswith('cust_'):
+    work_category_val = customer_val  # Auto-correct
+
+# New approach (adaptive):
+# Pass parameters as-is, let API validate
+# If error → provide learning hint with multiple interpretations
+```
+This encourages agent to:
+1. Try the request as user specified
+2. Learn from API error message
+3. Consider multiple interpretations
+4. Ask for clarification if truly ambiguous
+
+#### Dynamic Error Learning System
+Extracts actionable insights from API errors to help the agent adapt:
+```python
+def _extract_learning_from_error(error, request):
+    # "Not found" for non-standard ID → suggest correct field
+    if "not found" and request.customer and not request.customer.startswith('cust_'):
+        return "💡 LEARNING: This might be 'work_category', not customer..."
+
+    # Validation errors reveal expected formats
+    if "should be a valid list":
+        return "💡 LEARNING: Wrap single values in brackets ['value']"
+```
+
+**Benefits**:
+- ✅ Agent learns from real API behavior, not hardcoded rules
+- ✅ Adapts to API changes automatically
+- ✅ Provides context-specific correction hints
+- ✅ Encourages retry with learned corrections
 
 ### 3. Smart Action Handler (`handlers/core.py`)
 
@@ -132,6 +169,31 @@ When searching by team member AND query, executes two searches and merges result
 2. **Broad Match**: Same filters but without text query
 
 This finds projects where the search term appears in ID/description but not in the name field.
+
+#### Authorization-Aware Disambiguation Hints
+Automatically analyzes project search results and provides **authorization-based** guidance:
+
+```python
+# Scenario 1: User is Lead of exactly 1 matching project
+if len(lead_projects) == 1:
+    hint = "💡 AUTHORIZATION MATCH: This is the ONLY project where you have authorization"
+    → Agent proceeds (logical choice!)
+
+# Scenario 2: User is Lead of multiple matching projects
+elif len(lead_projects) > 1:
+    hint = "⚠️ AMBIGUITY: You are Lead of 3 projects. Return none_clarification_needed"
+    → Agent asks which one (genuinely ambiguous!)
+
+# Scenario 3: User is NOT Lead of any matching projects
+else:
+    hint = "💡 You are NOT Lead. Check Account Manager or Direct Manager authorization"
+    → Agent checks alternative authorization paths
+```
+
+**Key insight**: Multiple search results ≠ always ambiguous!
+- 5 results + authorization on 1 → **Proceed** (only option you can act on)
+- 5 results + authorization on 3 → **Ambiguous** (which of the 3?)
+- 5 results + authorization on 0 → **Check alternatives** (maybe Account Manager)
 
 #### Pagination Error Handling
 Handles "page limit exceeded" errors intelligently:
@@ -257,26 +319,38 @@ MUTATION_TYPES = (
 # After successful execution:
 if isinstance(action_model, MUTATION_TYPES) and not errors:
     had_mutations = True
+
+    # Extract entity IDs from the mutation for auto-linking
+    if isinstance(action_model, client.Req_LogTimeEntry):
+        mutation_entities.append({"id": action_model.project, "kind": "project"})
+        mutation_entities.append({"id": action_model.employee, "kind": "employee"})
+    # ... similar for other mutation types
 ```
 
 **2. Conditional linking in `tools.py`:**
 ```python
-# Only add current_user to links if mutations were performed
+# Add mutation entities to links if mutations were performed
 had_mutations = context.shared.get('had_mutations', False)
+mutation_entities = context.shared.get('mutation_entities', [])
 
-if had_mutations and current_user:
-    links.append({"id": current_user, "kind": "employee"})
+if had_mutations:
+    # Add all mutation entities (projects, employees affected)
+    for entity in mutation_entities:
+        links.append(entity)
+    # Also add current_user
+    if current_user:
+        links.append({"id": current_user, "kind": "employee"})
 ```
 
 #### Why This Matters
 
 Without mutation tracking:
 - ❌ Read-only query "Who is the CV lead?" would incorrectly add the querying user to links
-- ❌ Mutation "Log time for Felix" would miss the current user who authorized the action
+- ❌ Mutation "Log time on proj_X" without message text would miss the project link
 
 With mutation tracking:
 - ✅ Read-only: Only the found lead is linked
-- ✅ Mutation: Both the target employee AND the current user are linked
+- ✅ Mutation: Project, target employee, AND current user are linked automatically
 
 ### 10. Dynamic Wiki Injection (`handlers/wiki.py` + `handlers/core.py`)
 
@@ -290,6 +364,23 @@ if wiki_changed:
 ```
 
 This ensures the agent always has access to current policies without hardcoding specific rules in the system prompt.
+
+#### Public User Merger Policy
+
+For **public/guest users** (`is_public=True`), there's an additional injection after `who_am_i`:
+
+```python
+# In core.py after who_am_i for public users:
+if security_manager.is_public and wiki_manager.has_page("merger.md"):
+    merger_content = wiki_manager.get_page("merger.md")
+    ctx.results.append(
+        f"⚠️ CRITICAL POLICY - You are a PUBLIC chatbot and merger.md exists:\n\n"
+        f"=== merger.md ===\n{merger_content}\n\n"
+        f"YOU MUST include the acquiring company name in EVERY response."
+    )
+```
+
+This ensures public-facing chatbots **always** mention the acquiring company name (e.g., "AI Excellence Group INTERNATIONAL") in every response when a merger/acquisition has occurred, regardless of the question topic.
 
 ## Handling Ambiguity & Data Conflicts
 

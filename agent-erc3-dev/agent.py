@@ -195,6 +195,8 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
     task_done = False
     who_am_i_called = False  # Track if identity was verified - CRITICAL for security
     had_mutations = False  # Track if any mutation operation was performed (persists across turns)
+    mutation_entities = []  # Track entity IDs affected by mutations (for auto-linking)
+    pending_mutation_tools = set()  # Track mutation tools that were attempted but not executed
 
     for turn in range(max_turns):
         if task_done:
@@ -282,7 +284,45 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
                     print(f"  - {item}")
 
         print(f"{CLI_GREEN}[Actions]:{CLI_CLR} {len(action_queue)} action(s), is_final={is_final}")
-        
+
+        # VALIDATION: Check action_queue items have required structure
+        # LLM sometimes generates malformed JSON where action items are incomplete
+        valid_actions = []
+        malformed_count = 0
+        malformed_mutation_tools = []
+        mutation_tool_names = {'projects_update', 'projects_team_update', 'projects_status_update',
+                               'employees_update', 'time_log', 'time_update', 'wiki_update'}
+
+        for action in action_queue:
+            if isinstance(action, dict) and "tool" in action:
+                valid_actions.append(action)
+            else:
+                malformed_count += 1
+                print(f"  {CLI_YELLOW}⚠ Malformed action skipped: {action}{CLI_CLR}")
+                # Try to detect if this was supposed to be a mutation tool
+                action_str = str(action).lower()
+                for mt in mutation_tool_names:
+                    if mt.replace('_', '') in action_str.replace('_', ''):
+                        malformed_mutation_tools.append(mt)
+                        pending_mutation_tools.add(mt)
+                        break
+
+        if malformed_count > 0:
+            print(f"{CLI_YELLOW}⚠ {malformed_count} malformed action(s) detected - likely truncated JSON{CLI_CLR}")
+            mutation_warning = ""
+            if malformed_mutation_tools:
+                mutation_warning = f"\n\n⚠️ CRITICAL: The malformed action(s) included MUTATION tool(s): {', '.join(malformed_mutation_tools)}. These were NOT executed! You MUST re-execute them before responding with ok_answer."
+            messages.append(HumanMessage(content=f"""[SYSTEM ERROR]: {malformed_count} action(s) in your action_queue were malformed (missing 'tool' field or incomplete JSON).
+
+This usually happens when your JSON response was truncated. Please retry with the COMPLETE action(s).
+Each action MUST have this structure:
+{{"tool": "tool_name", "args": {{...}}}}{mutation_warning}
+
+The malformed actions were NOT executed. Please include them again in your next response."""))
+            action_queue = valid_actions
+            if not action_queue:
+                continue
+
         if failure_logger:
             failure_logger.log_llm_turn(task.task_id, turn + 1, raw_content, action_queue)
 
@@ -316,6 +356,37 @@ You MUST call the 'respond' tool to submit your final answer. Add it to action_q
 DO NOT set is_final=true until respond is in action_queue!"""))
             continue
 
+        # LOOP DETECTION: Detect if agent is stuck repeating the same actions
+        # Track last 3 action patterns
+        if not hasattr(run_agent, '_action_history'):
+            run_agent._action_history = []
+        
+        # Convert action_queue to a hashable pattern (tool names + arg keys)
+        action_pattern = tuple(
+            (a.get('tool'), tuple(sorted(a.get('args', {}).keys()))) 
+            for a in action_queue
+        )
+        
+        run_agent._action_history.append(action_pattern)
+        if len(run_agent._action_history) > 3:
+            run_agent._action_history.pop(0)
+        
+        # If last 3 patterns are identical and non-empty, agent is looping
+        if len(run_agent._action_history) == 3 and \
+           run_agent._action_history[0] == run_agent._action_history[1] == run_agent._action_history[2] and \
+           action_pattern:
+            print(f"{CLI_YELLOW}⚠ LOOP DETECTED: Agent is repeating the same actions. Breaking loop.{CLI_CLR}")
+            messages.append(HumanMessage(content="""[SYSTEM ERROR]: You are stuck in a loop, repeating the same actions for 3 turns without progress!
+
+This usually means:
+1. The feature/tool you're looking for does NOT exist → respond with 'none_unsupported'
+2. You're missing required information → respond with 'none_clarification_needed'
+3. There's a permissions issue → respond with 'denied_security'
+
+STOP repeating the same actions. Analyze why you're not making progress and call 'respond' with an appropriate outcome."""))
+            run_agent._action_history.clear()
+            continue
+
         # Execute Actions
         results = []
         stop_execution = False
@@ -344,10 +415,11 @@ DO NOT set is_final=true until respond is in action_queue!"""))
             # FIX: Pass a DummyContext with security_manager and mutation tracking
             # This allows parsing logic to inject current_user for mutation operations
             class DummyContext:
-                def __init__(self, sm, mutations):
-                    self.shared = {'security_manager': sm, 'had_mutations': mutations}
-            
-            dummy_ctx = DummyContext(security_manager, had_mutations)
+                def __init__(self, sm, mutations, entities, api_ref):
+                    self.shared = {'security_manager': sm, 'had_mutations': mutations, 'mutation_entities': entities}
+                    self.api = api_ref
+
+            dummy_ctx = DummyContext(security_manager, had_mutations, mutation_entities, api)
             
             # Wrap parse_action to catch ValidationError (e.g., invalid role like "Tester")
             try:
@@ -360,6 +432,7 @@ DO NOT set is_final=true until respond is in action_queue!"""))
                 continue
             
             # Check for ParseError (helpful error message for LLM)
+            if isinstance(action_model, ParseError):
                 error_msg = str(action_model)
                 print(f"  {CLI_RED}✗ Parse error: {error_msg}{CLI_CLR}")
                 results.append(f"Action {idx+1} ERROR: {error_msg}")
@@ -391,6 +464,13 @@ DO NOT set is_final=true until respond is in action_queue!"""))
                     results.append(f"Action {idx+1} BLOCKED: You cannot respond with 'ok_answer' because a previous action in this batch failed. Review the errors above and either: (1) fix the failed action and retry, or (2) respond with 'error_internal' if the action cannot be completed.")
                     continue
 
+                # Block ok_answer if there are pending mutations that were never executed
+                if pending_mutation_tools and action_model.outcome == "ok_answer":
+                    pending_list = ', '.join(pending_mutation_tools)
+                    print(f"  {CLI_YELLOW}⚠ BLOCKED: Cannot respond 'ok_answer' with pending mutations: {pending_list}{CLI_CLR}")
+                    results.append(f"Action {idx+1} BLOCKED: You cannot respond with 'ok_answer' because you attempted to execute mutation tool(s) [{pending_list}] in a previous turn but they were NOT executed (malformed JSON or parse error). You MUST re-execute these mutation(s) before claiming success.")
+                    continue
+
             if stats:
                 stats.add_api_call()
             
@@ -407,6 +487,45 @@ DO NOT set is_final=true until respond is in action_queue!"""))
                 had_mutations = True
                 # Update context for subsequent respond calls
                 dummy_ctx.shared['had_mutations'] = True
+
+                # Clear this mutation from pending (it was successfully executed)
+                if isinstance(action_model, client.Req_LogTimeEntry):
+                    pending_mutation_tools.discard('time_log')
+                elif isinstance(action_model, client.Req_UpdateEmployeeInfo):
+                    pending_mutation_tools.discard('employees_update')
+                elif isinstance(action_model, client.Req_UpdateProjectStatus):
+                    pending_mutation_tools.discard('projects_status_update')
+                    pending_mutation_tools.discard('projects_update')  # Also clear generic name
+                elif isinstance(action_model, client.Req_UpdateProjectTeam):
+                    pending_mutation_tools.discard('projects_team_update')
+                    pending_mutation_tools.discard('projects_update')  # Also clear generic name
+                elif isinstance(action_model, client.Req_UpdateTimeEntry):
+                    pending_mutation_tools.discard('time_update')
+                elif isinstance(action_model, client.Req_UpdateWiki):
+                    pending_mutation_tools.discard('wiki_update')
+
+                # Extract entity IDs from the mutation for auto-linking
+                # time_log → project, employee
+                if isinstance(action_model, client.Req_LogTimeEntry):
+                    if action_model.project:
+                        mutation_entities.append({"id": action_model.project, "kind": "project"})
+                    if action_model.employee:
+                        mutation_entities.append({"id": action_model.employee, "kind": "employee"})
+                # employees_update → employee
+                elif isinstance(action_model, client.Req_UpdateEmployeeInfo):
+                    if action_model.employee:
+                        mutation_entities.append({"id": action_model.employee, "kind": "employee"})
+                # projects_status_update, projects_team_update → project
+                elif isinstance(action_model, (client.Req_UpdateProjectStatus, client.Req_UpdateProjectTeam)):
+                    if hasattr(action_model, 'id') and action_model.id:
+                        mutation_entities.append({"id": action_model.id, "kind": "project"})
+                # time_update → time entry (but we link the project/employee from result if available)
+                elif isinstance(action_model, client.Req_UpdateTimeEntry):
+                    if action_model.id:
+                        mutation_entities.append({"id": action_model.id, "kind": "time_entry"})
+
+                # Update dummy_ctx with new entities
+                dummy_ctx.shared['mutation_entities'] = mutation_entities
             
             if ctx.stop_execution:
                 stop_execution = True
