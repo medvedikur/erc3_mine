@@ -477,6 +477,30 @@ class DefaultActionHandler:
                     f"Do NOT assume you found everything!"
                 )
 
+            # EMPTY CUSTOMERS SEARCH WARNING: Suggest broadening filters
+            if isinstance(ctx.model, client.Req_SearchCustomers):
+                customers = getattr(result, 'customers', None) or []
+                if not customers:
+                    # Count how many filters are active
+                    active_filters = []
+                    if getattr(ctx.model, 'locations', None):
+                        active_filters.append(f"locations={ctx.model.locations}")
+                    if getattr(ctx.model, 'deal_phase', None):
+                        active_filters.append(f"deal_phase={ctx.model.deal_phase}")
+                    if getattr(ctx.model, 'account_managers', None):
+                        active_filters.append(f"account_managers={ctx.model.account_managers}")
+                    if getattr(ctx.model, 'query', None):
+                        active_filters.append(f"query={ctx.model.query}")
+
+                    if len(active_filters) >= 2:
+                        ctx.results.append(
+                            f"\n⚠️ EMPTY RESULTS with {len(active_filters)} filters: {', '.join(active_filters)}. "
+                            f"BROADEN YOUR SEARCH! Try:\n"
+                            f"  1. Remove location filter (API may use different names like 'DK' vs 'Denmark' vs 'Danmark')\n"
+                            f"  2. Search with fewer filters, then manually inspect results\n"
+                            f"  3. Try `customers_search(account_managers=['your_id'])` to see ALL your customers, then filter yourself"
+                        )
+
             # Inject automatic disambiguation hints for project searches
             if isinstance(ctx.model, client.Req_SearchProjects):
                 self._analyze_project_overlap(ctx, result)
@@ -570,6 +594,8 @@ class DefaultActionHandler:
         # Add more patterns as needed
 
         # Filter overlap by keywords if present
+        # ALSO filter target_projects to see how many CV projects the target employee has
+        target_keyword_matches = []
         if filter_keywords:
             filtered_overlap = []
             for p in overlap:
@@ -579,9 +605,59 @@ class DefaultActionHandler:
                     if kw in proj_id.lower() or kw in proj_name.lower():
                         filtered_overlap.append(p)
                         break
+            # Also check how many keyword-matching projects the TARGET has (not just overlap)
+            for p in target_projects:
+                proj_id = getattr(p, "id", "") or ""
+                proj_name = getattr(p, "name", "") or ""
+                for kw in filter_keywords:
+                    if kw in proj_id.lower() or kw in proj_name.lower():
+                        target_keyword_matches.append(p)
+                        break
             if filtered_overlap:
                 overlap = filtered_overlap
                 print(f"  {CLI_YELLOW}📊 Filtered overlap by keywords {filter_keywords}: {len(overlap)} projects{CLI_CLR}")
+
+            # CRITICAL: Check how many keyword-matching projects current_user is Lead of
+            # where target_employee is ALSO a member. This determines ambiguity.
+            # We check target_keyword_matches (not just overlap) because we need to know
+            # if current_user could log time to multiple CV projects for target.
+            lead_keyword_projects = []
+            for proj in target_keyword_matches:
+                project_id = getattr(proj, "id", None)
+                project_detail = self._get_project_detail(ctx, project_id) if project_id else None
+                if project_detail:
+                    team = getattr(project_detail, "team", None) or []
+                    for member in team:
+                        employee = getattr(member, "employee", getattr(member, "employee_id", None))
+                        role = getattr(member, "role", None)
+                        if employee == current_user and role == "Lead":
+                            lead_keyword_projects.append(proj)
+                            break
+
+            if len(lead_keyword_projects) > 1:
+                # Current user is Lead on multiple keyword-matching projects where target works
+                # This is genuine ambiguity - we don't know which CV project to log to
+                lead_labels = [self._format_project_label(p) for p in lead_keyword_projects]
+                hint = (
+                    f"⚠️ AMBIGUITY: You ({current_user}) are the Lead of {len(lead_keyword_projects)} "
+                    f"'{filter_keywords[0]}' projects where {target_employee} is a member: "
+                    f"{', '.join(lead_labels)}. "
+                    f"Return `none_clarification_needed` asking which project to log time to."
+                )
+                ctx.results.append(hint)
+                self._hint_cache.add(hint_key)
+                return
+            elif len(lead_keyword_projects) == 1:
+                # Current user is Lead on exactly 1 keyword-matching project - clear choice!
+                hint = (
+                    f"💡 AUTHORIZATION MATCH: You ({current_user}) are the Lead of exactly 1 "
+                    f"'{filter_keywords[0]}' project where {target_employee} works: "
+                    f"{self._format_project_label(lead_keyword_projects[0])}. "
+                    f"This is the correct project to log time to."
+                )
+                ctx.results.append(hint)
+                self._hint_cache.add(hint_key)
+                return
 
         # Authorization-aware disambiguation:
         # If only 1 project where current_user has authorization (Lead), that's the logical choice
