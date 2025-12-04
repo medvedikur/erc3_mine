@@ -5,7 +5,41 @@ from .base import ToolContext, Middleware
 
 CLI_YELLOW = "\x1B[33m"
 CLI_RED = "\x1B[31m"
+CLI_GREEN = "\x1B[32m"
 CLI_CLR = "\x1B[0m"
+
+
+class ResponseValidationMiddleware(Middleware):
+    """
+    Middleware that validates respond calls have proper message and links.
+    Prevents agents from submitting empty responses after mutations.
+    """
+    def process(self, ctx: ToolContext) -> None:
+        if not isinstance(ctx.model, client.Req_ProvideAgentResponse):
+            return
+
+        message = ctx.model.message or ""
+        links = ctx.model.links or []
+        outcome = ctx.model.outcome or ""
+
+        # Check if mutations were performed this session
+        had_mutations = ctx.shared.get('had_mutations', False)
+        mutation_entities = ctx.shared.get('mutation_entities', [])
+
+        # Validate: If mutations happened and outcome is ok_answer, message should describe what was done
+        if had_mutations and outcome == "ok_answer":
+            if message in ["", "No message provided.", "No message provided"]:
+                print(f"  {CLI_YELLOW}⚠️ Response Validation: Empty message after mutation. Injecting summary...{CLI_CLR}")
+                # Auto-generate a minimal message from mutation_entities
+                entity_descriptions = []
+                for entity in mutation_entities:
+                    kind = entity.get("kind", "entity")
+                    eid = entity.get("id", "unknown")
+                    entity_descriptions.append(f"{kind}: {eid}")
+                if entity_descriptions:
+                    ctx.model.message = f"Action completed. Affected entities: {', '.join(entity_descriptions)}"
+                    print(f"  {CLI_GREEN}✓ Auto-generated message: {ctx.model.message[:100]}...{CLI_CLR}")
+
 
 class ProjectMembershipMiddleware(Middleware):
     """

@@ -519,10 +519,20 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                 elif isinstance(action_model, client.Req_UpdateEmployeeInfo):
                     if action_model.employee:
                         mutation_entities.append({"id": action_model.employee, "kind": "employee"})
-                # projects_status_update, projects_team_update → project
-                elif isinstance(action_model, (client.Req_UpdateProjectStatus, client.Req_UpdateProjectTeam)):
+                # projects_status_update → project
+                elif isinstance(action_model, client.Req_UpdateProjectStatus):
                     if hasattr(action_model, 'id') and action_model.id:
                         mutation_entities.append({"id": action_model.id, "kind": "project"})
+                # projects_team_update → project AND all team members
+                elif isinstance(action_model, client.Req_UpdateProjectTeam):
+                    if hasattr(action_model, 'id') and action_model.id:
+                        mutation_entities.append({"id": action_model.id, "kind": "project"})
+                    # CRITICAL: Also add all team members as links
+                    if hasattr(action_model, 'team') and action_model.team:
+                        for member in action_model.team:
+                            emp_id = member.get('employee') if isinstance(member, dict) else getattr(member, 'employee', None)
+                            if emp_id:
+                                mutation_entities.append({"id": emp_id, "kind": "employee"})
                 # time_update → time entry (but we link the project/employee from result if available)
                 elif isinstance(action_model, client.Req_UpdateTimeEntry):
                     if action_model.id:
