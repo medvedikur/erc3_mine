@@ -464,24 +464,25 @@ class WikiManager:
         Return content of critical policy documents that should be read after wiki changes.
         These are dynamically loaded from the wiki, NOT hardcoded rules.
         """
-        critical_paths = [
-            "rulebook.md",      # Always contains core policies
-            "merger.md",        # May contain post-M&A rules (if exists)
-            "hierarchy.md",     # Org structure and permissions
-        ]
-        
+        # Different limits for different documents based on importance
+        critical_paths = {
+            "rulebook.md": 3000,    # Core policies
+            "merger.md": 5000,       # M&A rules - CRITICAL for time tracking CC codes!
+            "hierarchy.md": 2000,    # Org structure
+        }
+
         docs = []
-        for path in critical_paths:
+        for path, max_len in critical_paths.items():
             if path in self.pages:
                 content = self.pages[path]
                 # Truncate very long documents
-                if len(content) > 2000:
-                    content = content[:2000] + "\n... [truncated, use wiki_load for full content]"
+                if len(content) > max_len:
+                    content = content[:max_len] + "\n... [truncated, use wiki_load for full content]"
                 docs.append(f"=== {path} ===\n{content}")
-        
+
         if not docs:
             return ""
-        
+
         return "\n\n".join(docs)
     
     def has_page(self, path: str) -> bool:

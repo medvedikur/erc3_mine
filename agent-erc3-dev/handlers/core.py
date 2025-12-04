@@ -634,9 +634,17 @@ class DefaultActionHandler:
                             lead_keyword_projects.append(proj)
                             break
 
+            print(f"  {CLI_YELLOW}📊 Target keyword projects: {target_employee} works on {len(target_keyword_matches)} '{filter_keywords[0]}' projects{CLI_CLR}")
+            for p in target_keyword_matches:
+                print(f"     - {self._format_project_label(p)}")
+            print(f"  {CLI_YELLOW}📊 Lead check: {current_user} is Lead of {len(lead_keyword_projects)} of them{CLI_CLR}")
+
+            # AUTHORIZATION-BASED DISAMBIGUATION:
+            # Even if target works on multiple keyword-matching projects,
+            # if current_user is Lead on exactly 1 of them - that's the logical choice.
+            # Ambiguity only arises when current_user is Lead on MULTIPLE such projects.
             if len(lead_keyword_projects) > 1:
-                # Current user is Lead on multiple keyword-matching projects where target works
-                # This is genuine ambiguity - we don't know which CV project to log to
+                # Current user is Lead on multiple keyword-matching projects - ambiguity!
                 lead_labels = [self._format_project_label(p) for p in lead_keyword_projects]
                 hint = (
                     f"⚠️ AMBIGUITY: You ({current_user}) are the Lead of {len(lead_keyword_projects)} "
@@ -653,7 +661,8 @@ class DefaultActionHandler:
                     f"💡 AUTHORIZATION MATCH: You ({current_user}) are the Lead of exactly 1 "
                     f"'{filter_keywords[0]}' project where {target_employee} works: "
                     f"{self._format_project_label(lead_keyword_projects[0])}. "
-                    f"This is the correct project to log time to."
+                    f"This is the correct project to log time to. "
+                    f"IMPORTANT: Include BOTH {target_employee} AND {current_user} (yourself as authorizer) in response links!"
                 )
                 ctx.results.append(hint)
                 self._hint_cache.add(hint_key)
@@ -688,7 +697,8 @@ class DefaultActionHandler:
                     f"where both you ({current_user}) and {target_employee} are members, "
                     f"AND you are the Lead (authorized to log time for others). "
                     f"Even though search returned {total_results} total projects for {target_employee}, "
-                    f"this is the logical choice because it's the only one where you have authorization."
+                    f"this is the logical choice because it's the only one where you have authorization. "
+                    f"IMPORTANT: Include BOTH {target_employee} AND {current_user} (yourself as authorizer) in response links!"
                 )
             else:
                 # Current user is NOT Lead → no authorization anyway
@@ -717,7 +727,8 @@ class DefaultActionHandler:
                 hint = (
                     f"💡 AUTHORIZATION MATCH: Found {len(overlap)} shared projects, "
                     f"but you are the Lead of only 1: {self._format_project_label(lead_projects[0])}. "
-                    f"This is the logical choice for logging time."
+                    f"This is the logical choice for logging time. "
+                    f"IMPORTANT: Include BOTH {target_employee} AND {current_user} (yourself as authorizer) in response links!"
                 )
             elif len(lead_projects) > 1:
                 # Multiple projects where current_user is Lead → ambiguity!

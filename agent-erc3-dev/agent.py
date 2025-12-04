@@ -505,12 +505,16 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                     pending_mutation_tools.discard('wiki_update')
 
                 # Extract entity IDs from the mutation for auto-linking
-                # time_log → project, employee
+                # time_log → project, employee, AND logged_by (authorizer)
                 if isinstance(action_model, client.Req_LogTimeEntry):
                     if action_model.project:
                         mutation_entities.append({"id": action_model.project, "kind": "project"})
                     if action_model.employee:
                         mutation_entities.append({"id": action_model.employee, "kind": "employee"})
+                    # CRITICAL: Also add the authorizer (logged_by) as a link
+                    # This is the Lead/Manager who authorized logging time for someone else
+                    if action_model.logged_by and action_model.logged_by != action_model.employee:
+                        mutation_entities.append({"id": action_model.logged_by, "kind": "employee"})
                 # employees_update → employee
                 elif isinstance(action_model, client.Req_UpdateEmployeeInfo):
                     if action_model.employee:
