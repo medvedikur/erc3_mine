@@ -634,10 +634,17 @@ class DefaultActionHandler:
                             lead_keyword_projects.append(proj)
                             break
 
-            print(f"  {CLI_YELLOW}📊 Target keyword projects: {target_employee} works on {len(target_keyword_matches)} '{filter_keywords[0]}' projects{CLI_CLR}")
-            for p in target_keyword_matches:
-                print(f"     - {self._format_project_label(p)}")
-            print(f"  {CLI_YELLOW}📊 Lead check: {current_user} is Lead of {len(lead_keyword_projects)} of them{CLI_CLR}")
+            # Only print and hint if this page actually has keyword-matching projects
+            # This prevents confusing "0 projects" messages on subsequent pagination pages
+            if target_keyword_matches:
+                print(f"  {CLI_YELLOW}📊 Target keyword projects: {target_employee} works on {len(target_keyword_matches)} '{filter_keywords[0]}' projects{CLI_CLR}")
+                for p in target_keyword_matches:
+                    print(f"     - {self._format_project_label(p)}")
+                print(f"  {CLI_YELLOW}📊 Lead check: {current_user} is Lead of {len(lead_keyword_projects)} of them{CLI_CLR}")
+            else:
+                # No keyword-matching projects on this page - skip hinting entirely
+                # The correct hint was already given on a previous page (if any)
+                return
 
             # AUTHORIZATION-BASED DISAMBIGUATION:
             # Even if target works on multiple keyword-matching projects,

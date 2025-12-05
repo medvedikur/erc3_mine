@@ -419,7 +419,7 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                     self.shared = {'security_manager': sm, 'had_mutations': mutations, 'mutation_entities': entities}
                     self.api = api_ref
 
-            dummy_ctx = DummyContext(security_manager, had_mutations, mutation_entities, api)
+            dummy_ctx = DummyContext(security_manager, had_mutations, mutation_entities, erc_client)
             
             # Wrap parse_action to catch ValidationError (e.g., invalid role like "Tester")
             try:
@@ -543,12 +543,19 @@ STOP repeating the same actions. Analyze why you're not making progress and call
             
             if ctx.stop_execution:
                 stop_execution = True
-            
+
             # Check if this was the final response
+            # IMPORTANT: If middleware blocked the response (ctx.stop_execution),
+            # do NOT mark task as done - agent needs another turn to fix it
             if isinstance(action_model, client.Req_ProvideAgentResponse):
-                 task_done = True
-                 print(f"  {CLI_GREEN}✓ FINAL RESPONSE SUBMITTED{CLI_CLR}")
-                 stop_execution = True
+                if ctx.stop_execution:
+                    # Middleware blocked this respond - agent needs to retry
+                    print(f"  {CLI_YELLOW}⚠ Response blocked by middleware - agent will retry{CLI_CLR}")
+                    # Don't set task_done, but do stop this turn's execution
+                else:
+                    task_done = True
+                    print(f"  {CLI_GREEN}✓ FINAL RESPONSE SUBMITTED{CLI_CLR}")
+                    stop_execution = True
 
         # Feed back results
         if results:
@@ -561,6 +568,15 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                  # Check if we should remind? Maybe too noisy.
                  pass
         else:
-             messages.append(HumanMessage(content="[SYSTEM]: No actions executed. Set is_final=true if done, otherwise add actions."))
+             # CRITICAL: Agent tried to do actions but none were parsed/executed
+             # This usually means malformed JSON or unknown tools
+             messages.append(HumanMessage(content=(
+                 "[SYSTEM ERROR]: ⚠️ NO ACTIONS WERE EXECUTED! Your action_queue may have had:\n"
+                 "- Malformed JSON (syntax errors, truncated output)\n"
+                 "- Unknown tool names (check spelling: projects_team_update, time_log, etc.)\n"
+                 "- Missing required fields\n\n"
+                 "The mutation you intended DID NOT HAPPEN. Please retry with correct syntax.\n"
+                 "If you are done, set is_final=true and use 'respond' tool."
+             )))
 
     print(f"\n{CLI_BLUE}═══ Agent finished ═══{CLI_CLR}")

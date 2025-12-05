@@ -318,15 +318,13 @@ class WikiSummarizer:
                 if len(company_name) > 5:  # Valid company name
                     summary_parts.insert(1, f"⚠️ Acquired by: **{company_name}**")
 
-            # Look for CC code requirement specifically
-            if 'cost centre' in content_lower or 'cc code' in content_lower:
-                # Extract the CC code format pattern
-                cc_match = re.search(r'CC-<[^>]+>-<[^>]+>-<[^>]+>', content)
-                if cc_match:
-                    # Also look for examples
-                    examples = re.findall(r'`(CC-[A-Z]+-[A-Z]+-\d+)`', content)
-                    example_str = f" (e.g., {', '.join(examples[:2])})" if examples else ""
-                    summary_parts.append(f"⚠️ **TIME TRACKING REQUIRES CC CODE**: Format `{cc_match.group(0)}`{example_str}")
+            # NOTE: We intentionally DO NOT include CC code requirements in summary
+            # because it causes agents to ask for CC code BEFORE identifying the project.
+            # The agent should:
+            # 1. Find the correct project first (get authorization hints)
+            # 2. Load merger.md for full details if needed
+            # 3. THEN ask for CC code if missing, including project link in response
+            # The CC code check happens in safety.py middleware when time_log is attempted.
 
         if 'rulebook' in path.lower():
             # Look for key permission rules

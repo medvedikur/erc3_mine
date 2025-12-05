@@ -434,7 +434,7 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
 
         return client.Req_SearchProjects(**valid_search_args)
     
-    if tool in ["projectsteamupdate", "updateprojectteam"]:
+    if tool in ["projectsteamupdate", "updateprojectteam", "projectsupdateteam", "teamupdate"]:
         # Normalize team roles to valid TeamRole values
         # Valid: 'Lead', 'Engineer', 'Designer', 'QA', 'Ops', 'Other'
         team_data = args.get("team") or []
@@ -494,10 +494,39 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
     
     # Handle "projects_update" - redirect to appropriate tool based on args
     if tool in ["projectsupdate", "updateproject"]:
-        # If team is provided, redirect to projects_team_update
-        if args.get("team"):
-            # Normalize team roles and delegate to projects_team_update logic
-            team_data = args.get("team") or []
+        # If team or team_add is provided, redirect to projects_team_update
+        # Handle both "team" (full replacement) and "team_add" (single member to add)
+        team_data = args.get("team")
+        team_add = args.get("team_add")
+
+        # If team_add is provided (single member dict), we need to fetch current team and merge
+        if team_add and not team_data:
+            # team_add is a single member object like {"employee": "...", "role": "...", "time_slice": 0.3}
+            # We need to get current project team and add this member
+            project_id = args.get("id") or args.get("project_id")
+            if context and hasattr(context, 'api'):
+                try:
+                    resp = context.api.get_project(project_id)
+                    current_team = []
+                    if hasattr(resp, 'project') and resp.project and hasattr(resp.project, 'team'):
+                        for member in resp.project.team:
+                            current_team.append({
+                                "employee": getattr(member, 'employee', None),
+                                "role": getattr(member, 'role', 'Other'),
+                                "time_slice": getattr(member, 'time_slice', 0.0)
+                            })
+                    # Add the new member
+                    current_team.append(team_add)
+                    team_data = current_team
+                except Exception as e:
+                    print(f"  ⚠️ Failed to fetch current team for merge: {e}")
+                    # Fall back to just the new member
+                    team_data = [team_add]
+            else:
+                # No context, just use the new member
+                team_data = [team_add]
+
+        if team_data:
             normalized_team = []
             role_mappings = {
                 "tester": "QA", "testing": "QA", "quality control": "QA", "qc": "QA",
@@ -607,12 +636,14 @@ def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
 
     # Response
     if tool in ["respond", "answer", "reply"]:
-        # OpenAI models often use PascalCase - handle both cases
-        message = (args.get("message") or args.get("Message") or 
-                   args.get("text") or args.get("Text") or 
-                   args.get("response") or args.get("Response") or 
-                   args.get("answer") or args.get("Answer") or 
-                   args.get("content") or args.get("Content"))
+        # OpenAI/Qwen models use various field names - handle all cases
+        message = (args.get("message") or args.get("Message") or
+                   args.get("text") or args.get("Text") or
+                   args.get("response") or args.get("Response") or
+                   args.get("answer") or args.get("Answer") or
+                   args.get("content") or args.get("Content") or
+                   args.get("details") or args.get("Details") or  # Qwen sometimes uses "details"
+                   args.get("body") or args.get("Body"))
         if not message:
             message = "No message provided."
         

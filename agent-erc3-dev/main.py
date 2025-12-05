@@ -128,16 +128,22 @@ print(f"Session {res.session_id} has {len(status.tasks)} tasks")
 stats = SessionStats()
 wiki_manager = WikiManager()
 
-for task in status.tasks:
-    # Optional: Filter tasks for testing
-    if args.task and task.spec_id != args.task:
-        continue
+# Filter tasks if specified
+tasks_to_run = status.tasks
+if args.task:
+    # Support comma-separated task IDs
+    task_filters = [t.strip() for t in args.task.split(',')]
+    tasks_to_run = [t for t in status.tasks if t.spec_id in task_filters]
+    print(f"🎯 Filtered to {len(tasks_to_run)} task(s): {', '.join(task_filters)}")
 
+for task in tasks_to_run:
     print("=" * 40)
     print(f"Starting Task: {task.task_id} ({task.spec_id}): {task.task_text}")
-    
+
+    # Start tracking for both stats and failure logger
+    stats.start_task(task.task_id, task.spec_id)
     failure_logger.start_task(task.task_id, task.task_text, task.spec_id)
-    
+
     core.start_task(task)
     try:
         run_agent(
@@ -154,14 +160,19 @@ for task in status.tasks:
         print(f"Fatal error in agent: {e}")
         import traceback
         traceback.print_exc()
-        
+
     result = core.complete_task(task)
+    score = None
     if result.eval:
+        score = result.eval.score
         explain = textwrap.indent(result.eval.logs, "  ")
         print(f"\nSCORE: {result.eval.score}\n{explain}\n")
         failure_logger.save_failure(task.task_id, result.eval.score, result.eval.logs)
     else:
         print(f"\nTask Completed (Status: {result.status})\n")
+
+    # Finish task tracking with score
+    stats.finish_task(task.task_id, score)
 
 core.submit_session(res.session_id)
 stats.print_report()
