@@ -8,6 +8,8 @@ Usage:
     python main.py -threads 2 -task task1,task2  # Parallel with task filter
     python main.py -openrouter               # Use OpenRouter instead of Gonka
     python main.py -threads 4 -verbose       # Parallel with real-time output
+    python main.py -tests_on                 # Run local tests instead of benchmark
+    python main.py -tests_on -threads 4      # Run tests in parallel
 
 Output modes (parallel):
     - Default: Per-thread log files + summary in console
@@ -43,6 +45,8 @@ parser.add_argument('-threads', '--threads', type=int, default=1,
                     help='Number of parallel threads (default: 1 = sequential)')
 parser.add_argument('-verbose', '--verbose', action='store_true',
                     help='Show all output in console (for parallel: interleaved but real-time)')
+parser.add_argument('-tests_on', '--tests_on', action='store_true',
+                    help='Run local tests instead of benchmark tasks')
 args = parser.parse_args()
 
 # Load environment variables
@@ -512,10 +516,45 @@ def run_parallel(base_url: str, tasks_to_run: list, stats: SessionStats):
 
 
 # ============================================================================
+# Local test runner
+# ============================================================================
+
+def run_local_tests():
+    """Run local tests instead of benchmark tasks."""
+    from tests.framework.test_runner import run_tests
+
+    print(f"""
+╔════════════════════════════════════════════════════════════════════╗
+║  🧪 ERC3 LOCAL TEST MODE                                            ║
+║  Model: {MODEL_ID:<52} ║
+║  Pricing: {PRICING_MODEL_ID:<50} ║
+╚════════════════════════════════════════════════════════════════════╝
+""")
+
+    run_tests(
+        parallel=PARALLEL_MODE,
+        num_threads=NUM_THREADS,
+        task_filter=args.task,
+        model_id=MODEL_ID,
+        backend=BACKEND,
+        pricing_model=PRICING_MODEL_ID,
+        wiki_dump_dir="wiki_dump_tests",
+        logs_dir="logs_tests",
+        verbose=VERBOSE_MODE,
+        max_turns=20,
+    )
+
+
+# ============================================================================
 # Main entry point
 # ============================================================================
 
 def main():
+    # Check if running local tests
+    if args.tests_on:
+        run_local_tests()
+        return
+
     # Print banner
     backend_emoji = "🌐" if USE_OPENROUTER else "🚀"
     backend_name = "OpenRouter" if USE_OPENROUTER else "Gonka Network"

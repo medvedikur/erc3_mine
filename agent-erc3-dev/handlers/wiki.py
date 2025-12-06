@@ -63,25 +63,26 @@ class WikiVersionStore:
     """
     def __init__(self, base_dir: str = WIKI_DUMP_DIR):
         self.base_dir = base_dir
+        self.versions_index = os.path.join(base_dir, "versions.json")
         os.makedirs(base_dir, exist_ok=True)
         self._load_index()
-    
+
     def _load_index(self):
         """Load versions index from JSON file."""
-        if os.path.exists(VERSIONS_INDEX):
+        if os.path.exists(self.versions_index):
             try:
-                with open(VERSIONS_INDEX, 'r', encoding='utf-8') as f:
+                with open(self.versions_index, 'r', encoding='utf-8') as f:
                     self.index = json.load(f)
             except Exception as e:
                 print(f"⚠️ Failed to load wiki index: {e}")
                 self.index = {"versions": {}, "current": None}
         else:
             self.index = {"versions": {}, "current": None}
-    
+
     def _save_index(self):
         """Save versions index to JSON file."""
         try:
-            with open(VERSIONS_INDEX, 'w', encoding='utf-8') as f:
+            with open(self.versions_index, 'w', encoding='utf-8') as f:
                 json.dump(self.index, f, indent=2)
         except Exception as e:
             print(f"⚠️ Failed to save wiki index: {e}")
@@ -396,8 +397,9 @@ class WikiManager:
     2. SEMANTIC: Vector similarity using sentence-transformers (if available)
     3. KEYWORD: Token overlap fallback for broad matching
     """
-    def __init__(self, api: Optional[client.Erc3Client] = None):
+    def __init__(self, api: Optional[client.Erc3Client] = None, base_dir: str = WIKI_DUMP_DIR):
         self.api = api
+        self.base_dir = base_dir
         self.current_sha1: str = ""
         self.pages: Dict[str, str] = {}
         self.summaries: Dict[str, str] = {}  # Page summaries for injection
@@ -408,8 +410,8 @@ class WikiManager:
         self._last_synced_sha1: Optional[str] = None
         self._sha1_change_count: int = 0
 
-        # Initialize version store
-        self.store = WikiVersionStore()
+        # Initialize version store with custom base_dir
+        self.store = WikiVersionStore(base_dir=base_dir)
 
         # Use global singleton embedding model (thread-safe)
         self.model = get_embedding_model()

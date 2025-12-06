@@ -1,7 +1,7 @@
 venv
 .envrc
 .env
-logs
+logs*
 __pycache__
 venv-erc3
-wiki_dump
+wiki_dump*

@@ -10,7 +10,7 @@
   - Guide the agent in the right direction
   - Prevent obvious mistakes at execution time
   - Provide helpful hints in API responses (e.g., authorization info, disambiguation suggestions)
-- **Chain of Thought**: Agent uses structured reasoning (thoughts ’ plan ’ actions) to work through complex tasks
+- **Chain of Thought**: Agent uses structured reasoning (thoughts ï¿½ plan ï¿½ actions) to work through complex tasks
 - **handlers/ folder purpose**: Contains not just middleware but also:
   - `core.py`  ActionExecutor for tool execution
   - `wiki.py`  WikiManager for knowledge base access
@@ -46,10 +46,22 @@
 
 ## ERC3 Benchmark Context
 - **Benchmark types**: `erc3-test` (24 tasks, testing), `erc3` (production)
-- **Session lifecycle**: `start_session` ’ `session_status` (get tasks) ’ for each task: `start_task` ’ agent loop ’ `complete_task` ’ finally `submit_session`
+- **Session lifecycle**: `start_session` ï¿½ `session_status` (get tasks) ï¿½ for each task: `start_task` ï¿½ agent loop ï¿½ `complete_task` ï¿½ finally `submit_session`
 - **Response outcomes**: `ok_answer`, `ok_not_found`, `none_clarification_needed`, `denied_security`, `denied_authorization`
 - **Links in responses**: Always include relevant entity links (project, employee, customer)  benchmark checks for them
 
 ## Virtual Environment
 - **venv location**: `venv-erc3/` in parent directory (`../venv-erc3/`)
 - **Activation**: `source ../venv-erc3/bin/activate` or run directly with `python` from activated shell
+
+## Local Test Framework
+- **Purpose**: Test agent behavior locally with mock API before running against real benchmark
+- **Location**: `tests/` directory with `framework/` (core components) and `cases/` (test files)
+- **Run tests**: `python main.py -tests_on` (instead of benchmark tasks)
+- **Parallel tests**: `python main.py -tests_on -threads 4`
+- **Filter tests**: `python main.py -tests_on -task spec_id1,spec_id2`
+- **Test documentation**: `tests/TEST_MODEL.md` describes all 24 benchmark tasks + custom tests
+- **Isolated data**: Tests use `wiki_dump_tests/` and `logs_tests/` to avoid polluting production data
+- **Test structure**: One file per test in `tests/cases/test_XXX_name.py` with `SCENARIO` variable
+- **Mock API**: `MockErc3Client` intercepts API calls and returns mock data
+- **Evaluation**: Same as benchmark - checks outcome + links match expected values
