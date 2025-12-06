@@ -3,7 +3,7 @@
 This solution reimplements the SGR (Schema-Guided Reasoning) agent using **LangChain** and supports multiple inference backends, specifically adapted for the **ERC3-Dev Benchmark**.
 
 ## Structure
-- `main.py`: Entry point handling session loop, environment configuration, backend selection (`-openrouter` flag), and task orchestration.
+- `main.py`: Entry point supporting both sequential and parallel execution modes. Handles session loop, environment configuration, backend selection (`-openrouter` flag), and task orchestration. Use `-threads N` for parallel execution.
 - `agent.py`: LangChain-based agent loop implementing the "Mental Protocol" (Analyze -> Plan -> Act). Includes security guards against prompt injection.
 - `llm_provider.py`: Unified LLM provider supporting multiple backends:
   - `GonkaChatModel`: Custom LangChain model for Gonka Network with node failover and retry logic.
@@ -281,7 +281,41 @@ The `GonkaChatModel` ensures high availability:
 - **Critical Error Detection**: Handles `signature is in the future` (clock sync), `balance` errors
 - **Smart Connection**: Validates initial connection before starting
 
-### 8. Schema-Guided Reasoning (SGR)
+### 8. Parallel Task Execution
+
+The agent supports parallel task execution via `-threads N` flag, reducing total session time significantly (e.g., 24 tasks in ~12 minutes with 5 threads vs ~45 minutes sequential).
+
+#### Thread-Safety Architecture
+
+| Component | Strategy | Reason |
+|-----------|----------|--------|
+| **Embedding Model** | Global singleton with Lock | Avoids GPU race condition on Apple MPS |
+| **WikiManager** | Thread-local instances | Mutable in-memory state (current_sha1, pages) |
+| **Wiki Disk Cache** | Shared (immutable per SHA1) | Safe for concurrent reads |
+| **SessionStats** | Shared with Lock | Accumulates metrics across threads |
+| **failure_logger** | Shared with Lock | Writes to single log directory |
+| **requests.Session** | Thread-local | Not thread-safe by design |
+| **stdout/stderr** | ThreadLocalStdout dispatcher | Routes output to per-task log files |
+
+#### Output Handling
+
+```python
+class ThreadLocalStdout:
+    """Routes print() calls to thread-specific log files."""
+    def write(self, text):
+        capture = getattr(self._local, 'capture', None)
+        if capture:
+            capture.write(text)  # → logs/parallel_<ts>/<spec_id>.log
+        else:
+            self._original.write(text)  # → console (main thread)
+```
+
+This ensures:
+- Clean console with only status updates (`[T0:task_name] 🚀 Starting...`)
+- Full detailed logs per task in separate files
+- No interleaved output corruption
+
+### 9. Schema-Guided Reasoning (SGR)
 The agent follows a strict "Mental Protocol" defined in `prompts.py`:
 - **Outcome Selection**: Strictly enforces `outcome` codes (`denied_security`, `ok_answer`, etc.) based on the result.
 - **Identity Check**: Always verifies current user role (`who_am_i`) to determine permissions.
@@ -352,7 +386,7 @@ With mutation tracking:
 - ✅ Read-only: Only the found lead is linked
 - ✅ Mutation: Project, target employee, AND current user are linked automatically
 
-### 10. Dynamic Wiki Injection (`handlers/wiki.py` + `handlers/core.py`)
+### 11. Dynamic Wiki Injection (`handlers/wiki.py` + `handlers/core.py`)
 
 When the Wiki changes mid-task (detected via `wiki_sha1` change), critical policy documents are automatically injected into the agent's context:
 
@@ -508,15 +542,25 @@ To support both Qwen (Gonka) and OpenAI models (OpenRouter), we added:
 
 ## Usage
 
-### Gonka Network (Default)
+### Sequential Execution (Default)
 ```bash
-python agent-erc3-dev/main.py
+python agent-erc3-dev/main.py                    # Gonka Network
+python agent-erc3-dev/main.py -openrouter        # OpenRouter
 ```
 
-### OpenRouter
+### Parallel Execution
 ```bash
-python agent-erc3-dev/main.py -openrouter
+python agent-erc3-dev/main.py -threads 4                    # 4 parallel threads
+python agent-erc3-dev/main.py -threads 5 -openrouter        # OpenRouter + 5 threads
+python agent-erc3-dev/main.py -threads 2 -task task1,task2  # Filter specific tasks
+python agent-erc3-dev/main.py -threads 4 -verbose           # Real-time interleaved output
 ```
+
+**Parallel mode features:**
+- Per-task log files in `logs/parallel_<timestamp>/<spec_id>.log`
+- Thread-safe execution with thread-local WikiManager and HTTP sessions
+- Colored console status updates per thread
+- Pre-initialized embedding model (avoids GPU race conditions)
 
 ### Environment Variables
 - `ERC3_API_KEY`: Competition API key

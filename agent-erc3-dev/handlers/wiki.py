@@ -1,6 +1,7 @@
 import re
 import os
 import json
+import threading
 from typing import Dict, List, Optional, Tuple, Any
 from erc3.erc3 import client
 from .base import ToolContext, Middleware
@@ -18,6 +19,37 @@ try:
 except ImportError:
     HAS_EMBEDDINGS = False
     print("⚠️ sentence-transformers not found. Falling back to keyword search.")
+
+
+# Global singleton for embedding model (thread-safe initialization)
+_embedding_model = None
+_embedding_model_lock = threading.Lock()
+
+def get_embedding_model():
+    """
+    Get or create the global embedding model instance.
+    Thread-safe singleton pattern.
+    """
+    global _embedding_model
+    if _embedding_model is not None:
+        return _embedding_model
+
+    with _embedding_model_lock:
+        # Double-check after acquiring lock
+        if _embedding_model is not None:
+            return _embedding_model
+
+        if not HAS_EMBEDDINGS:
+            return None
+
+        try:
+            model_name = 'all-MiniLM-L6-v2'
+            print(f"🧠 Initializing Local Embedding Model ({model_name})...")
+            _embedding_model = SentenceTransformer(model_name)
+            return _embedding_model
+        except Exception as e:
+            print(f"⚠️ Failed to load embedding model: {e}")
+            return None
 
 # Storage paths
 WIKI_DUMP_DIR = "wiki_dump"
@@ -379,16 +411,8 @@ class WikiManager:
         # Initialize version store
         self.store = WikiVersionStore()
 
-        # Initialize embedding model
-        self.model = None
-        if HAS_EMBEDDINGS:
-            try:
-                model_name = 'all-MiniLM-L6-v2'
-                print(f"🧠 Initializing Local Embedding Model ({model_name})...")
-                self.model = SentenceTransformer(model_name)
-            except Exception as e:
-                print(f"⚠️ Failed to load embedding model: {e}")
-                self.model = None
+        # Use global singleton embedding model (thread-safe)
+        self.model = get_embedding_model()
 
     def set_api(self, api: client.Erc3Client):
         self.api = api

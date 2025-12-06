@@ -202,6 +202,64 @@ class DefaultActionHandler:
                         next_offset=next_offset
                     )
                     print(f"  {CLI_BLUE}🔍 Merged {len(projects_map)} unique projects.{CLI_CLR}")
+                # SPECIAL HANDLING: Smart Keyword Fallback for Employee Search
+                # If query has multiple words (e.g., "Mira Schaefer") and no results, try individual keywords
+                elif isinstance(ctx.model, client.Req_SearchEmployees):
+                    employees_map = {}
+                    exact_error = None
+
+                    # 1. Exact Match (Original Request)
+                    try:
+                        res_exact = ctx.api.dispatch(ctx.model)
+                        if hasattr(res_exact, 'employees') and res_exact.employees:
+                            for e in res_exact.employees:
+                                employees_map[e.id] = e
+                    except Exception as e:
+                        error_msg = str(e).lower()
+                        if any(x in error_msg for x in ['limit exceeded', 'internal error', 'server error', 'timeout']):
+                            exact_error = e
+                            print(f"  {CLI_YELLOW}⚠ Exact search failed with system error: {e}{CLI_CLR}")
+                        else:
+                            print(f"  {CLI_YELLOW}⚠ Exact search failed: {e}{CLI_CLR}")
+                        res_exact = None
+
+                    # 2. Keyword Fallback (if query has multiple words and exact match yielded no/few results)
+                    query = ctx.model.query
+                    if query and len(employees_map) < 2 and " " in query.strip():
+                        print(f"  {CLI_BLUE}🔍 Smart Search: Executing keyword fallback for employees{CLI_CLR}")
+                        keywords = [k.strip() for k in query.split() if len(k.strip()) > 2]
+
+                        for kw in keywords:
+                            if kw.lower() == query.lower():
+                                continue
+
+                            print(f"  {CLI_BLUE}  → Searching for keyword: '{kw}'{CLI_CLR}")
+                            import copy
+                            model_kw = copy.deepcopy(ctx.model)
+                            model_kw.query = kw
+
+                            try:
+                                res_kw = ctx.api.dispatch(model_kw)
+                                if hasattr(res_kw, 'employees') and res_kw.employees:
+                                    for emp in res_kw.employees:
+                                        if emp.id not in employees_map:
+                                            employees_map[emp.id] = emp
+                            except Exception as e:
+                                print(f"  {CLI_YELLOW}⚠ Keyword search '{kw}' failed: {e}{CLI_CLR}")
+
+                    # 3. Check if we have a system error that prevents any results
+                    if exact_error and len(employees_map) == 0:
+                        raise exact_error
+
+                    # 4. Construct Final Response
+                    next_offset = res_exact.next_offset if res_exact else -1
+
+                    result = client.Resp_SearchEmployees(
+                        employees=list(employees_map.values()),
+                        next_offset=next_offset
+                    )
+                    if len(employees_map) > 0:
+                        print(f"  {CLI_BLUE}🔍 Merged {len(employees_map)} unique employees.{CLI_CLR}")
                 # SPECIAL HANDLING: Employee Update - API requires ALL fields to be sent
                 # Otherwise missing fields are cleared! We must fetch current data first.
                 elif isinstance(ctx.model, client.Req_UpdateEmployeeInfo):

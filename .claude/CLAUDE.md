@@ -1,0 +1,55 @@
+# Project Rules for ERC3 Agent Development
+
+## Language & Communication
+- **Primary language**: Russian for communication, English for code/comments
+
+## Architecture Philosophy
+- **Adaptable agent**: The agent must adapt to ANY company situation, not be trained for specific cases
+- **Compact prompts**: Keep system prompts minimal and focused  bloated instructions cause the agent to lose focus and miss important details
+- **Smart tooling over instructions**: Instead of adding prompt rules for each edge case, build tools and handlers that:
+  - Guide the agent in the right direction
+  - Prevent obvious mistakes at execution time
+  - Provide helpful hints in API responses (e.g., authorization info, disambiguation suggestions)
+- **Chain of Thought**: Agent uses structured reasoning (thoughts ’ plan ’ actions) to work through complex tasks
+- **handlers/ folder purpose**: Contains not just middleware but also:
+  - `core.py`  ActionExecutor for tool execution
+  - `wiki.py`  WikiManager for knowledge base access
+  - `security.py`  SecurityManager for authorization
+  - `safety.py`  Middleware guards (ambiguity detection, validation, etc.)
+
+## Thread Safety & Parallelism
+- **Embedding model**: Global singleton with thread-safe initialization (`get_embedding_model()`)
+- **WikiManager**: Uses disk cache per SHA1 hash  each wiki version is immutable once downloaded to `wiki_dump/{sha1}/`. Multiple threads can safely read same version. Use thread-local WikiManager instances for in-memory state.
+- **SessionStats / failure_logger**: Thread-safe via `threading.Lock`
+- **requests.Session**: NOT thread-safe  use thread-local sessions
+- **stdout redirection**: Use `ThreadLocalStdout` dispatcher pattern, not direct `sys.stdout` assignment (breaks other threads)
+
+## Testing & Development
+- **Single entry point**: `main.py`  default 1 thread (sequential), use `-threads N` for parallel execution
+- **Task filtering**: Use `-task spec_id1,spec_id2` for testing specific tasks (use `force=True` on submit since unfiltered tasks remain unfinished)
+- **Logs**: Parallel mode writes per-task logs to `logs/parallel_<timestamp>/<spec_id>.log`
+- **Don't duplicate solutions**: After validating experimental code, merge it into the main entry point
+
+## Middleware Pattern (handlers/safety.py)
+- **Two blocking modes**:
+  1. **Hard block**: For logically impossible actions (e.g., salary raise without amount)  stop execution, return error
+  2. **Soft block**: For risky but possible actions (high error probability)  return warning, ask agent to reconsider or provide additional data. If agent confirms same action again, allow through.
+- **Detection patterns**: Use regex patterns for detecting ambiguity signals (referential words like "that/this", subjective terms like "cool/best")
+- **State tracking**: Use `ctx.shared` dict to track warnings shown, mutations performed, etc. across middleware calls
+
+## API Response Enrichment
+- **Hints in responses**: API handlers can inject helpful hints into responses (not just raw data), e.g.:
+  - Project overlap analysis: "felix_baum works on 3 'cv' projects, you are Lead of 1 of them"
+  - Authorization context: "jonas_weiss is Lead of proj_acme_line3_cv_poc"
+  - Disambiguation suggestions when multiple matches found
+- **Purpose**: Guide agent without bloating system prompt  context-specific help at runtime
+
+## ERC3 Benchmark Context
+- **Benchmark types**: `erc3-test` (24 tasks, testing), `erc3` (production)
+- **Session lifecycle**: `start_session` ’ `session_status` (get tasks) ’ for each task: `start_task` ’ agent loop ’ `complete_task` ’ finally `submit_session`
+- **Response outcomes**: `ok_answer`, `ok_not_found`, `none_clarification_needed`, `denied_security`, `denied_authorization`
+- **Links in responses**: Always include relevant entity links (project, employee, customer)  benchmark checks for them
+
+## Virtual Environment
+- **venv location**: `venv-erc3/` in parent directory (`../venv-erc3/`)
+- **Activation**: `source ../venv-erc3/bin/activate` or run directly with `python` from activated shell

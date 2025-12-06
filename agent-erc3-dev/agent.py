@@ -197,6 +197,7 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
     had_mutations = False  # Track if any mutation operation was performed (persists across turns)
     mutation_entities = []  # Track entity IDs affected by mutations (for auto-linking)
     pending_mutation_tools = set()  # Track mutation tools that were attempted but not executed
+    action_history = []  # Track action patterns for loop detection (thread-local)
 
     for turn in range(max_turns):
         if task_done:
@@ -357,23 +358,19 @@ DO NOT set is_final=true until respond is in action_queue!"""))
             continue
 
         # LOOP DETECTION: Detect if agent is stuck repeating the same actions
-        # Track last 3 action patterns
-        if not hasattr(run_agent, '_action_history'):
-            run_agent._action_history = []
-        
         # Convert action_queue to a hashable pattern (tool names + arg keys)
         action_pattern = tuple(
-            (a.get('tool'), tuple(sorted(a.get('args', {}).keys()))) 
+            (a.get('tool'), tuple(sorted(a.get('args', {}).keys())))
             for a in action_queue
         )
-        
-        run_agent._action_history.append(action_pattern)
-        if len(run_agent._action_history) > 3:
-            run_agent._action_history.pop(0)
-        
+
+        action_history.append(action_pattern)
+        if len(action_history) > 3:
+            action_history.pop(0)
+
         # If last 3 patterns are identical and non-empty, agent is looping
-        if len(run_agent._action_history) == 3 and \
-           run_agent._action_history[0] == run_agent._action_history[1] == run_agent._action_history[2] and \
+        if len(action_history) == 3 and \
+           action_history[0] == action_history[1] == action_history[2] and \
            action_pattern:
             print(f"{CLI_YELLOW}⚠ LOOP DETECTED: Agent is repeating the same actions. Breaking loop.{CLI_CLR}")
             messages.append(HumanMessage(content="""[SYSTEM ERROR]: You are stuck in a loop, repeating the same actions for 3 turns without progress!
@@ -384,7 +381,7 @@ This usually means:
 3. There's a permissions issue → respond with 'denied_security'
 
 STOP repeating the same actions. Analyze why you're not making progress and call 'respond' with an appropriate outcome."""))
-            run_agent._action_history.clear()
+            action_history.clear()
             continue
 
         # Execute Actions
