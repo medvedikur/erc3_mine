@@ -286,6 +286,152 @@ class ResponseValidationMiddleware(Middleware):
                     print(f"  {CLI_GREEN}✓ Auto-generated message: {ctx.model.message[:100]}...{CLI_CLR}")
 
 
+class OutcomeValidationMiddleware(Middleware):
+    """
+    Middleware that validates denied_security responses to prevent false denials.
+
+    Problems this solves:
+    1. Agent tried to use non-existent tool → should be 'none_unsupported', not 'denied_security'
+    2. Agent claims no permission without actually checking (no projects_get/employees_get call)
+
+    This is a SOFT block - it warns the agent and asks to reconsider.
+    If agent confirms, the response goes through.
+
+    EXCEPTIONS (skip validation):
+    - Public users (guests) - they SHOULD use denied_security for most requests
+    - Destructive operations (wipe, delete) - denial without checking is correct
+    """
+
+    # Tools that indicate THOROUGH permission verification was done
+    # projects_get and employees_get return detailed info (team, roles, manager)
+    # projects_search and employees_search only return basic info (id, name, status)
+    PERMISSION_CHECK_TOOLS_STRONG = {
+        'projects_get',   # Returns team with roles - can verify Lead/Member
+        'employees_get',  # Returns manager info - can verify Direct Manager
+        'customers_get',  # Returns account_manager - can verify AM relationship
+    }
+    PERMISSION_CHECK_TOOLS_WEAK = {
+        'projects_search',   # Only returns id, name, status - NO team info
+        'employees_search',  # Only returns basic info - NO manager relationship
+    }
+
+    # Keywords that indicate destructive/dangerous operations where denial is expected
+    DESTRUCTIVE_KEYWORDS = [
+        r'\bwipe\b', r'\bdelete\b', r'\berase\b', r'\bdestroy\b',
+        r'\bremove\s+all\b', r'\bclear\s+all\b', r'\bpurge\b',
+        r'\bthreat\b', r'\bblackmail\b', r'\bhack\b', r'\bsteal\b',
+    ]
+
+    def __init__(self):
+        self._destructive_re = re.compile(
+            '|'.join(self.DESTRUCTIVE_KEYWORDS),
+            re.IGNORECASE
+        )
+
+    def _is_destructive_request(self, task_text: str) -> bool:
+        """Check if task appears to be a destructive/dangerous operation."""
+        return bool(self._destructive_re.search(task_text or ''))
+
+    def process(self, ctx: ToolContext) -> None:
+        # Only intercept respond calls with denied outcomes
+        if not isinstance(ctx.model, client.Req_ProvideAgentResponse):
+            return
+
+        outcome = ctx.model.outcome or ""
+        if outcome not in ("denied_security", "denied_authorization"):
+            return
+
+        # EXCEPTION 1: Public users (guests) should deny most operations without needing to check
+        security_manager = ctx.shared.get('security_manager')
+        if security_manager and getattr(security_manager, 'is_public', False):
+            print(f"  {CLI_GREEN}✓ Outcome Validation: Skipped for public user (guest){CLI_CLR}")
+            return
+
+        # EXCEPTION 2: Destructive operations - denial is expected without checking
+        task = ctx.shared.get('task')
+        task_text = getattr(task, 'task_text', '') if task else ''
+        if self._is_destructive_request(task_text):
+            print(f"  {CLI_GREEN}✓ Outcome Validation: Skipped for destructive operation{CLI_CLR}")
+            return
+
+        # Check for tool existence errors (tracked in agent.py)
+        missing_tools = ctx.shared.get('missing_tools', [])
+        had_unsupported_tool = len(missing_tools) > 0
+
+        # Check for permission verification - distinguish between strong and weak checks
+        action_types_executed = ctx.shared.get('action_types_executed', set())
+        had_strong_check = bool(action_types_executed & self.PERMISSION_CHECK_TOOLS_STRONG)
+        had_weak_check = bool(action_types_executed & self.PERMISSION_CHECK_TOOLS_WEAK)
+
+        # Check if already warned (persists across turns via agent.py)
+        warning_key = 'outcome_validation_warned'
+        already_warned = ctx.shared.get(warning_key, False)
+
+        # CASE 1: Tried to use non-existent tool → suggest none_unsupported
+        if had_unsupported_tool:
+            if already_warned:
+                print(f"  {CLI_GREEN}✓ Outcome Validation: Agent confirmed '{outcome}' after warning{CLI_CLR}")
+                return
+
+            print(f"  {CLI_YELLOW}🔍 Outcome Validation: Agent tried non-existent tool(s): {missing_tools}{CLI_CLR}")
+            ctx.shared[warning_key] = True
+            ctx.stop_execution = True
+            ctx.results.append(
+                f"🔍 OUTCOME VALIDATION: You responded with '{outcome}', but you tried to use "
+                f"non-existent tool(s): {', '.join(missing_tools)}.\n\n"
+                f"**This is likely 'none_unsupported', not '{outcome}'!**\n\n"
+                f"- `{outcome}` = You HAVE the capability but security/authorization prevents it\n"
+                f"- `none_unsupported` = The requested feature/tool does NOT EXIST in this system\n\n"
+                f"If the user asked for something the system cannot do (no tool exists), "
+                f"use `none_unsupported` with a message explaining the limitation.\n\n"
+                f"**If you're confident '{outcome}' is correct**, call respond again with the same outcome."
+            )
+            return
+
+        # CASE 2: Claiming denial without ANY permission check
+        if not had_strong_check and not had_weak_check:
+            if already_warned:
+                print(f"  {CLI_GREEN}✓ Outcome Validation: Agent confirmed '{outcome}' after warning{CLI_CLR}")
+                return
+
+            print(f"  {CLI_YELLOW}🔍 Outcome Validation: '{outcome}' without ANY permission verification{CLI_CLR}")
+            ctx.shared[warning_key] = True
+            ctx.stop_execution = True
+            ctx.results.append(
+                f"🔍 OUTCOME VALIDATION: You responded with '{outcome}', but you didn't verify your permissions!\n\n"
+                f"Before claiming you don't have authorization, you SHOULD:\n"
+                f"1. Call `projects_get(id='proj_xxx')` to see the team and check if you're Lead/Member\n"
+                f"2. Call `employees_get(id='employee_id')` to check manager relationships\n"
+                f"3. Call `customers_get(id='cust_xxx')` to check if you're the Account Manager\n\n"
+                f"You might actually HAVE permission and not realize it!\n\n"
+                f"**If you've already verified**, call respond again with the same outcome."
+            )
+            return
+
+        # CASE 3: Only weak check (search) without strong check (get)
+        # Search only returns basic info, not team roles!
+        if had_weak_check and not had_strong_check:
+            if already_warned:
+                print(f"  {CLI_GREEN}✓ Outcome Validation: Agent confirmed '{outcome}' after warning{CLI_CLR}")
+                return
+
+            print(f"  {CLI_YELLOW}🔍 Outcome Validation: '{outcome}' with only SEARCH (no GET for role verification){CLI_CLR}")
+            ctx.shared[warning_key] = True
+            ctx.stop_execution = True
+            ctx.results.append(
+                f"🔍 OUTCOME VALIDATION: You responded with '{outcome}', but you only used *_search tools!\n\n"
+                f"**IMPORTANT**: `projects_search` only returns basic info (id, name, status). "
+                f"It does NOT return team membership or roles!\n\n"
+                f"To verify your authorization, you MUST call:\n"
+                f"- `projects_get(id='proj_xxx')` → returns `team` with `employee` and `role` for each member\n"
+                f"- `customers_get(id='cust_xxx')` → returns `account_manager` field\n"
+                f"- `employees_get(id='xxx')` → returns `manager` (direct manager relationship)\n\n"
+                f"Without calling these, you CANNOT know if you're the Lead, Account Manager, or Direct Manager!\n\n"
+                f"**If you're certain you lack authorization**, call respond again with the same outcome."
+            )
+            return
+
+
 class ProjectMembershipMiddleware(Middleware):
     """
     Middleware that verifies if an employee is a member of the project

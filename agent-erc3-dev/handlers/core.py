@@ -515,6 +515,16 @@ class DefaultActionHandler:
             
             print(f"  {CLI_GREEN}✓ SUCCESS{CLI_CLR}")
             
+            # ENRICHMENT: Add your_role to project responses
+            # This helps weaker models understand their permissions without extra API calls
+            if isinstance(ctx.model, (client.Req_SearchProjects, client.Req_GetProject)):
+                security_manager = ctx.shared.get('security_manager')
+                current_user = getattr(security_manager, 'current_user', None) if security_manager else None
+                if current_user:
+                    role_hint = self._enrich_projects_with_user_role(result, current_user)
+                    if role_hint:
+                        ctx.results.append(role_hint)
+
             # DEBUG: Print full API response for search operations
             if "SearchProjects" in action_name:
                 print(f"  {CLI_YELLOW}📋 PROJECTS API Response:{CLI_CLR}")
@@ -582,7 +592,28 @@ class DefaultActionHandler:
                         f"Team members may have been removed from archived projects. "
                         f"Try: projects_search(status=['archived'], query='...') WITHOUT member filter."
                     )
-            
+
+                # EXACT MATCH DETECTION: If one result has exact name match, highlight it
+                if query and len(projects) > 1:
+                    query_lower = query.lower().strip()
+                    exact_matches = []
+                    partial_matches = []
+                    for p in projects:
+                        proj_name = (getattr(p, 'name', '') or '').lower().strip()
+                        proj_id = getattr(p, 'id', '')
+                        if proj_name == query_lower:
+                            exact_matches.append((p, proj_name, proj_id))
+                        else:
+                            partial_matches.append((p, proj_name, proj_id))
+
+                    if len(exact_matches) == 1 and partial_matches:
+                        exact_proj, exact_name, exact_id = exact_matches[0]
+                        ctx.results.append(
+                            f"\n💡 EXACT MATCH: '{exact_name}' ({exact_id}) is an EXACT match for your query '{query}'. "
+                            f"The other {len(partial_matches)} result(s) are only partial matches. "
+                            f"You should proceed with the exact match - no clarification needed!"
+                        )
+
         except ApiException as e:
             error_msg = e.api_error.error if e.api_error else str(e)
             print(f"  {CLI_RED}✗ FAILED:{CLI_CLR} {error_msg}")
@@ -939,6 +970,66 @@ class DefaultActionHandler:
         self._project_detail_cache[project_id] = project
         return project
 
+    def _enrich_projects_with_user_role(self, result: Any, current_user: str) -> Optional[str]:
+        """
+        Analyze project response and add YOUR_ROLE hint for current user.
+        This helps weaker models understand their permissions without extra API calls.
+
+        Returns a hint string to append to results, or None if no useful info.
+        """
+        projects = []
+
+        # Handle both SearchProjects (list) and GetProject (single)
+        if hasattr(result, 'projects') and result.projects:
+            projects = result.projects
+        elif hasattr(result, 'project') and result.project:
+            projects = [result.project]
+
+        if not projects:
+            return None
+
+        role_info = []
+        lead_projects = []
+        member_projects = []
+
+        for proj in projects:
+            proj_id = getattr(proj, 'id', None)
+            proj_name = getattr(proj, 'name', proj_id)
+            team = getattr(proj, 'team', None) or []
+
+            user_role = None
+            for member in team:
+                employee = getattr(member, 'employee', getattr(member, 'employee_id', None))
+                if employee == current_user:
+                    user_role = getattr(member, 'role', 'Member')
+                    break
+
+            if user_role:
+                if user_role == 'Lead':
+                    lead_projects.append(f"'{proj_name}' ({proj_id})")
+                else:
+                    member_projects.append(f"'{proj_name}' ({proj_id}) as {user_role}")
+
+        # Build concise hint
+        hints = []
+        if lead_projects:
+            if len(lead_projects) == 1:
+                hints.append(f"💡 YOUR_ROLE: You ({current_user}) are the LEAD of {lead_projects[0]}. You have full authorization to modify this project and log time for team members.")
+            else:
+                hints.append(f"💡 YOUR_ROLE: You ({current_user}) are the LEAD of {len(lead_projects)} projects: {', '.join(lead_projects)}.")
+
+        if member_projects and len(member_projects) <= 3:
+            hints.append(f"💡 YOUR_ROLE: You are a team member of: {', '.join(member_projects)}")
+        elif member_projects:
+            hints.append(f"💡 YOUR_ROLE: You are a team member of {len(member_projects)} projects.")
+
+        if not hints:
+            # User is not in any of these projects - also useful info!
+            if len(projects) == 1:
+                hints.append(f"💡 YOUR_ROLE: You ({current_user}) are NOT a member of this project. Check if you have Account Manager or Direct Manager authorization.")
+
+        return "\n".join(hints) if hints else None
+
     def _fetch_employee_salary(self, ctx: ToolContext, employee_id: Optional[str]) -> Optional[float]:
         if not employee_id:
             return None
@@ -1046,17 +1137,23 @@ class ActionExecutor:
         self.handler = DefaultActionHandler()
         self.task = task
     
-    def execute(self, action_dict: dict, action_model: Any) -> ToolContext:
+    def execute(self, action_dict: dict, action_model: Any, initial_shared: dict = None) -> ToolContext:
         ctx = ToolContext(self.api, action_dict, action_model)
         if self.task:
             ctx.shared['task'] = self.task
-        
+
+        # Merge initial shared state from caller (agent.py)
+        if initial_shared:
+            for key, value in initial_shared.items():
+                if key not in ctx.shared:  # Don't override task if already set
+                    ctx.shared[key] = value
+
         # Run middleware
         for mw in self.middleware:
             mw.process(ctx)
             if ctx.stop_execution:
                 return ctx
-                
+
         # Run handler
         self.handler.handle(ctx)
         return ctx

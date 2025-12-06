@@ -6,6 +6,7 @@ from .safety import (
     ResponseValidationMiddleware,
     AmbiguityGuardMiddleware,
     TimeLoggingClarificationGuard,
+    OutcomeValidationMiddleware,
 )
 
 def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManager, task=None):
@@ -14,6 +15,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         ProjectMembershipMiddleware(),
         AmbiguityGuardMiddleware(),           # Catches ambiguous queries with wrong outcome
         TimeLoggingClarificationGuard(),      # Ensures time log clarifications include project
+        OutcomeValidationMiddleware(),        # Validates denied outcomes (unsupported vs security)
         ResponseValidationMiddleware(),       # Validates respond has proper message/links
     ]
     if security_manager:

@@ -198,6 +198,9 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
     mutation_entities = []  # Track entity IDs affected by mutations (for auto-linking)
     pending_mutation_tools = set()  # Track mutation tools that were attempted but not executed
     action_history = []  # Track action patterns for loop detection (thread-local)
+    missing_tools = []  # Track non-existent tools (for OutcomeValidationMiddleware)
+    action_types_executed = set()  # Track tool names that were successfully executed
+    outcome_validation_warned = False  # Track if OutcomeValidationMiddleware already warned (persists across turns)
 
     for turn in range(max_turns):
         if task_done:
@@ -412,11 +415,20 @@ STOP repeating the same actions. Analyze why you're not making progress and call
             # FIX: Pass a DummyContext with security_manager and mutation tracking
             # This allows parsing logic to inject current_user for mutation operations
             class DummyContext:
-                def __init__(self, sm, mutations, entities, api_ref):
-                    self.shared = {'security_manager': sm, 'had_mutations': mutations, 'mutation_entities': entities}
+                def __init__(self, sm, mutations, entities, api_ref, missing, executed, outcome_warned, task_obj):
+                    self.shared = {
+                        'security_manager': sm,
+                        'had_mutations': mutations,
+                        'mutation_entities': entities,
+                        'missing_tools': missing,  # For OutcomeValidationMiddleware
+                        'action_types_executed': executed,  # For OutcomeValidationMiddleware
+                        'outcome_validation_warned': outcome_warned,  # Persists across turns
+                        'task': task_obj,  # For accessing task_text in middleware
+                    }
                     self.api = api_ref
 
-            dummy_ctx = DummyContext(security_manager, had_mutations, mutation_entities, erc_client)
+            dummy_ctx = DummyContext(security_manager, had_mutations, mutation_entities, erc_client,
+                                     missing_tools, action_types_executed, outcome_validation_warned, task)
             
             # Wrap parse_action to catch ValidationError (e.g., invalid role like "Tester")
             try:
@@ -434,6 +446,14 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                 print(f"  {CLI_RED}✗ Parse error: {error_msg}{CLI_CLR}")
                 results.append(f"Action {idx+1} ERROR: {error_msg}")
                 had_errors = True
+
+                # Track non-existent tools for OutcomeValidationMiddleware
+                if "does not exist" in error_msg.lower() or "unknown tool" in error_msg.lower():
+                    tool_name = action_model.tool if hasattr(action_model, 'tool') else action_dict.get('tool', 'unknown')
+                    if tool_name and tool_name not in missing_tools:
+                        missing_tools.append(tool_name)
+                        print(f"  {CLI_YELLOW}📝 Tracked missing tool: {tool_name}{CLI_CLR}")
+
                 continue
             
             if not action_model:
@@ -470,14 +490,31 @@ STOP repeating the same actions. Analyze why you're not making progress and call
 
             if stats:
                 stats.add_api_call()
-            
-            # Execute with handler
-            ctx = executor.execute(action_dict, action_model)
+
+            # Execute with handler - pass shared state for middleware
+            initial_shared = {
+                'security_manager': security_manager,
+                'had_mutations': had_mutations,
+                'mutation_entities': mutation_entities,
+                'missing_tools': missing_tools,
+                'action_types_executed': action_types_executed,
+                'outcome_validation_warned': outcome_validation_warned,
+            }
+            ctx = executor.execute(action_dict, action_model, initial_shared=initial_shared)
             results.extend(ctx.results)
-            
+
+            # Update persistent flags from middleware
+            if ctx.shared.get('outcome_validation_warned'):
+                outcome_validation_warned = True
+
             # Check if execution failed
             if any("FAILED" in r or "ERROR" in r for r in ctx.results):
                 had_errors = True
+            else:
+                # Track successfully executed tool for OutcomeValidationMiddleware
+                tool_name = action_dict.get('tool', '')
+                if tool_name:
+                    action_types_executed.add(tool_name)
             
             # Track successful mutation operations
             if isinstance(action_model, MUTATION_TYPES) and not any("FAILED" in r or "ERROR" in r for r in ctx.results):
