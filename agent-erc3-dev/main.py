@@ -75,18 +75,20 @@ NUM_THREADS = args.threads
 VERBOSE_MODE = args.verbose
 PARALLEL_MODE = NUM_THREADS > 1
 
+from utils import CLI
+
 # Colors for thread identification (parallel mode)
 THREAD_COLORS = [
-    "\x1B[36m",  # Cyan
-    "\x1B[35m",  # Magenta
-    "\x1B[33m",  # Yellow
-    "\x1B[32m",  # Green
-    "\x1B[34m",  # Blue
+    CLI.CYAN,
+    "\x1B[35m",  # Magenta (not in CLI class yet)
+    CLI.YELLOW,
+    CLI.GREEN,
+    CLI.BLUE,
     "\x1B[91m",  # Light Red
     "\x1B[92m",  # Light Green
     "\x1B[93m",  # Light Yellow
 ]
-CLI_CLR = "\x1B[0m"
+CLI_CLR = CLI.RESET
 
 # Create parallel logs directory (only if parallel mode)
 PARALLEL_LOGS_DIR = None
@@ -577,7 +579,8 @@ def main():
         benchmark="erc3-test",
         workspace="test-workspace-1",
         name=f"@mishka ERC3-Test Agent{f' (Parallel x{NUM_THREADS})' if PARALLEL_MODE else ''}",
-        architecture=architecture_desc
+        architecture=architecture_desc,
+        flags=["compete_accuracy", "compete_budget", "compete_speed", "compete_local"],
     )
 
     status = core.session_status(res.session_id)

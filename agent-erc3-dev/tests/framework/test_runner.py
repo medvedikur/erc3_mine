@@ -23,21 +23,23 @@ from .evaluator import TestEvaluator, TestResult, TestSuiteResult
 # Thread-local storage for test context
 _test_local = threading.local()
 
-# Console colors
-CLI_RED = "\x1B[31m"
-CLI_GREEN = "\x1B[32m"
-CLI_YELLOW = "\x1B[33m"
-CLI_BLUE = "\x1B[34m"
-CLI_CYAN = "\x1B[36m"
-CLI_CLR = "\x1B[0m"
+from utils import CLI
+
+# Console colors (imported from central utils module)
+CLI_RED = CLI.RED
+CLI_GREEN = CLI.GREEN
+CLI_YELLOW = CLI.YELLOW
+CLI_BLUE = CLI.BLUE
+CLI_CYAN = CLI.CYAN
+CLI_CLR = CLI.RESET
 
 # Thread colors for status messages
 THREAD_COLORS = [
-    "\x1B[36m",  # Cyan
+    CLI.CYAN,
     "\x1B[35m",  # Magenta
-    "\x1B[33m",  # Yellow
-    "\x1B[32m",  # Green
-    "\x1B[34m",  # Blue
+    CLI.YELLOW,
+    CLI.GREEN,
+    CLI.BLUE,
 ]
 
 

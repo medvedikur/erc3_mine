@@ -3,6 +3,7 @@ from .wiki import WikiManager, WikiMiddleware
 from .security import SecurityManager, SecurityMiddleware
 from .safety import (
     ProjectMembershipMiddleware,
+    ProjectSearchReminderMiddleware,
     ResponseValidationMiddleware,
     AmbiguityGuardMiddleware,
     TimeLoggingClarificationGuard,
@@ -13,6 +14,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
     middleware = [
         WikiMiddleware(wiki_manager),
         ProjectMembershipMiddleware(),
+        ProjectSearchReminderMiddleware(),    # Reminds to use projects_search for project queries
         AmbiguityGuardMiddleware(),           # Catches ambiguous queries with wrong outcome
         TimeLoggingClarificationGuard(),      # Ensures time log clarifications include project
         OutcomeValidationMiddleware(),        # Validates denied outcomes (unsupported vs security)

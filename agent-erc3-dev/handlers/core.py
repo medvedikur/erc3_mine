@@ -3,12 +3,13 @@ from typing import List, Any, Dict, Tuple, Optional, Iterable
 from erc3 import ApiException
 from erc3.erc3 import client, dtos
 from .base import ToolContext, Middleware, ActionHandler
+from utils import CLI
 
-CLI_RED = "\x1B[31m"
-CLI_GREEN = "\x1B[32m"
-CLI_BLUE = "\x1B[34m"
-CLI_YELLOW = "\x1B[33m"
-CLI_CLR = "\x1B[0m"
+CLI_RED = CLI.RED
+CLI_GREEN = CLI.GREEN
+CLI_BLUE = CLI.BLUE
+CLI_YELLOW = CLI.YELLOW
+CLI_CLR = CLI.RESET
 
 class DefaultActionHandler:
     """Standard handler that executes the action against the API"""
@@ -17,6 +18,21 @@ class DefaultActionHandler:
         self._project_cache: Dict[str, List[Any]] = {}
         self._project_detail_cache: Dict[str, Any] = {}
         self._hint_cache: set[Tuple[str, str]] = set()
+
+    def _log_api_call(self, ctx, action_name: str, request: Any, response: Any = None, error: str = None):
+        """Log API call to failure logger if available."""
+        failure_logger = ctx.shared.get('failure_logger')
+        task_id = ctx.shared.get('task_id')
+        if failure_logger and task_id:
+            try:
+                # Serialize request/response for logging
+                req_dict = request.model_dump() if hasattr(request, 'model_dump') else str(request)
+                resp_dict = None
+                if response is not None:
+                    resp_dict = response.model_dump() if hasattr(response, 'model_dump') else str(response)
+                failure_logger.log_api_call(task_id, action_name, req_dict, resp_dict, error)
+            except Exception:
+                pass  # Don't break execution on logging errors
 
     def _extract_learning_from_error(self, error: Exception, request: Any) -> Optional[str]:
         """
@@ -531,6 +547,7 @@ class DefaultActionHandler:
             result_json = result.model_dump_json(exclude_none=True)
             
             print(f"  {CLI_GREEN}✓ SUCCESS{CLI_CLR}")
+            self._log_api_call(ctx, action_name, ctx.model, result)
             
             # ENRICHMENT: Add your_role to project responses
             # This helps weaker models understand their permissions without extra API calls
@@ -586,6 +603,25 @@ class DefaultActionHandler:
                             f"  3. Try `customers_search(account_managers=['your_id'])` to see ALL your customers, then filter yourself"
                         )
 
+            # TIME ENTRY UPDATE HINT: If searching time entries and task suggests modification
+            if isinstance(ctx.model, client.Req_SearchTimeEntries):
+                entries = getattr(result, 'entries', None) or []
+                if entries:
+                    task = ctx.shared.get('task')
+                    task_text = (getattr(task, 'task_text', '') if task else '').lower()
+
+                    update_keywords = ['change', 'fix', 'update', 'correct', 'modify', 'edit', 'adjust']
+                    is_update_task = any(kw in task_text for kw in update_keywords)
+
+                    if is_update_task:
+                        entry_ids = [getattr(e, 'id', 'unknown') for e in entries[:3]]
+                        ctx.results.append(
+                            f"\n💡 TIME UPDATE HINT: You found {len(entries)} time entries. "
+                            f"To MODIFY an existing entry, use `time_update(id='...', hours=X, ...)`. "
+                            f"Entry IDs: {', '.join(entry_ids)}{'...' if len(entries) > 3 else ''}. "
+                            f"Do NOT use `time_log` to fix existing entries - that creates duplicates!"
+                        )
+
             # Inject automatic disambiguation hints for project searches
             if isinstance(ctx.model, client.Req_SearchProjects):
                 self._analyze_project_overlap(ctx, result)
@@ -631,6 +667,35 @@ class DefaultActionHandler:
                             f"You should proceed with the exact match - no clarification needed!"
                         )
 
+                    # FUZZY MATCH DETECTION: When query words match project name words in different order
+                    elif not exact_matches and partial_matches:
+                        query_words = set(query_lower.split())
+                        best_fuzzy_match = None
+                        best_overlap = 0
+
+                        for p, proj_name, proj_id in partial_matches:
+                            name_words = set(proj_name.split())
+                            overlap = len(query_words & name_words)
+                            if overlap >= min(3, len(query_words)) and overlap > best_overlap:
+                                best_fuzzy_match = (p, proj_name, proj_id)
+                                best_overlap = overlap
+
+                        if best_fuzzy_match:
+                            _, fuzzy_name, fuzzy_id = best_fuzzy_match
+                            ctx.results.append(
+                                f"\n💡 FUZZY MATCH: '{fuzzy_name}' ({fuzzy_id}) appears to match your query '{query}' "
+                                f"(same words, different order). This is likely the intended project."
+                            )
+
+                # MUTATION AUTHORIZATION HINT: Remind agent to verify role before status changes
+                # This prevents the agent from returning ok_not_found when they should check auth
+                ctx.results.append(
+                    f"\n⚠️ AUTHORIZATION REMINDER: If you need to MODIFY this project (change status, update fields), "
+                    f"you MUST first verify your role using `projects_get(id='proj_...')`. "
+                    f"Only Lead, Owner, or Direct Manager of Lead can modify project status. "
+                    f"If not authorized → respond `denied_security`, NOT `ok_not_found`!"
+                )
+
                 # MEMBER FILTER HINT: When searching with member=current_user, remind agent they ARE a member
                 security_manager = ctx.shared.get("security_manager")
                 current_user = getattr(security_manager, "current_user", None) if security_manager else None
@@ -649,15 +714,17 @@ class DefaultActionHandler:
         except ApiException as e:
             error_msg = e.api_error.error if e.api_error else str(e)
             print(f"  {CLI_RED}✗ FAILED:{CLI_CLR} {error_msg}")
-            
+
             ctx.results.append(f"Action ({action_name}): FAILED\nError: {error_msg}")
-            
+            self._log_api_call(ctx, action_name, ctx.model, error=error_msg)
+
             # Stop if critical? No, let the agent decide usually.
             # But if it's an internal error, maybe stop?
-            
+
         except Exception as e:
             print(f"  {CLI_RED}✗ SYSTEM ERROR:{CLI_CLR} {e}")
             ctx.results.append(f"Action ({action_name}): SYSTEM ERROR\nError: {str(e)}")
+            self._log_api_call(ctx, action_name, ctx.model, error=str(e))
 
     # --- Helper utilities -------------------------------------------------
     def _analyze_project_overlap(self, ctx: ToolContext, search_result: Any) -> None:

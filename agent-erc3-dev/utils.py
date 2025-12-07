@@ -14,12 +14,39 @@ GENESIS_NODES = [
     "http://85.234.91.172:8000",
 ]
 
-CLI_RED = "\x1B[31m"
-CLI_GREEN = "\x1B[32m"
-CLI_BLUE = "\x1B[34m"
-CLI_YELLOW = "\x1B[33m"
-CLI_CYAN = "\x1B[36m"
-CLI_CLR = "\x1B[0m"
+class CLI:
+    """Terminal color codes and formatting helpers."""
+    RED = "\x1B[31m"
+    GREEN = "\x1B[32m"
+    YELLOW = "\x1B[33m"
+    BLUE = "\x1B[34m"
+    CYAN = "\x1B[36m"
+    RESET = "\x1B[0m"
+
+    @classmethod
+    def success(cls, msg: str) -> str:
+        return f"{cls.GREEN}✓ {msg}{cls.RESET}"
+
+    @classmethod
+    def error(cls, msg: str) -> str:
+        return f"{cls.RED}✗ {msg}{cls.RESET}"
+
+    @classmethod
+    def warn(cls, msg: str) -> str:
+        return f"{cls.YELLOW}⚠ {msg}{cls.RESET}"
+
+    @classmethod
+    def info(cls, msg: str) -> str:
+        return f"{cls.BLUE}ℹ {msg}{cls.RESET}"
+
+
+# Backward compatibility aliases (deprecated, use CLI class instead)
+CLI_RED = CLI.RED
+CLI_GREEN = CLI.GREEN
+CLI_BLUE = CLI.BLUE
+CLI_YELLOW = CLI.YELLOW
+CLI_CYAN = CLI.CYAN
+CLI_CLR = CLI.RESET
 
 def fetch_active_nodes(source_node: str = None) -> List[str]:
     """Fetch list of active participant nodes from current epoch"""

@@ -51,8 +51,13 @@
 - **Links in responses**: Always include relevant entity links (project, employee, customer)  benchmark checks for them
 
 ## Virtual Environment
-- **venv location**: `venv-erc3/` in parent directory (`../venv-erc3/`)
-- **Activation**: `source ../venv-erc3/bin/activate` or run directly with `python` from activated shell
+- **venv location**: `venv-erc3/` in current directory (`./venv-erc3/`)
+- **Activation**: `source venv-erc3/bin/activate` or run directly with `./venv-erc3/bin/python`
+
+## SDK Version
+- **Required**: `erc3>=1.2.0` (breaking change from 1.1.x as of Dec 7, 2025)
+- **Install**: `pip install --extra-index-url https://erc.timetoact-group.at/ 'erc3>=1.2.0'`
+- **Breaking change**: `log_llm()` now requires `completion` parameter (raw LLM response)
 
 ## Local Test Framework
 - **Purpose**: Test agent behavior locally with mock API before running against real benchmark

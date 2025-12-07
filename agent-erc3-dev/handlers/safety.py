@@ -2,12 +2,13 @@ from typing import Any, List, Set, Tuple
 import re
 from erc3.erc3 import client
 from .base import ToolContext, Middleware
+from utils import CLI
 
-CLI_YELLOW = "\x1B[33m"
-CLI_RED = "\x1B[31m"
-CLI_GREEN = "\x1B[32m"
-CLI_BLUE = "\x1B[34m"
-CLI_CLR = "\x1B[0m"
+CLI_YELLOW = CLI.YELLOW
+CLI_RED = CLI.RED
+CLI_GREEN = CLI.GREEN
+CLI_BLUE = CLI.BLUE
+CLI_CLR = CLI.RESET
 
 
 class AmbiguityGuardMiddleware(Middleware):
@@ -333,11 +334,18 @@ class OutcomeValidationMiddleware(Middleware):
         return bool(self._destructive_re.search(task_text or ''))
 
     def process(self, ctx: ToolContext) -> None:
-        # Only intercept respond calls with denied outcomes
+        # Only intercept respond calls
         if not isinstance(ctx.model, client.Req_ProvideAgentResponse):
             return
 
         outcome = ctx.model.outcome or ""
+
+        # Handle ok_not_found and none_clarification_needed for mutation tasks
+        if outcome in ("ok_not_found", "none_clarification_needed"):
+            self._validate_ok_not_found_for_mutations(ctx)
+            return
+
+        # Only validate denied outcomes from here
         if outcome not in ("denied_security", "denied_authorization"):
             return
 
@@ -461,6 +469,132 @@ class OutcomeValidationMiddleware(Middleware):
                 f"**If you're certain you lack permission**, call respond again with the same outcome."
             )
             return
+
+    def _validate_ok_not_found_for_mutations(self, ctx: ToolContext) -> None:
+        """
+        Validates ok_not_found responses for mutation tasks.
+
+        Problem: Agent finds a fuzzy match (same words, different order) but responds
+        ok_not_found instead of:
+        1. Recognizing the fuzzy match as the intended entity
+        2. Checking authorization for that entity
+        3. Responding denied_security if not authorized
+        """
+        if not isinstance(ctx.model, client.Req_ProvideAgentResponse):
+            return
+
+        outcome = ctx.model.outcome or ""
+        if outcome != "ok_not_found":
+            return
+
+        # Check if this is a mutation task (status change, update, modify)
+        task = ctx.shared.get('task')
+        task_text = (getattr(task, 'task_text', '') if task else '').lower()
+
+        mutation_keywords = [
+            r'\bswitch\s+status\b', r'\bchange\s+status\b', r'\bupdate\s+status\b',
+            r'\bset\s+status\b', r'\bpause\b', r'\barchive\b', r'\bactivate\b',
+            r'\bmodify\b', r'\bupdate\b', r'\bedit\b',
+        ]
+        mutation_re = re.compile('|'.join(mutation_keywords), re.IGNORECASE)
+        is_mutation_task = bool(mutation_re.search(task_text))
+
+        if not is_mutation_task:
+            return
+
+        # Check if projects_search was called and returned results
+        action_types_executed = ctx.shared.get('action_types_executed', set())
+        had_project_search = 'projects_search' in action_types_executed
+
+        if not had_project_search:
+            return
+
+        # Check if already warned
+        warning_key = 'ok_not_found_mutation_warned'
+        already_warned = ctx.shared.get(warning_key, False)
+
+        if already_warned:
+            print(f"  {CLI_GREEN}✓ Outcome Validation: Agent confirmed 'ok_not_found' after warning{CLI_CLR}")
+            return
+
+        print(f"  {CLI_YELLOW}🔍 Outcome Validation: 'ok_not_found' on mutation task with projects_search{CLI_CLR}")
+        ctx.shared[warning_key] = True
+        ctx.stop_execution = True
+        ctx.results.append(
+            f"🔍 OUTCOME VALIDATION: You responded with 'ok_not_found' for a MUTATION task!\n\n"
+            f"**This is likely incorrect.** For mutation tasks (status change, update), you should:\n\n"
+            f"1. If projects_search found ANY results, check for FUZZY MATCHES:\n"
+            f"   - 'Triage PoC for Intake Notes' ≈ 'Intake Notes Triage PoC' (same words, different order)\n"
+            f"   - Don't respond 'ok_not_found' just because the name order is different!\n\n"
+            f"2. If a fuzzy match exists, call `projects_get(id='proj_...')` to verify:\n"
+            f"   - Your role in the team (Lead/Engineer/etc.)\n"
+            f"   - Whether you have authorization to modify it\n\n"
+            f"3. If NOT authorized (not Lead/Owner/Manager of Lead):\n"
+            f"   - Respond with `denied_security`, NOT `ok_not_found`!\n\n"
+            f"**Use 'ok_not_found' ONLY if NO project matches the query at all.**\n\n"
+            f"**If you're certain no matching project exists**, call respond again with the same outcome."
+        )
+
+
+class ProjectSearchReminderMiddleware(Middleware):
+    """
+    Middleware that reminds the agent to use projects_search when looking for projects.
+
+    Problem: Agent searches wiki for project info, doesn't find it, responds ok_not_found.
+    But wiki doesn't contain project status/existence - only projects_search does!
+
+    Solution: When agent responds ok_not_found for a project-related query without
+    having called projects_search, remind them to check the database.
+    """
+
+    PROJECT_KEYWORDS = [
+        r'\bproject\b', r'\bPoC\b', r'\bpoc\b', r'\barchived?\b',
+        r'\bwrapped\s+up\b', r'\bcompleted?\s+project\b',
+    ]
+
+    def __init__(self):
+        self._project_re = re.compile('|'.join(self.PROJECT_KEYWORDS), re.IGNORECASE)
+
+    def process(self, ctx: ToolContext) -> None:
+        # Only intercept ok_not_found responses
+        if not isinstance(ctx.model, client.Req_ProvideAgentResponse):
+            return
+
+        outcome = ctx.model.outcome or ""
+        if outcome != "ok_not_found":
+            return
+
+        # Check if this is a project-related query
+        task = ctx.shared.get('task')
+        task_text = getattr(task, 'task_text', '') if task else ''
+        if not self._project_re.search(task_text):
+            return
+
+        # Check if projects_search was called
+        action_types_executed = ctx.shared.get('action_types_executed', set())
+        if 'projects_search' in action_types_executed:
+            return  # Agent did search projects, ok_not_found is valid
+
+        # Check if already warned
+        warning_key = 'project_search_reminder_warned'
+        if ctx.shared.get(warning_key):
+            print(f"  {CLI_GREEN}✓ Project Search Reminder: Agent confirmed ok_not_found after warning{CLI_CLR}")
+            return
+
+        # Warn agent to try projects_search
+        print(f"  {CLI_YELLOW}🔍 Project Search Reminder: ok_not_found without projects_search{CLI_CLR}")
+        ctx.shared[warning_key] = True
+        ctx.stop_execution = True
+        ctx.results.append(
+            f"🔍 REMINDER: You responded 'ok_not_found' for a project-related query, "
+            f"but you haven't used `projects_search` yet!\n\n"
+            f"**Wiki does NOT contain project existence/status info** - only the database does.\n\n"
+            f"Before giving up, try:\n"
+            f"- `projects_search(status=['archived'])` for archived projects\n"
+            f"- `projects_search(query='keyword')` for active projects\n"
+            f"- `projects_search()` to get all projects and filter yourself\n\n"
+            f"**If you've already searched and are certain**, respond again with ok_not_found."
+        )
 
 
 class ProjectMembershipMiddleware(Middleware):

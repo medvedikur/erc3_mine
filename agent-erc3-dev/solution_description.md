@@ -30,6 +30,14 @@ This solution reimplements the SGR (Schema-Guided Reasoning) agent using **LangC
 - **Supported Models**: Any OpenRouter model (e.g., `openai/gpt-5.1`, `openai/gpt-4o-mini`)
 - **Features**: Dynamic pricing from API, PascalCase response normalization
 
+### SDK Version
+**Required**: `erc3>=1.2.0` (breaking change from 1.1.x)
+
+Changes in 1.2.0:
+- `log_llm()` now requires `completion` parameter (raw LLM response for validation)
+- Token fields are now typed: `prompt_tokens`, `completion_tokens`, `cached_prompt_tokens`
+- Old `usage` object parameter removed
+
 ### Configuration (.env)
 ```bash
 # Competition Key

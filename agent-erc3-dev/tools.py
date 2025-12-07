@@ -1,8 +1,62 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 import re
 import datetime
 from erc3.erc3 import client
 from pydantic import BaseModel, Field
+
+
+# =============================================================================
+# Tool Parser Registry
+# =============================================================================
+
+class ParseContext:
+    """Context passed to tool parsers with pre-processed data."""
+    __slots__ = ('args', 'raw_args', 'context', 'current_user')
+
+    def __init__(self, args: dict, raw_args: dict, context: Any, current_user: Optional[str]):
+        self.args = args
+        self.raw_args = raw_args
+        self.context = context
+        self.current_user = current_user
+
+
+class ToolParser:
+    """
+    Registry of tool parsers with automatic dispatch.
+
+    Usage:
+        @ToolParser.register("whoami", "me", "identity")
+        def _parse_who_am_i(ctx: ParseContext) -> Any:
+            return client.Req_WhoAmI()
+    """
+    _parsers: Dict[str, Callable[[ParseContext], Any]] = {}
+
+    @classmethod
+    def register(cls, *names: str):
+        """Decorator to register a parser function for one or more tool names."""
+        def decorator(func: Callable[[ParseContext], Any]) -> Callable[[ParseContext], Any]:
+            for name in names:
+                # Normalize name same way as in parse()
+                normalized = name.lower().replace("_", "").replace("-", "").replace("/", "")
+                cls._parsers[normalized] = func
+            return func
+        return decorator
+
+    @classmethod
+    def get_parser(cls, tool_name: str) -> Optional[Callable[[ParseContext], Any]]:
+        """Get parser for a tool name (normalized)."""
+        normalized = tool_name.lower().replace("_", "").replace("-", "").replace("/", "")
+        return cls._parsers.get(normalized)
+
+    @classmethod
+    def list_tools(cls) -> List[str]:
+        """List all registered tool names."""
+        return sorted(cls._parsers.keys())
+
+
+# =============================================================================
+# Models
+# =============================================================================
 
 # Define simplified tool models where needed, or map directly to erc3.client
 
@@ -185,637 +239,596 @@ def _detect_placeholders(args: dict) -> Optional[str]:
                     return f"Argument '{key}' contains placeholder value '{value}'. You cannot use placeholders! Wait for the previous tool results before calling dependent tools. Execute tools one at a time when values depend on previous results."
     return None
 
+
+# =============================================================================
+# Tool Parsers (registered via @ToolParser.register decorator)
+# =============================================================================
+
+# --- Identity ---
+
+@ToolParser.register("whoami", "who_am_i", "me", "identity")
+def _parse_who_am_i(ctx: ParseContext) -> Any:
+    """Get current user identity and context."""
+    return client.Req_WhoAmI()
+
+
+# --- Employees ---
+
+@ToolParser.register("employees_list", "employeeslist", "listemployees")
+def _parse_employees_list(ctx: ParseContext) -> Any:
+    """List all employees with pagination."""
+    return client.Req_ListEmployees(
+        offset=int(ctx.args.get("offset", 0)),
+        limit=int(ctx.args.get("limit", 5))
+    )
+
+
+@ToolParser.register("employees_search", "employeessearch", "searchemployees")
+def _parse_employees_search(ctx: ParseContext) -> Any:
+    """Search employees by query, location, department, or manager."""
+    return client.Req_SearchEmployees(
+        query=ctx.args.get("query") or ctx.args.get("name") or ctx.args.get("query_regex"),
+        location=ctx.args.get("location"),
+        department=ctx.args.get("department"),
+        manager=ctx.args.get("manager"),
+        offset=int(ctx.args.get("offset", 0)),
+        limit=int(ctx.args.get("limit", 5))
+    )
+
+
+@ToolParser.register("employees_get", "employeesget", "getemployee")
+def _parse_employees_get(ctx: ParseContext) -> Any:
+    """Get employee by ID. Falls back to search if only name provided."""
+    emp_id = ctx.args.get("id") or ctx.args.get("employee_id") or ctx.args.get("employee")
+    username = ctx.args.get("username")
+
+    # Smart dispatch: if ID missing but username/name provided, use search
+    if not emp_id and (username or ctx.args.get("name")):
+        query = username or ctx.args.get("name")
+        return client.Req_SearchEmployees(
+            query=query,
+            offset=int(ctx.args.get("offset", 0)),
+            limit=int(ctx.args.get("limit", 5))
+        )
+
+    if not emp_id:
+        if ctx.current_user:
+            emp_id = ctx.current_user
+        else:
+            return None  # Will trigger LLM retry
+
+    return client.Req_GetEmployee(id=emp_id)
+
+
+@ToolParser.register("employees_update", "employeesupdate", "updateemployee", "salary_update", "salaryupdate", "updatesalary")
+def _parse_employees_update(ctx: ParseContext) -> Any:
+    """Update employee info (salary, notes, location, etc.)."""
+    update_args = {
+        "employee": ctx.args.get("employee") or ctx.args.get("id") or ctx.args.get("employee_id") or ctx.current_user,
+        "notes": ctx.args.get("notes"),
+        "salary": ctx.args.get("salary"),
+        "location": ctx.args.get("location"),
+        "department": ctx.args.get("department"),
+        "skills": ctx.args.get("skills"),
+        "wills": ctx.args.get("wills"),
+        "changed_by": ctx.args.get("changed_by")
+    }
+    valid_args = {k: v for k, v in update_args.items() if v is not None}
+    return SafeReq_UpdateEmployeeInfo(**valid_args)
+
+
+# --- Wiki ---
+
+@ToolParser.register("wiki_list", "wikilist", "listwiki")
+def _parse_wiki_list(ctx: ParseContext) -> Any:
+    """List all wiki pages."""
+    return client.Req_ListWiki()
+
+
+@ToolParser.register("wiki_load", "wikiload", "loadwiki", "readwiki")
+def _parse_wiki_load(ctx: ParseContext) -> Any:
+    """Load a specific wiki page by path."""
+    file_arg = ctx.args.get("file") or ctx.args.get("path") or ctx.args.get("page")
+    if not file_arg:
+        return None  # Will trigger LLM retry
+    return client.Req_LoadWiki(file=file_arg)
+
+
+@ToolParser.register("wiki_search", "wikisearch", "searchwiki")
+def _parse_wiki_search(ctx: ParseContext) -> Any:
+    """Search wiki pages by regex query."""
+    query = (ctx.args.get("query_regex") or ctx.args.get("query") or
+             ctx.args.get("query_semantic") or ctx.args.get("search_term"))
+    return client.Req_SearchWiki(query_regex=query)
+
+
+@ToolParser.register("wiki_update", "wikiupdate", "updatewiki")
+def _parse_wiki_update(ctx: ParseContext) -> Any:
+    """Update or create a wiki page."""
+    return client.Req_UpdateWiki(
+        file=ctx.args.get("file") or ctx.args.get("path"),
+        content=ctx.args.get("content"),
+        changed_by=ctx.args.get("changed_by")
+    )
+
+
+# --- Customers ---
+
+@ToolParser.register("customers_list", "customerslist", "listcustomers")
+def _parse_customers_list(ctx: ParseContext) -> Any:
+    """List all customers with pagination."""
+    return client.Req_ListCustomers(
+        offset=int(ctx.args.get("offset", 0)),
+        limit=int(ctx.args.get("limit", 5))
+    )
+
+
+@ToolParser.register("customers_get", "customersget", "getcustomer")
+def _parse_customers_get(ctx: ParseContext) -> Any:
+    """Get customer by ID."""
+    cust_id = ctx.args.get("id") or ctx.args.get("customer_id")
+    if not cust_id:
+        return None
+    return client.Req_GetCustomer(id=cust_id)
+
+
+@ToolParser.register("customers_search", "customerssearch", "searchcustomers")
+def _parse_customers_search(ctx: ParseContext) -> Any:
+    """Search customers by location, deal phase, or account manager."""
+    # Handle location -> locations (list)
+    locations = ctx.args.get("locations")
+    if not locations and ctx.args.get("location"):
+        locations = [ctx.args.get("location")]
+    elif isinstance(locations, str):
+        locations = [locations]
+
+    # Handle status/stage -> deal_phase (list)
+    deal_phase = ctx.args.get("deal_phase") or ctx.args.get("status") or ctx.args.get("stage")
+    if deal_phase:
+        if isinstance(deal_phase, str):
+            deal_phase = [deal_phase]
+    else:
+        deal_phase = None
+
+    # Handle account_manager -> account_managers (list)
+    account_managers = ctx.args.get("account_managers")
+    if not account_managers and ctx.args.get("account_manager"):
+        account_managers = [ctx.args.get("account_manager")]
+    elif isinstance(account_managers, str):
+        account_managers = [account_managers]
+
+    search_args = {
+        "query": ctx.args.get("query") or ctx.args.get("query_regex"),
+        "deal_phase": deal_phase,
+        "locations": locations,
+        "account_managers": account_managers,
+        "offset": int(ctx.args.get("offset", 0)),
+        "limit": int(ctx.args.get("limit", 5))
+    }
+    valid_args = {k: v for k, v in search_args.items() if v is not None}
+    return client.Req_SearchCustomers(**valid_args)
+
+
+# --- Projects ---
+
+@ToolParser.register("projects_list", "projectslist", "listprojects")
+def _parse_projects_list(ctx: ParseContext) -> Any:
+    """List all projects with pagination."""
+    return client.Req_ListProjects(
+        offset=int(ctx.args.get("offset", 0)),
+        limit=int(ctx.args.get("limit", 5))
+    )
+
+
+@ToolParser.register("projects_get", "projectsget", "getproject")
+def _parse_projects_get(ctx: ParseContext) -> Any:
+    """Get project by ID."""
+    proj_id = ctx.args.get("id") or ctx.args.get("project_id")
+    if not proj_id:
+        return None
+    return client.Req_GetProject(id=proj_id)
+
+
+@ToolParser.register("projects_search", "projectssearch", "searchprojects")
+def _parse_projects_search(ctx: ParseContext) -> Any:
+    """Search projects by query, status, customer, or team member."""
+    status_arg = ctx.args.get("status")
+    if isinstance(status_arg, str):
+        status = [status_arg]
+    elif isinstance(status_arg, list):
+        status = status_arg if status_arg else None
+    else:
+        status = None
+
+    # Handle team filter (member parameter)
+    team_filter = None
+    member_id = ctx.args.get("member") or ctx.args.get("team_member") or ctx.args.get("employee_id")
+    if member_id:
+        from erc3.erc3 import dtos
+        team_filter = dtos.ProjectTeamFilter(
+            employee_id=member_id,
+            role=ctx.args.get("role"),
+            min_time_slice=float(ctx.args.get("min_time_slice", 0.0))
+        )
+
+    # Smart include_archived logic
+    include_archived_arg = ctx.args.get("include_archived")
+    query_val = ctx.args.get("query") or ctx.args.get("query_regex") or ""
+    query_lower = query_val.lower() if query_val else ""
+
+    archive_keywords = ["archived", "archive", "completed", "wrapped up", "finished", "closed", "ended"]
+    query_suggests_archived = any(kw in query_lower for kw in archive_keywords)
+
+    if status and "archived" in status:
+        include_archived = True
+    elif query_suggests_archived:
+        include_archived = True
+    elif include_archived_arg is not None:
+        include_archived = bool(include_archived_arg)
+    else:
+        include_archived = True
+
+    search_args = {
+        "query": ctx.args.get("query") or ctx.args.get("query_regex"),
+        "customer_id": ctx.args.get("customer_id") or ctx.args.get("customer"),
+        "status": status,
+        "team": team_filter,
+        "include_archived": include_archived,
+        "offset": int(ctx.args.get("offset", 0)),
+        "limit": int(ctx.args.get("limit", 5))
+    }
+    valid_args = {k: v for k, v in search_args.items() if v is not None}
+    return client.Req_SearchProjects(**valid_args)
+
+
+def _normalize_team_roles(team_data: list) -> list:
+    """Normalize team role names to valid TeamRole enum values."""
+    role_mappings = {
+        "tester": "QA", "testing": "QA", "quality": "QA",
+        "quality control": "QA", "qc": "QA", "qa": "QA",
+        "developer": "Engineer", "dev": "Engineer",
+        "devops": "Ops", "operations": "Ops",
+        "ui": "Designer", "ux": "Designer",
+        "lead": "Lead", "manager": "Lead", "pm": "Lead", "project manager": "Lead",
+        "engineer": "Engineer", "designer": "Designer", "ops": "Ops", "other": "Other",
+    }
+    valid_roles = ["Lead", "Engineer", "Designer", "QA", "Ops", "Other"]
+
+    normalized = []
+    for member in team_data:
+        if isinstance(member, dict):
+            role = member.get("role", "Other")
+            normalized_role = role_mappings.get(role.lower(), role) if role else "Other"
+            if normalized_role not in valid_roles:
+                normalized_role = "Other"
+            normalized.append({
+                "employee": member.get("employee"),
+                "time_slice": member.get("time_slice", 0.0),
+                "role": normalized_role
+            })
+    return normalized
+
+
+@ToolParser.register("projects_team_update", "projectsteamupdate", "updateprojectteam", "projectsupdateteam", "teamupdate")
+def _parse_projects_team_update(ctx: ParseContext) -> Any:
+    """Update project team members."""
+    team_data = ctx.args.get("team") or []
+    normalized_team = _normalize_team_roles(team_data)
+    return client.Req_UpdateProjectTeam(
+        id=ctx.args.get("id") or ctx.args.get("project_id"),
+        team=normalized_team,
+        changed_by=ctx.args.get("changed_by")
+    )
+
+
+@ToolParser.register("projects_status_update", "projectsstatusupdate", "updateprojectstatus", "projectssetstatus")
+def _parse_projects_status_update(ctx: ParseContext) -> Any:
+    """Update project status."""
+    status = ctx.args.get("status")
+    if not status:
+        return ParseError(
+            "projects_status_update requires 'status' field. Valid values: 'idea', 'exploring', 'active', 'paused', 'archived'",
+            tool="projects_status_update"
+        )
+    return client.Req_UpdateProjectStatus(
+        id=ctx.args.get("id") or ctx.args.get("project_id"),
+        status=status,
+        changed_by=ctx.args.get("changed_by")
+    )
+
+
+@ToolParser.register("projects_update", "projectsupdate", "updateproject")
+def _parse_projects_update(ctx: ParseContext) -> Any:
+    """Generic project update - dispatches to team or status update based on args."""
+    team_data = ctx.args.get("team")
+    team_add = ctx.args.get("team_add")
+
+    # If team_add provided, fetch current team and merge
+    if team_add and not team_data:
+        project_id = ctx.args.get("id") or ctx.args.get("project_id")
+        if ctx.context and hasattr(ctx.context, 'api'):
+            try:
+                resp = ctx.context.api.get_project(project_id)
+                current_team = []
+                if hasattr(resp, 'project') and resp.project and hasattr(resp.project, 'team'):
+                    for member in resp.project.team:
+                        current_team.append({
+                            "employee": getattr(member, 'employee', None),
+                            "role": getattr(member, 'role', 'Other'),
+                            "time_slice": getattr(member, 'time_slice', 0.0)
+                        })
+                current_team.append(team_add)
+                team_data = current_team
+            except Exception:
+                team_data = [team_add]
+        else:
+            team_data = [team_add]
+
+    if team_data:
+        normalized_team = _normalize_team_roles(team_data)
+        return client.Req_UpdateProjectTeam(
+            id=ctx.args.get("id") or ctx.args.get("project_id"),
+            team=normalized_team,
+            changed_by=ctx.args.get("changed_by")
+        )
+    elif ctx.args.get("status"):
+        return client.Req_UpdateProjectStatus(
+            id=ctx.args.get("id") or ctx.args.get("project_id"),
+            status=ctx.args.get("status"),
+            changed_by=ctx.args.get("changed_by")
+        )
+    else:
+        return ParseError(
+            f"The requested update operation (args: {list(ctx.args.keys())}) is not supported. Only 'team' and 'status' can be updated.",
+            tool="projects_update"
+        )
+
+
+# --- Time ---
+
+@ToolParser.register("time_log", "timelog", "logtime")
+def _parse_time_log(ctx: ParseContext) -> Any:
+    """Log time entry for an employee on a project."""
+    target_emp = ctx.args.get("employee") or ctx.args.get("employee_id")
+    if not target_emp:
+        target_emp = ctx.current_user
+
+    # Determine date: Explicit > Simulated > Today
+    date_val = ctx.args.get("date")
+    if not date_val and ctx.context and hasattr(ctx.context, 'shared'):
+        sm = ctx.context.shared.get('security_manager')
+        if sm and hasattr(sm, 'today') and sm.today:
+            date_val = sm.today
+    if not date_val:
+        date_val = datetime.date.today().isoformat()
+
+    return client.Req_LogTimeEntry(
+        employee=target_emp,
+        project=ctx.args.get("project") or ctx.args.get("project_id"),
+        customer=ctx.args.get("customer"),
+        date=date_val,
+        hours=float(ctx.args.get("hours", 0)),
+        work_category=ctx.args.get("work_category", "dev"),
+        notes=ctx.args.get("notes", ""),
+        billable=bool(ctx.args.get("billable", True)),
+        status=ctx.args.get("status", "draft"),
+        logged_by=ctx.args.get("logged_by")
+    )
+
+
+@ToolParser.register("time_get", "timeget", "gettime")
+def _parse_time_get(ctx: ParseContext) -> Any:
+    """Get time entry by ID."""
+    entry_id = ctx.args.get("id")
+    if not entry_id:
+        return None
+    return client.Req_GetTimeEntry(id=entry_id)
+
+
+@ToolParser.register("time_search", "timesearch", "searchtime")
+def _parse_time_search(ctx: ParseContext) -> Any:
+    """Search time entries with filters."""
+    return client.Req_SearchTimeEntries(
+        employee=ctx.args.get("employee") or ctx.args.get("employee_id") or ctx.current_user,
+        project=ctx.args.get("project") or ctx.args.get("project_id"),
+        date_from=ctx.args.get("date_from"),
+        date_to=ctx.args.get("date_to"),
+        billable=ctx.args.get("billable", ""),
+        offset=int(ctx.args.get("offset", 0)),
+        limit=int(ctx.args.get("limit", 5))
+    )
+
+
+@ToolParser.register("time_update", "timeupdate", "updatetime")
+def _parse_time_update(ctx: ParseContext) -> Any:
+    """Update existing time entry."""
+    return client.Req_UpdateTimeEntry(
+        id=ctx.args.get("id"),
+        date=ctx.args.get("date"),
+        hours=float(ctx.args.get("hours", 0)),
+        work_category=ctx.args.get("work_category"),
+        notes=ctx.args.get("notes"),
+        billable=ctx.args.get("billable"),
+        status=ctx.args.get("status"),
+        changed_by=ctx.args.get("changed_by")
+    )
+
+
+# --- Response ---
+
+@ToolParser.register("respond", "answer", "reply")
+def _parse_respond(ctx: ParseContext) -> Any:
+    """Submit final response to user. Handles link auto-detection and validation."""
+    args = ctx.args
+
+    # Extract message (handle various field names from different LLMs)
+    message = (args.get("message") or args.get("Message") or
+               args.get("text") or args.get("Text") or
+               args.get("response") or args.get("Response") or
+               args.get("answer") or args.get("Answer") or
+               args.get("content") or args.get("Content") or
+               args.get("details") or args.get("Details") or
+               args.get("body") or args.get("Body"))
+    if not message:
+        message = "No message provided."
+
+    # Extract/infer outcome
+    outcome = args.get("outcome") or args.get("Outcome")
+    if not outcome:
+        msg_lower = str(message).lower()
+        if "cannot" in msg_lower or "unable to" in msg_lower or "could not" in msg_lower:
+            if "tool" in msg_lower or "system" in msg_lower:
+                outcome = "none_unsupported"
+            elif any(w in msg_lower for w in ["permission", "access", "allow", "restricted"]):
+                outcome = "denied_security"
+            else:
+                outcome = "none_clarification_needed"
+        else:
+            outcome = "ok_answer"
+
+    # Extract and normalize links
+    links = args.get("links") or args.get("Links") or []
+    if links:
+        links = [{"kind": l.get("kind") or l.get("Kind", ""),
+                  "id": l.get("id") or l.get("ID", "")} for l in links]
+
+    # Auto-detect links from message text
+    if not links:
+        # Find prefixed IDs (proj_, emp_, cust_)
+        ids = re.findall(r'\b((?:proj|emp|cust)_[a-z0-9_]+)\b', str(message))
+        type_map = {"proj": "project", "emp": "employee", "cust": "customer"}
+        for found_id in ids:
+            prefix = found_id.split('_')[0]
+            if prefix in type_map:
+                links.append({"id": found_id, "kind": type_map[prefix]})
+
+        # Find bare employee usernames (name_surname pattern)
+        non_employee_patterns = [
+            "cv_engineering", "edge_ai", "machine_learning", "deep_learning",
+            "data_engineering", "cloud_architecture", "backend_development",
+            "frontend_development", "mobile_development", "devops_engineering",
+            "security_engineering", "project_management", "technical_writing",
+            "time_slice", "work_category", "deal_phase", "account_manager",
+            "employee_id", "project_id", "customer_id", "next_offset",
+        ]
+        potential_users = re.findall(r'\b([a-z]+(?:_[a-z]+)+)\b', str(message))
+        for pu in potential_users:
+            if not pu.startswith(('proj_', 'emp_', 'cust_')):
+                if pu not in non_employee_patterns:
+                    links.append({"id": pu, "kind": "employee"})
+            if pu.startswith('emp_'):
+                links.append({"id": pu[4:], "kind": "employee"})
+
+    # Validate employee links via API
+    if links and ctx.context:
+        validated_links = []
+        for link in links:
+            if link.get("kind") == "employee":
+                try:
+                    req = client.Req_GetEmployee(id=link.get("id"))
+                    ctx.context.api.dispatch(req)
+                    validated_links.append(link)
+                except Exception as e:
+                    if "not found" not in str(e).lower() and "404" not in str(e):
+                        validated_links.append(link)
+            else:
+                validated_links.append(link)
+        links = validated_links
+
+    # Add mutation entities to links
+    if ctx.context:
+        had_mutations = ctx.context.shared.get('had_mutations', False)
+        mutation_entities = ctx.context.shared.get('mutation_entities', [])
+        if had_mutations:
+            for entity in mutation_entities:
+                if not any(l.get("id") == entity.get("id") and l.get("kind") == entity.get("kind") for l in links):
+                    links.append(entity)
+            if ctx.current_user:
+                if not any(l.get("id") == ctx.current_user and l.get("kind") == "employee" for l in links):
+                    links.append({"id": ctx.current_user, "kind": "employee"})
+
+    # Deduplicate links
+    seen = set()
+    unique_links = []
+    for link in links:
+        key = (link.get("id"), link.get("kind"))
+        if key not in seen:
+            seen.add(key)
+            unique_links.append(link)
+    links = unique_links
+
+    # Clear links for error/denied outcomes
+    if outcome in ("error_internal", "denied_security"):
+        links = []
+
+    return client.Req_ProvideAgentResponse(
+        message=str(message),
+        outcome=outcome,
+        links=links
+    )
+
+
+# =============================================================================
+# Main Parse Function
+# =============================================================================
+
 def parse_action(action_dict: dict, context: Any = None) -> Optional[Any]:
-    """Parse action dict into Pydantic model for Erc3Client"""
+    """
+    Parse action dict into Pydantic model for Erc3Client.
+
+    Uses ToolParser registry for dispatch. Each tool parser is registered
+    via @ToolParser.register decorator above.
+    """
     tool = action_dict.get("tool", "").lower().replace("_", "").replace("-", "").replace("/", "")
-    
+
     # Flatten args - merge args into action_dict to handle both nested and flat structures
     raw_args = action_dict.get("args", {})
     if raw_args:
         combined_args = {**action_dict, **raw_args}
     else:
         combined_args = action_dict
-        
+
     # Use combined_args for lookups
     args = combined_args.copy()
-    
+
     # SAFETY: Detect placeholder values before processing
     placeholder_error = _detect_placeholders(args)
     if placeholder_error:
         return ParseError(placeholder_error, tool=tool)
-    
+
     # Normalize args
     args = _normalize_args(args)
-    
+
     # Inject Context (Auto-fill user ID for auditing fields)
     if context:
         args = _inject_context(args, context)
-        
-    # Helper to get current user for defaults
+
+    # Get current user for defaults
     current_user = None
     if context and hasattr(context, 'shared'):
         sm = context.shared.get('security_manager')
         if sm:
             current_user = sm.current_user
 
-    # --- Tool Mappings ---
+    # Create parse context
+    ctx = ParseContext(
+        args=args,
+        raw_args=raw_args,
+        context=context,
+        current_user=current_user
+    )
 
-    # Employees
-    if tool in ["whoami", "me", "identity"]:
-        return client.Req_WhoAmI()
-    
-    if tool in ["employeeslist", "listemployees"]:
-        kwargs = {}
-        kwargs["offset"] = int(args.get("offset", 0))
-        kwargs["limit"] = int(args.get("limit", 5))
-        return client.Req_ListEmployees(**kwargs)
-    
-    if tool in ["employeessearch", "searchemployees"]:
-        kwargs = {}
-        kwargs["offset"] = int(args.get("offset", 0))
-        kwargs["limit"] = int(args.get("limit", 5))
-        return client.Req_SearchEmployees(
-            query=args.get("query") or args.get("name") or args.get("query_regex"), # Handle 'name' and 'query_regex' alias
-            location=args.get("location"),
-            department=args.get("department"),
-            manager=args.get("manager"),
-            **kwargs
-        )
-    
-    if tool in ["employeesget", "getemployee"]:
-        emp_id = args.get("id") or args.get("employee_id") or args.get("employee")
-        username = args.get("username")
-        
-        # Smart dispatch: if ID is missing but username/name is provided, use search instead
-        if not emp_id and (username or args.get("name")):
-            query = username or args.get("name")
-            kwargs = {}
-            kwargs["offset"] = int(args.get("offset", 0))
-            kwargs["limit"] = int(args.get("limit", 5))
-            return client.Req_SearchEmployees(query=query, **kwargs)
-            
-        if not emp_id:
-            # Default to current user if asking for "my" profile implicitly?
-            if current_user:
-                emp_id = current_user
-            else:
-                print("⚠ 'id' argument missing in 'get_employee'. Skipping to force LLM retry.")
-                return None
-            
-        return client.Req_GetEmployee(id=emp_id)
-    
-    if tool in ["employeesupdate", "updateemployee", "salaryupdate", "updatesalary"]: # Added aliases
-        # Build kwargs filtering out Nones to avoid validation error for optional lists
-        update_args = {
-            "employee": args.get("employee") or args.get("id") or args.get("employee_id") or current_user,
-            "notes": args.get("notes"),
-            "salary": args.get("salary"),
-            "location": args.get("location"),
-            "department": args.get("department"),
-            "skills": args.get("skills"),
-            "wills": args.get("wills"),
-            "changed_by": args.get("changed_by") # Auto-filled by context
-        }
-        # Filter out None values
-        valid_args = {k: v for k, v in update_args.items() if v is not None}
-        
-        return SafeReq_UpdateEmployeeInfo(**valid_args)
-
-    # Wiki
-    if tool in ["wikilist", "listwiki"]:
-        return client.Req_ListWiki()
-    
-    if tool in ["wikiload", "loadwiki", "readwiki"]:
-        file_arg = args.get("file") or args.get("path") or args.get("page")
-        if not file_arg:
-            print("⚠ 'file' argument missing in 'wiki_load'. Skipping to force LLM retry.")
-            return None
-        return client.Req_LoadWiki(file=file_arg)
-    
-    if tool in ["wikisearch", "searchwiki"]:
-        # Smart arg mapping for common hallucinations
-        query = args.get("query_regex") or args.get("query") or args.get("query_semantic") or args.get("search_term")
-        return client.Req_SearchWiki(query_regex=query)
-    
-    if tool in ["wikiupdate", "updatewiki"]:
-        return client.Req_UpdateWiki(
-            file=args.get("file") or args.get("path"),
-            content=args.get("content"),
-            changed_by=args.get("changed_by")
-        )
-
-    # Customers
-    if tool in ["customerslist", "listcustomers"]:
-        kwargs = {}
-        kwargs["offset"] = int(args.get("offset", 0))
-        kwargs["limit"] = int(args.get("limit", 5))
-        return client.Req_ListCustomers(**kwargs)
-    
-    if tool in ["customersget", "getcustomer"]:
-        cust_id = args.get("id") or args.get("customer_id")
-        if not cust_id:
-            print("⚠ 'id' argument missing in 'get_customer'. Skipping to force LLM retry.")
-            return None
-        return client.Req_GetCustomer(id=cust_id)
-    
-    if tool in ["customerssearch", "searchcustomers"]:
-        kwargs = {}
-        kwargs["offset"] = int(args.get("offset", 0))
-        kwargs["limit"] = int(args.get("limit", 5))
-
-        # Handle location -> locations (list)
-        locations = args.get("locations")
-        if not locations and args.get("location"):
-            locations = [args.get("location")]
-        elif isinstance(locations, str):
-            locations = [locations]
-
-        # Handle status/stage -> deal_phase (list)
-        deal_phase = args.get("deal_phase") or args.get("status") or args.get("stage")
-        if deal_phase:
-            if isinstance(deal_phase, str):
-                deal_phase = [deal_phase]
-        else:
-            deal_phase = None
-
-        # Handle account_manager -> account_managers (list)
-        account_managers = args.get("account_managers")
-        if not account_managers and args.get("account_manager"):
-            account_managers = [args.get("account_manager")]
-        elif isinstance(account_managers, str):
-            account_managers = [account_managers]
-
-        # Build search args, filtering out None values
-        search_args = {
-            "query": args.get("query") or args.get("query_regex"),
-            "deal_phase": deal_phase,
-            "locations": locations,
-            "account_managers": account_managers,
-            **kwargs
-        }
-        # Filter out None values to respect Pydantic defaults/optionality
-        valid_search_args = {k: v for k, v in search_args.items() if v is not None}
-
-        return client.Req_SearchCustomers(**valid_search_args)
-
-    # Projects
-    if tool in ["projectslist", "listprojects"]:
-        kwargs = {}
-        kwargs["offset"] = int(args.get("offset", 0))
-        kwargs["limit"] = int(args.get("limit", 5))
-        return client.Req_ListProjects(**kwargs)
-    
-    if tool in ["projectsget", "getproject"]:
-        proj_id = args.get("id") or args.get("project_id")
-        if not proj_id:
-            print("⚠ 'id' argument missing in 'get_project'. Skipping to force LLM retry.")
-            return None
-        return client.Req_GetProject(id=proj_id)
-    
-    if tool in ["projectssearch", "searchprojects"]:
-        status_arg = args.get("status")
-        if isinstance(status_arg, str):
-            status = [status_arg]
-        elif isinstance(status_arg, list):
-            # If list is empty, we set to None to avoid "match nothing" behavior if that's the default
-            status = status_arg if status_arg else None
-        else:
-            status = None
-            
-        kwargs = {}
-        kwargs["offset"] = int(args.get("offset", 0))
-        kwargs["limit"] = int(args.get("limit", 5))
-
-        # Handle team filter (member parameter)
-        # API expects ProjectTeamFilter with employee_id, role, min_time_slice
-        team_filter = None
-        member_id = args.get("member") or args.get("team_member") or args.get("employee_id")
-        if member_id:
-            from erc3.erc3 import dtos
-            team_filter = dtos.ProjectTeamFilter(
-                employee_id=member_id,
-                role=args.get("role"),  # Optional: filter by role (Lead, Engineer, etc.)
-                min_time_slice=float(args.get("min_time_slice", 0.0))
-            )
-
-        # Smart include_archived logic:
-        # 1. If searching for "archived" status → MUST be True
-        # 2. If query contains archive-related keywords → True
-        # 3. If explicitly provided → use that value  
-        # 4. Default → True (to find all projects including archived)
-        include_archived_arg = args.get("include_archived")
-        query_val = args.get("query") or args.get("query_regex") or ""
-        query_lower = query_val.lower() if query_val else ""
-        
-        # Keywords that suggest searching for archived/completed projects
-        archive_keywords = ["archived", "archive", "completed", "wrapped up", "finished", "closed", "ended"]
-        query_suggests_archived = any(kw in query_lower for kw in archive_keywords)
-        
-        if status and "archived" in status:
-            # Searching for archived projects requires include_archived=True
-            include_archived = True
-        elif query_suggests_archived:
-            # Query suggests looking for archived projects
-            include_archived = True
-        elif include_archived_arg is not None:
-            include_archived = bool(include_archived_arg)
-        else:
-            include_archived = True  # Default to True
-            
-        search_args = {
-            "query": args.get("query") or args.get("query_regex"),
-            "customer_id": args.get("customer_id") or args.get("customer"),
-            "status": status,
-            "team": team_filter,
-            "include_archived": include_archived,
-            **kwargs
-        }
-        # Filter out None values to respect Pydantic defaults/optionality
-        valid_search_args = {k: v for k, v in search_args.items() if v is not None}
-
-        return client.Req_SearchProjects(**valid_search_args)
-    
-    if tool in ["projectsteamupdate", "updateprojectteam", "projectsupdateteam", "teamupdate"]:
-        # Normalize team roles to valid TeamRole values
-        # Valid: 'Lead', 'Engineer', 'Designer', 'QA', 'Ops', 'Other'
-        team_data = args.get("team") or []
-        normalized_team = []
-        role_mappings = {
-            "tester": "QA",
-            "testing": "QA",
-            "quality": "QA",
-            "quality control": "QA",
-            "qc": "QA",
-            "qa": "QA",
-            "developer": "Engineer",
-            "dev": "Engineer",
-            "devops": "Ops",
-            "operations": "Ops",
-            "ui": "Designer",
-            "ux": "Designer",
-            "lead": "Lead",
-            "manager": "Lead",
-            "engineer": "Engineer",
-            "designer": "Designer",
-            "ops": "Ops",
-            "other": "Other",
-        }
-        for member in team_data:
-            if isinstance(member, dict):
-                role = member.get("role", "Other")
-                normalized_role = role_mappings.get(role.lower(), role)
-                # Validate role is in allowed set
-                if normalized_role not in ["Lead", "Engineer", "Designer", "QA", "Ops", "Other"]:
-                    normalized_role = "Other"
-                normalized_team.append({
-                    "employee": member.get("employee"),
-                    "time_slice": member.get("time_slice", 0.0),
-                    "role": normalized_role
-                })
-        
-        return client.Req_UpdateProjectTeam(
-            id=args.get("id") or args.get("project_id"),
-            team=normalized_team,
-            changed_by=args.get("changed_by")
-        )
-        
-    if tool in ["projectsstatusupdate", "updateprojectstatus", "projectssetstatus"]:
-        # Only status updates - requires valid status
-        status = args.get("status")
-        if not status:
-            return ParseError(
-                "projects_status_update requires 'status' field. Valid values: 'idea', 'exploring', 'active', 'paused', 'archived'",
-                tool="projects_status_update"
-            )
-        return client.Req_UpdateProjectStatus(
-            id=args.get("id") or args.get("project_id"),
-            status=status,
-            changed_by=args.get("changed_by")
-        )
-    
-    # Handle "projects_update" - redirect to appropriate tool based on args
-    if tool in ["projectsupdate", "updateproject"]:
-        # If team or team_add is provided, redirect to projects_team_update
-        # Handle both "team" (full replacement) and "team_add" (single member to add)
-        team_data = args.get("team")
-        team_add = args.get("team_add")
-
-        # If team_add is provided (single member dict), we need to fetch current team and merge
-        if team_add and not team_data:
-            # team_add is a single member object like {"employee": "...", "role": "...", "time_slice": 0.3}
-            # We need to get current project team and add this member
-            project_id = args.get("id") or args.get("project_id")
-            if context and hasattr(context, 'api'):
-                try:
-                    resp = context.api.get_project(project_id)
-                    current_team = []
-                    if hasattr(resp, 'project') and resp.project and hasattr(resp.project, 'team'):
-                        for member in resp.project.team:
-                            current_team.append({
-                                "employee": getattr(member, 'employee', None),
-                                "role": getattr(member, 'role', 'Other'),
-                                "time_slice": getattr(member, 'time_slice', 0.0)
-                            })
-                    # Add the new member
-                    current_team.append(team_add)
-                    team_data = current_team
-                except Exception as e:
-                    print(f"  ⚠️ Failed to fetch current team for merge: {e}")
-                    # Fall back to just the new member
-                    team_data = [team_add]
-            else:
-                # No context, just use the new member
-                team_data = [team_add]
-
-        if team_data:
-            normalized_team = []
-            role_mappings = {
-                "tester": "QA", "testing": "QA", "quality control": "QA", "qc": "QA",
-                "developer": "Engineer", "dev": "Engineer",
-                "pm": "Lead", "project manager": "Lead", "manager": "Lead"
-            }
-            for member in team_data:
-                role = member.get("role", "Other")
-                normalized_role = role_mappings.get(role.lower(), role) if role else "Other"
-                # Validate against TeamRole enum
-                valid_roles = ["Lead", "Engineer", "Designer", "QA", "Ops", "Other"]
-                if normalized_role not in valid_roles:
-                    normalized_role = "Other"
-                normalized_team.append({
-                    "employee": member.get("employee"),
-                    "time_slice": member.get("time_slice", 0.0),
-                    "role": normalized_role
-                })
-            return client.Req_UpdateProjectTeam(
-                id=args.get("id") or args.get("project_id"),
-                team=normalized_team,
-                changed_by=args.get("changed_by")
-            )
-        # If status is provided, redirect to projects_status_update
-        elif args.get("status"):
-            return client.Req_UpdateProjectStatus(
-                id=args.get("id") or args.get("project_id"),
-                status=args.get("status"),
-                changed_by=args.get("changed_by")
-            )
-        else:
-            # No recognized update field (e.g. system_dependencies)
-            # This implies the feature is not supported.
-            return client.Req_ProvideAgentResponse(
-                tool="/respond",
-                outcome="none_unsupported",
-                message=f"The requested update operation (args: {list(args.keys())}) is not supported by the Project API. Only 'team' and 'status' can be updated."
-            )
-
-    # Time
-    if tool in ["timelog", "logtime"]:
-        target_emp = args.get("employee") or args.get("employee_id")
-        # If target employee is missing, assume self (me)
-        if not target_emp:
-            target_emp = current_user
-
-        # Determine date: Explicit arg > Simulated Date > Real Today
-        date_val = args.get("date")
-        if not date_val:
-            if context and hasattr(context, 'shared'):
-                sm = context.shared.get('security_manager')
-                if sm and hasattr(sm, 'today') and sm.today:
-                    date_val = sm.today
-
-        if not date_val:
-            date_val = datetime.date.today().isoformat()
-
-        # Get work_category and customer as-is
-        # Don't auto-correct - let API fail and provide learning hints
-        work_category_val = args.get("work_category", "dev")
-        customer_val = args.get("customer")
-
-        return client.Req_LogTimeEntry(
-            employee=target_emp,
-            project=args.get("project") or args.get("project_id"),
-            customer=customer_val,
-            date=date_val,
-            hours=float(args.get("hours", 0)),
-            work_category=work_category_val,
-            notes=args.get("notes", ""),
-            billable=bool(args.get("billable", True)),
-            status=args.get("status", "draft"),
-            logged_by=args.get("logged_by") # Auto-filled by context
-        )
-    
-    if tool in ["timeget", "gettime"]:
-        entry_id = args.get("id")
-        if not entry_id:
-            print("⚠ 'id' argument missing in 'get_time'. Skipping to force LLM retry.")
-            return None
-        return client.Req_GetTimeEntry(id=entry_id)
-
-    if tool in ["timesearch", "searchtime"]:
-        kwargs = {}
-        kwargs["offset"] = int(args.get("offset", 0))
-        kwargs["limit"] = int(args.get("limit", 5))
-        return client.Req_SearchTimeEntries(
-            employee=args.get("employee") or args.get("employee_id") or current_user, # Default to self search
-            project=args.get("project") or args.get("project_id"),
-            date_from=args.get("date_from"),
-            date_to=args.get("date_to"),
-            billable=args.get("billable", ""),
-            **kwargs
-        )
-        
-    if tool in ["timeupdate", "updatetime"]:
-         return client.Req_UpdateTimeEntry(
-            id=args.get("id"),
-            date=args.get("date"),
-            hours=float(args.get("hours", 0)),
-            work_category=args.get("work_category"),
-            notes=args.get("notes"),
-            billable=args.get("billable"),
-            status=args.get("status"),
-            changed_by=args.get("changed_by")
-        )
-
-    # Response
-    if tool in ["respond", "answer", "reply"]:
-        # OpenAI/Qwen models use various field names - handle all cases
-        message = (args.get("message") or args.get("Message") or
-                   args.get("text") or args.get("Text") or
-                   args.get("response") or args.get("Response") or
-                   args.get("answer") or args.get("Answer") or
-                   args.get("content") or args.get("Content") or
-                   args.get("details") or args.get("Details") or  # Qwen sometimes uses "details"
-                   args.get("body") or args.get("Body"))
-        if not message:
-            message = "No message provided."
-        
-        # Outcome Fallback Logic - handle PascalCase
-        outcome = args.get("outcome") or args.get("Outcome")
-        if not outcome:
-            # Try to infer outcome from message content
-            msg_lower = str(message).lower()
-            if "cannot" in msg_lower or "unable to" in msg_lower or "could not" in msg_lower:
-                if "tool" in msg_lower or "system" in msg_lower:
-                    outcome = "none_unsupported"
-                elif "permission" in msg_lower or "access" in msg_lower or "allow" in msg_lower or "restricted" in msg_lower:
-                    outcome = "denied_security"
-                else:
-                    outcome = "none_clarification_needed"
-            else:
-                # Default to ok_answer if not negative
-                outcome = "ok_answer"
-            print(f"⚠ 'outcome' missing. Inferred '{outcome}' from message.")
-
-        # Link Auto-Detection - handle PascalCase
-        links = args.get("links") or args.get("Links") or []
-        
-        # Normalize links format if using PascalCase (Kind/ID instead of kind/id)
-        if links:
-            normalized_links = []
-            for link in links:
-                normalized_links.append({
-                    "kind": link.get("kind") or link.get("Kind", ""),
-                    "id": link.get("id") or link.get("ID", "")
-                })
-            links = normalized_links
-        
-        # Auto-detect links from message text if agent didn't provide them
-        # This works for all outcomes (ok_answer, none_clarification_needed, etc.)
-        if not links:
-            # Regex to find IDs in message
-            # IDs often look like: proj_..., emp_..., cust_...
-            # Pattern: \b(proj|emp|cust)_[a-z0-9_]+\b
-            ids = re.findall(r'\b((?:proj|emp|cust)_[a-z0-9_]+)\b', str(message))
-            for found_id in ids:
-                # Simple heuristic to guess type
-                type_map = {
-                    "proj": "project",
-                    "emp": "employee",
-                    "cust": "customer"
-                }
-                prefix = found_id.split('_')[0]
-                if prefix in type_map:
-                    links.append({"id": found_id, "kind": type_map[prefix]})
-
-            # Special fallback for simple employee usernames like 'felix_baum' or 'timo_van_dijk' that lack 'emp_' prefix
-            # This is risky as it might match common words, but for this benchmark we know the format.
-            # Pattern: one or more lowercase word segments separated by underscores (handles 2, 3, or more parts)
-            # EXCLUSIONS: skill names, technical terms that match the pattern but aren't employee IDs
-            non_employee_patterns = [
-                # Skill IDs (from skills.md)
-                "cv_engineering", "edge_ai", "machine_learning", "deep_learning",
-                "data_engineering", "cloud_architecture", "backend_development",
-                "frontend_development", "mobile_development", "devops_engineering",
-                "security_engineering", "project_management", "technical_writing",
-                # Common technical terms
-                "time_slice", "work_category", "deal_phase", "account_manager",
-                "employee_id", "project_id", "customer_id", "next_offset",
-            ]
-            potential_users = re.findall(r'\b([a-z]+(?:_[a-z]+)+)\b', str(message))
-            for pu in potential_users:
-                if not pu.startswith('proj_') and not pu.startswith('emp_') and not pu.startswith('cust_'):
-                    # Skip known non-employee patterns
-                    if pu in non_employee_patterns:
-                        continue
-                    links.append({"id": pu, "kind": "employee"})
-
-                # Handle IDs that were prefixed with 'emp_' in text but should be bare
-                if pu.startswith('emp_'):
-                     real_id = pu[4:]
-                     links.append({"id": real_id, "kind": "employee"})
-
-        # Step 1.5: Validate employee links through API
-        # Filter out false positives (e.g., "cv_engineering", "edge_ai") by checking if employee exists
-        if links and context:
-            validated_links = []
-            invalid_employee_ids = []
-
-            for link in links:
-                if link.get("kind") == "employee":
-                    employee_id = link.get("id")
-                    try:
-                        # Try to fetch employee to verify existence
-                        req = client.Req_GetEmployee(id=employee_id)
-                        resp = context.api.dispatch(req)
-                        # If successful, employee exists
-                        validated_links.append(link)
-                    except Exception as e:
-                        # Check if it's a "not found" error (employee doesn't exist)
-                        error_msg = str(e).lower()
-                        if "not found" in error_msg or "404" in error_msg:
-                            # Employee doesn't exist - it's a false positive (e.g., "cv_engineering")
-                            invalid_employee_ids.append(employee_id)
-                        else:
-                            # Other error (permission, network, etc.) - assume employee exists
-                            # Keep the link to be safe
-                            validated_links.append(link)
-                else:
-                    # Non-employee links (projects, customers) - keep as-is
-                    validated_links.append(link)
-
-            links = validated_links
-
-            # If we filtered out invalid IDs, notify the agent
-            if invalid_employee_ids:
-                print(f"⚠️ Filtered out invalid employee IDs from links: {', '.join(invalid_employee_ids)}")
-
-        # Step 2: Add mutation entities to links if mutation operations were performed
-        # This ensures that entities affected by mutations (projects, employees) are linked
-        # even if agent didn't include them in the message text
-        had_mutations = context.shared.get('had_mutations', False) if context else False
-        mutation_entities = context.shared.get('mutation_entities', []) if context else []
-
-        if had_mutations:
-            # Add all mutation entities to links (projects, employees affected by the operation)
-            for entity in mutation_entities:
-                entity_in_links = any(
-                    link.get("id") == entity.get("id") and link.get("kind") == entity.get("kind")
-                    for link in links
-                )
-                if not entity_in_links:
-                    links.append(entity)
-
-            # Also add current_user if not already present
-            if current_user:
-                current_user_in_links = any(
-                    link.get("id") == current_user and link.get("kind") == "employee"
-                    for link in links
-                )
-                if not current_user_in_links:
-                    links.append({"id": current_user, "kind": "employee"})
-
-        # Deduplicate links (same ID can appear multiple times in message text)
-        seen = set()
-        unique_links = []
-        for link in links:
-            link_tuple = (link.get("id"), link.get("kind"))
-            if link_tuple not in seen:
-                seen.add(link_tuple)
-                unique_links.append(link)
-        links = unique_links
-
-        # CRITICAL: For error_internal, links should be EMPTY
-        # System errors are infrastructure failures, not operations on entities
-        # The benchmark expects no links when the system is broken
-        if outcome == "error_internal":
-            links = []
-
-        # CRITICAL: For denied_security, links should be EMPTY
-        # Security denials should not leak any entity references
-        # This prevents information disclosure to unauthorized users
-        if outcome == "denied_security":
-            links = []
-
-        return client.Req_ProvideAgentResponse(
-            message=str(message),
-            outcome=outcome,
-            links=links
-        )
+    # Dispatch to registered parser
+    parser = ToolParser.get_parser(tool)
+    if parser:
+        return parser(ctx)
 
     # Unknown tool - return helpful error
+    registered_tools = ", ".join(sorted(set(
+        name for name in ToolParser._parsers.keys()
+        if "_" not in name  # Show only canonical names
+    )))
     return ParseError(
-        f"Unknown tool '{tool}'. Available tools: employees_list, employees_get, employees_update, "
-        f"projects_list, projects_get, projects_status_update, projects_team_update, "
-        f"time_list, time_add, time_update, wiki_search, respond. "
-        f"Check tool name spelling.",
+        f"Unknown tool '{tool}'. Available: {registered_tools}. Check spelling.",
         tool=tool
     )

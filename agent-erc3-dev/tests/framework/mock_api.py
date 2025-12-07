@@ -570,8 +570,19 @@ class MockErc3Client:
                 self.file = file
         return self._handle_load_wiki(MockReq(path))
 
-    def log_llm(self, task_id: str, model: str, duration_sec: float, usage: Any) -> None:
-        """Log LLM usage - no-op for tests."""
+    def log_llm(
+        self,
+        task_id: str,
+        completion: str,
+        *,
+        prompt: Any = None,
+        model: str = None,
+        duration_sec: float = None,
+        prompt_tokens: int = None,
+        cached_prompt_tokens: int = None,
+        completion_tokens: int = None
+    ) -> None:
+        """Log LLM usage - no-op for tests (SDK 1.2.0+ signature)."""
         pass  # We don't need to log to the benchmark API during tests
 
     # =========================================================================

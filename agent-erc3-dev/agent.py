@@ -13,13 +13,14 @@ from prompts import SGR_SYSTEM_PROMPT
 from tools import parse_action, Req_Respond, ParseError, SafeReq_UpdateEmployeeInfo
 from stats import SessionStats, FailureLogger
 from handlers import get_executor, WikiManager, SecurityManager
+from utils import CLI
 
-CLI_RED = "\x1B[31m"
-CLI_GREEN = "\x1B[32m"
-CLI_YELLOW = "\x1B[33m"
-CLI_BLUE = "\x1B[34m"
-CLI_CYAN = "\x1B[36m"
-CLI_CLR = "\x1B[0m"
+CLI_RED = CLI.RED
+CLI_GREEN = CLI.GREEN
+CLI_YELLOW = CLI.YELLOW
+CLI_BLUE = CLI.BLUE
+CLI_CYAN = CLI.CYAN
+CLI_CLR = CLI.RESET
 
 def extract_json(content: str) -> dict:
     """Extract JSON from LLM response (handles markdown blocks, broken JSON, and multi-JSON concatenation)"""
@@ -238,12 +239,15 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
             if stats:
                 stats.add_llm_usage(cost_model_id, usage_obj)
 
-            # Log to ERC3
+            # Log to ERC3 (SDK 1.2.0+ format with completion)
             api.log_llm(
                 task_id=task.task_id,
+                completion=raw_content,  # Required: raw LLM response for validation
                 model=model_name,
                 duration_sec=time.time() - started,
-                usage=usage_obj
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                cached_prompt_tokens=0
             )
 
         except Exception as e:
@@ -499,6 +503,8 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                 'missing_tools': missing_tools,
                 'action_types_executed': action_types_executed,
                 'outcome_validation_warned': outcome_validation_warned,
+                'failure_logger': failure_logger,  # For API call logging
+                'task_id': task.task_id,  # For API call logging
             }
             ctx = executor.execute(action_dict, action_model, initial_shared=initial_shared)
             results.extend(ctx.results)
