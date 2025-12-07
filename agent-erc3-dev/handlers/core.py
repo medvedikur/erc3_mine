@@ -631,6 +631,21 @@ class DefaultActionHandler:
                             f"You should proceed with the exact match - no clarification needed!"
                         )
 
+                # MEMBER FILTER HINT: When searching with member=current_user, remind agent they ARE a member
+                security_manager = ctx.shared.get("security_manager")
+                current_user = getattr(security_manager, "current_user", None) if security_manager else None
+                if team_filter and current_user:
+                    filter_employee = getattr(team_filter, "employee_id", None)
+                    if filter_employee == current_user and projects:
+                        proj_ids = [getattr(p, 'id', 'unknown') for p in projects[:3]]
+                        ctx.results.append(
+                            f"\n💡 MEMBERSHIP CONFIRMED: You searched with member='{current_user}'. "
+                            f"This means YOU ARE A MEMBER of ALL {len(projects)} project(s) found! "
+                            f"Projects: {', '.join(proj_ids)}{'...' if len(projects) > 3 else ''}. "
+                            f"To check your exact ROLE (Lead/Engineer/etc), use `projects_get(id='...')` - "
+                            f"the team list will show your role. If you're Lead, you have full authorization."
+                        )
+
         except ApiException as e:
             error_msg = e.api_error.error if e.api_error else str(e)
             print(f"  {CLI_RED}✗ FAILED:{CLI_CLR} {error_msg}")
