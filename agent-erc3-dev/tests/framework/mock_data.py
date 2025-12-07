@@ -20,7 +20,7 @@ class MockWhoAmI:
     department: Optional[str] = None
     location: Optional[str] = None
     today: str = "2025-07-15"
-    wiki_hash: str = "733815c1"
+    wiki_hash: str = "733815c19ae7c1d13f345a2b2a9aa13c67a74769"
 
 
 @dataclass

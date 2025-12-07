@@ -431,6 +431,37 @@ class OutcomeValidationMiddleware(Middleware):
             )
             return
 
+        # CASE 4: denied_security but message suggests missing INFO (not missing PERMISSION)
+        # If message mentions JIRA, ticket, CC code, cost centre - it's likely none_clarification_needed
+        message = ctx.model.message or ""
+        missing_info_keywords = [
+            r'\bjira\b', r'\bticket\b', r'\bcost\s*cent', r'\bcc[\s-]',
+            r'\bmissing\s+(required|mandatory)', r'\bnot\s+provided\b',
+            r'\bprovide\s+a\s+valid\b', r'\brequired\s+by\s+policy\b',
+        ]
+        missing_info_re = re.compile('|'.join(missing_info_keywords), re.IGNORECASE)
+
+        if missing_info_re.search(message):
+            if already_warned:
+                print(f"  {CLI_GREEN}✓ Outcome Validation: Agent confirmed '{outcome}' after warning{CLI_CLR}")
+                return
+
+            print(f"  {CLI_YELLOW}🔍 Outcome Validation: '{outcome}' but message suggests MISSING INFO, not missing permission{CLI_CLR}")
+            ctx.shared[warning_key] = True
+            ctx.stop_execution = True
+            ctx.results.append(
+                f"🔍 OUTCOME VALIDATION: You responded with '{outcome}', but your message suggests the issue is "
+                f"**missing information** (JIRA ticket, CC code, etc.), NOT lack of permission!\n\n"
+                f"**CRITICAL DISTINCTION:**\n"
+                f"- `denied_security` = You **LACK PERMISSION** to do this action (not Lead, not AM, not Manager)\n"
+                f"- `none_clarification_needed` = You **HAVE PERMISSION** but need additional info (JIRA ticket, CC code, etc.)\n\n"
+                f"Your message mentions policy requirements. If you ARE authorized (Lead/AM/Manager) but the "
+                f"user didn't provide required info (like JIRA ticket), use `none_clarification_needed`.\n\n"
+                f"Only use `denied_security` if you actually LACK the role/permission to do the action.\n\n"
+                f"**If you're certain you lack permission**, call respond again with the same outcome."
+            )
+            return
+
 
 class ProjectMembershipMiddleware(Middleware):
     """

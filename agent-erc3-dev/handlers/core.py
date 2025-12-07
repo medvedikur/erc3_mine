@@ -79,9 +79,26 @@ class DefaultActionHandler:
                 if wiki_manager:
                     print(f"  {CLI_BLUE}🔍 Using Local Wiki Search (Smart RAG){CLI_CLR}")
                     search_result_text = wiki_manager.search(ctx.model.query_regex)
-                    
+
                     print(f"  {CLI_GREEN}✓ SUCCESS (Local){CLI_CLR}")
                     ctx.results.append(f"Action ({action_name}): SUCCESS\nResult: {search_result_text}")
+                    return
+
+            # SPECIAL HANDLING: Wiki Load (Local vs Remote)
+            if isinstance(ctx.model, client.Req_LoadWiki):
+                wiki_manager = ctx.shared.get('wiki_manager')
+                if wiki_manager:
+                    file_path = ctx.model.file
+                    print(f"  {CLI_BLUE}📄 Using Local Wiki Load: {file_path}{CLI_CLR}")
+
+                    # Try to get page content from WikiManager
+                    if wiki_manager.has_page(file_path):
+                        content = wiki_manager.get_page(file_path)
+                        print(f"  {CLI_GREEN}✓ SUCCESS (Local){CLI_CLR}")
+                        ctx.results.append(f"Action ({action_name}): SUCCESS\nFile: {file_path}\nContent:\n{content}")
+                    else:
+                        print(f"  {CLI_YELLOW}⚠ Page not found: {file_path}{CLI_CLR}")
+                        ctx.results.append(f"Action ({action_name}): Page '{file_path}' not found in wiki.")
                     return
 
             # SPECIAL HANDLING: Payload Cleaning for Req_UpdateEmployeeInfo

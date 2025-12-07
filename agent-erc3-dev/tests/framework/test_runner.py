@@ -31,6 +31,93 @@ CLI_BLUE = "\x1B[34m"
 CLI_CYAN = "\x1B[36m"
 CLI_CLR = "\x1B[0m"
 
+# Thread colors for status messages
+THREAD_COLORS = [
+    "\x1B[36m",  # Cyan
+    "\x1B[35m",  # Magenta
+    "\x1B[33m",  # Yellow
+    "\x1B[32m",  # Green
+    "\x1B[34m",  # Blue
+]
+
+
+class ThreadLogCapture:
+    """Captures output for a single thread and writes to a log file."""
+
+    def __init__(self, spec_id: str, thread_id: int, logs_dir: Path):
+        self.spec_id = spec_id
+        self.thread_id = thread_id
+        self.log_file = logs_dir / f"{spec_id}.log"
+        self._file = open(self.log_file, 'w', buffering=1)
+        self._closed = False
+
+    def write(self, text: str):
+        if not self._closed and self._file:
+            self._file.write(text)
+
+    def flush(self):
+        if not self._closed and self._file:
+            self._file.flush()
+
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            if self._file:
+                self._file.close()
+
+
+class ThreadLocalStdout:
+    """Routes output to thread-local log captures."""
+
+    def __init__(self, original_stdout):
+        self._original = original_stdout
+        self._local = threading.local()
+
+    def register(self, log_capture: ThreadLogCapture):
+        self._local.capture = log_capture
+
+    def unregister(self):
+        self._local.capture = None
+
+    def write(self, text: str):
+        capture = getattr(self._local, 'capture', None)
+        if capture and not capture._closed:
+            capture.write(text)
+        else:
+            self._original.write(text)
+
+    def flush(self):
+        capture = getattr(self._local, 'capture', None)
+        if capture and not capture._closed:
+            capture.flush()
+        else:
+            self._original.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+
+# Global stdout/stderr dispatchers for parallel mode
+_original_stdout = sys.stdout
+_original_stderr = sys.stderr
+_thread_stdout = None
+_thread_stderr = None
+
+
+def _init_thread_output():
+    """Initialize thread-local stdout/stderr dispatchers."""
+    global _thread_stdout, _thread_stderr
+    if _thread_stdout is None:
+        _thread_stdout = ThreadLocalStdout(_original_stdout)
+        _thread_stderr = ThreadLocalStdout(_original_stderr)
+
+
+def thread_status(thread_id: int, spec_id: str, message: str):
+    """Print a thread status message to console (always to real stdout)."""
+    color = THREAD_COLORS[thread_id % len(THREAD_COLORS)]
+    _original_stdout.write(f"{color}[T{thread_id}:{spec_id}]{CLI_CLR} {message}\n")
+    _original_stdout.flush()
+
 
 def discover_tests(tests_dir: Path) -> List[TestScenario]:
     """
@@ -332,15 +419,34 @@ def _run_parallel(
     verbose: bool,
     max_turns: int,
 ) -> TestSuiteResult:
-    """Run tests in parallel."""
+    """Run tests in parallel with thread-local log capture."""
     suite_result = TestSuiteResult()
     lock = threading.Lock()
+
+    # Initialize thread-local output dispatchers
+    _init_thread_output()
+
+    # Replace sys.stdout/stderr with thread-local dispatchers
+    sys.stdout = _thread_stdout
+    sys.stderr = _thread_stderr
 
     print(f"\nRunning {len(scenarios)} tests with {num_threads} threads...\n")
 
     def run_test(scenario: TestScenario, idx: int) -> TestResult:
         """Worker function for parallel execution."""
+        thread_id = idx % num_threads
+
+        # Create log capture for this thread/test
+        log_capture = ThreadLogCapture(scenario.spec_id, thread_id, logs_dir)
+
         try:
+            # Register log capture for this thread
+            _thread_stdout.register(log_capture)
+            _thread_stderr.register(log_capture)
+
+            # Status to console
+            thread_status(thread_id, scenario.spec_id, "Starting test...")
+
             result = run_single_test(
                 scenario=scenario,
                 model_id=model_id,
@@ -348,39 +454,57 @@ def _run_parallel(
                 backend=backend,
                 pricing_model=pricing_model,
                 max_turns=max_turns,
-                verbose=False,  # No verbose in parallel
+                verbose=True,  # Verbose goes to log file now
             )
 
-            # Print status
+            # Unregister before console output
+            _thread_stdout.unregister()
+            _thread_stderr.unregister()
+
+            # Print status to console
             status_icon = "PASS" if result.passed else ("ERR" if result.error else "FAIL")
             color = CLI_GREEN if result.passed else CLI_RED
-            with lock:
-                print(f"  {color}[{status_icon}]{CLI_CLR} {scenario.spec_id}: {result.score:.1f}")
+            thread_status(thread_id, scenario.spec_id, f"{color}[{status_icon}]{CLI_CLR} Score: {result.score:.1f}")
 
-            # Save log
-            log_file = logs_dir / f"{scenario.spec_id}.log"
-            with open(log_file, 'w') as f:
+            # Append evaluation result to log file
+            with open(log_capture.log_file, 'a') as f:
+                f.write("\n\n" + "=" * 40 + "\n")
+                f.write("EVALUATION RESULT\n")
+                f.write("=" * 40 + "\n")
                 f.write(str(result))
 
             return result
 
         except Exception as e:
+            # Unregister on error
+            _thread_stdout.unregister()
+            _thread_stderr.unregister()
+
+            thread_status(thread_id, scenario.spec_id, f"{CLI_RED}[ERR]{CLI_CLR} {str(e)[:50]}")
+
             return TestResult(
                 spec_id=scenario.spec_id,
                 score=0.0,
                 passed=False,
                 error=str(e),
             )
+        finally:
+            log_capture.close()
 
-    with ThreadPoolExecutor(max_workers=num_threads) as executor:
-        futures = {
-            executor.submit(run_test, scenario, idx): scenario
-            for idx, scenario in enumerate(scenarios)
-        }
+    try:
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            futures = {
+                executor.submit(run_test, scenario, idx): scenario
+                for idx, scenario in enumerate(scenarios)
+            }
 
-        for future in as_completed(futures):
-            result = future.result()
-            with lock:
-                suite_result.add_result(result)
+            for future in as_completed(futures):
+                result = future.result()
+                with lock:
+                    suite_result.add_result(result)
+    finally:
+        # Restore original stdout/stderr
+        sys.stdout = _original_stdout
+        sys.stderr = _original_stderr
 
     return suite_result

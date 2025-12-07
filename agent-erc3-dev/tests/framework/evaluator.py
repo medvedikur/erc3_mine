@@ -110,25 +110,18 @@ class TestEvaluator:
         expected_link_set = self._normalize_links(result.expected_links)
 
         # =====================================================================
-        # SCORING (matches real ERC3 benchmark)
-        # - 1.0 = outcome matches AND all expected links present
-        # - 0.9 = outcome matches BUT some links missing (telemetry issue)
-        # - 0.0 = outcome doesn't match (fail)
+        # SCORING - BINARY (either 1.0 pass or 0.0 fail)
+        # All criteria must pass:
+        # - Outcome matches expected
+        # - All expected links present
+        # - Message contains required text (if specified)
+        # - Message does NOT contain forbidden text (if specified)
         # =====================================================================
 
+        all_checks_pass = True
+
+        # 1. Check outcome
         outcome_match = result.actual_outcome == result.expected_outcome
-
-        # Check links
-        missing_links = set()
-        extra_links = set()
-        links_match = True
-
-        if expected_link_set:
-            missing_links = expected_link_set - actual_link_set
-            extra_links = actual_link_set - expected_link_set
-            links_match = len(missing_links) == 0
-
-        # Log outcome status
         if outcome_match:
             result.logs.append(f"OK: outcome '{result.actual_outcome}' matches expected")
         else:
@@ -136,61 +129,69 @@ class TestEvaluator:
                 f"FAIL: expected outcome '{result.expected_outcome}', "
                 f"got '{result.actual_outcome}'"
             )
+            all_checks_pass = False
 
-        # Log links status
-        if not expected_link_set:
-            result.logs.append("OK: no links expected")
-        elif links_match:
-            result.logs.append(f"OK: all {len(expected_link_set)} expected links present")
+        # 2. Check links
+        missing_links = set()
+        extra_links = set()
+
+        if expected_link_set:
+            missing_links = expected_link_set - actual_link_set
+            extra_links = actual_link_set - expected_link_set
+
+            if len(missing_links) == 0:
+                result.logs.append(f"OK: all {len(expected_link_set)} expected links present")
+            else:
+                result.logs.append(
+                    f"FAIL: missing {len(missing_links)} links: "
+                    f"{[self._link_str(l) for l in missing_links]}"
+                )
+                all_checks_pass = False
         else:
-            result.logs.append(
-                f"FAIL: missing {len(missing_links)} links: "
-                f"{[self._link_str(l) for l in missing_links]}"
-            )
+            result.logs.append("OK: no links expected")
 
         if extra_links and self.strict_links:
             result.logs.append(f"INFO: {len(extra_links)} extra links (allowed)")
 
-        # Calculate final score (binary model like real benchmark)
-        if outcome_match and links_match:
-            result.score = 1.0
-            result.passed = True
-        elif outcome_match and not links_match:
-            # Outcome correct but links missing - telemetry issue
-            result.score = 0.9
-            result.passed = False  # Still a fail, but close
-        else:
-            # Outcome wrong - complete fail
-            result.score = 0.0
-            result.passed = False
-
-        # =====================================================================
-        # Additional validation (custom validators)
-        # =====================================================================
-
-        if scenario.custom_validator:
-            try:
-                if not scenario.custom_validator(agent_response, api_calls or []):
-                    result.passed = False
-                    result.score = 0.0  # Custom validator fail = complete fail
-                    result.logs.append("FAIL: custom validator failed")
-                else:
-                    result.logs.append("OK: custom validator passed")
-            except Exception as e:
-                result.logs.append(f"WARN: custom validator error: {e}")
-
-        # Check message content if specified
+        # 3. Check message_contains (if specified)
         if scenario.expected.message_contains:
             message = agent_response.get('message', '')
             for expected_text in scenario.expected.message_contains:
-                if expected_text.lower() not in message.lower():
-                    result.logs.append(f"WARN: message missing expected text: '{expected_text}'")
+                if expected_text.lower() in message.lower():
+                    result.logs.append(f"OK: message contains '{expected_text}'")
+                else:
+                    result.logs.append(f"FAIL: message missing required text: '{expected_text}'")
+                    all_checks_pass = False
 
+        # 4. Check message_not_contains (if specified)
         if scenario.expected.message_not_contains:
             message = agent_response.get('message', '')
             for forbidden_text in scenario.expected.message_not_contains:
                 if forbidden_text.lower() in message.lower():
-                    result.logs.append(f"WARN: message contains forbidden text: '{forbidden_text}'")
+                    result.logs.append(f"FAIL: message contains forbidden text: '{forbidden_text}'")
+                    all_checks_pass = False
+                else:
+                    result.logs.append(f"OK: message does not contain '{forbidden_text}'")
+
+        # 5. Custom validator (if specified)
+        if scenario.custom_validator:
+            try:
+                if scenario.custom_validator(agent_response, api_calls or []):
+                    result.logs.append("OK: custom validator passed")
+                else:
+                    result.logs.append("FAIL: custom validator failed")
+                    all_checks_pass = False
+            except Exception as e:
+                result.logs.append(f"FAIL: custom validator error: {e}")
+                all_checks_pass = False
+
+        # Final score - BINARY: 1.0 or 0.0
+        if all_checks_pass:
+            result.score = 1.0
+            result.passed = True
+        else:
+            result.score = 0.0
+            result.passed = False
 
         return result
 
