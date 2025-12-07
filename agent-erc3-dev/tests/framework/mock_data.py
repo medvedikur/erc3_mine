@@ -150,7 +150,7 @@ BASE_EMPLOYEES = [
         manager=None,
         direct_reports=["richard_klein", "lukas_brenner"],
         notes="CEO of Aetherion Solutions",
-        skills=[{"skill": "project_management", "level": 5}],
+        skills=[{"name": "project_management", "level": 5}],
         wills=[],
     ),
     MockEmployee(
@@ -163,7 +163,7 @@ BASE_EMPLOYEES = [
         manager="elena_vogel",
         direct_reports=["felix_baum", "jonas_weiss"],
         notes="COO",
-        skills=[{"skill": "project_management", "level": 4}],
+        skills=[{"name": "project_management", "level": 4}],
         wills=[],
     ),
     MockEmployee(
@@ -176,7 +176,7 @@ BASE_EMPLOYEES = [
         manager="elena_vogel",
         direct_reports=["ana_kovac", "marko_petrovic"],
         notes="CTO",
-        skills=[{"skill": "cv_engineering", "level": 5}],
+        skills=[{"name": "cv_engineering", "level": 5}],
         wills=[],
     ),
     MockEmployee(
@@ -189,7 +189,7 @@ BASE_EMPLOYEES = [
         manager="richard_klein",
         direct_reports=[],
         notes="Senior Software Engineer, CV specialist",
-        skills=[{"skill": "cv_engineering", "level": 4}, {"skill": "machine_learning", "level": 3}],
+        skills=[{"name": "cv_engineering", "level": 4}, {"name": "machine_learning", "level": 3}],
         wills=[],
     ),
     MockEmployee(
@@ -202,7 +202,7 @@ BASE_EMPLOYEES = [
         manager="richard_klein",
         direct_reports=[],
         notes="Software Engineer",
-        skills=[{"skill": "backend_development", "level": 4}],
+        skills=[{"name": "backend_development", "level": 4}],
         wills=[],
     ),
     MockEmployee(
@@ -215,7 +215,7 @@ BASE_EMPLOYEES = [
         manager="richard_klein",
         direct_reports=[],
         notes="Consultant",
-        skills=[{"skill": "project_management", "level": 3}],
+        skills=[{"name": "project_management", "level": 3}],
         wills=[],
     ),
     MockEmployee(
@@ -228,7 +228,7 @@ BASE_EMPLOYEES = [
         manager="richard_klein",
         direct_reports=[],
         notes="Lead Software Engineer",
-        skills=[{"skill": "cv_engineering", "level": 4}],
+        skills=[{"name": "cv_engineering", "level": 4}],
         wills=[],
     ),
     MockEmployee(
@@ -241,7 +241,7 @@ BASE_EMPLOYEES = [
         manager="lukas_brenner",
         direct_reports=[],
         notes="Software Engineer",
-        skills=[{"skill": "machine_learning", "level": 4}],
+        skills=[{"name": "machine_learning", "level": 4}],
         wills=[],
     ),
     MockEmployee(
@@ -254,7 +254,7 @@ BASE_EMPLOYEES = [
         manager="lukas_brenner",
         direct_reports=[],
         notes="Junior Software Engineer",
-        skills=[{"skill": "backend_development", "level": 2}],
+        skills=[{"name": "backend_development", "level": 2}],
         wills=[],
     ),
     MockEmployee(
@@ -267,7 +267,7 @@ BASE_EMPLOYEES = [
         manager="richard_klein",
         direct_reports=[],
         notes="Junior Consultant",
-        skills=[{"skill": "project_management", "level": 2}],
+        skills=[{"name": "project_management", "level": 2}],
         wills=[],
     ),
     MockEmployee(
@@ -280,7 +280,7 @@ BASE_EMPLOYEES = [
         manager="klara_houtman",
         direct_reports=[],
         notes="Software Engineer",
-        skills=[{"skill": "frontend_development", "level": 4}],
+        skills=[{"name": "frontend_development", "level": 4}],
         wills=[],
     ),
     MockEmployee(
@@ -293,7 +293,7 @@ BASE_EMPLOYEES = [
         manager="jonas_weiss",
         direct_reports=[],
         notes="Software Engineer",
-        skills=[{"skill": "devops_engineering", "level": 3}],
+        skills=[{"name": "devops_engineering", "level": 3}],
         wills=[],
     ),
 ]

@@ -110,15 +110,26 @@ class TestEvaluator:
         expected_link_set = self._normalize_links(result.expected_links)
 
         # =====================================================================
-        # SCORING
+        # SCORING (matches real ERC3 benchmark)
+        # - 1.0 = outcome matches AND all expected links present
+        # - 0.9 = outcome matches BUT some links missing (telemetry issue)
+        # - 0.0 = outcome doesn't match (fail)
         # =====================================================================
 
-        outcome_score = 0.0
-        links_score = 0.0
+        outcome_match = result.actual_outcome == result.expected_outcome
 
-        # 1. Outcome match (50%)
-        if result.actual_outcome == result.expected_outcome:
-            outcome_score = 0.5
+        # Check links
+        missing_links = set()
+        extra_links = set()
+        links_match = True
+
+        if expected_link_set:
+            missing_links = expected_link_set - actual_link_set
+            extra_links = actual_link_set - expected_link_set
+            links_match = len(missing_links) == 0
+
+        # Log outcome status
+        if outcome_match:
             result.logs.append(f"OK: outcome '{result.actual_outcome}' matches expected")
         else:
             result.logs.append(
@@ -126,34 +137,32 @@ class TestEvaluator:
                 f"got '{result.actual_outcome}'"
             )
 
-        # 2. Links match (50%)
+        # Log links status
         if not expected_link_set:
-            # No expected links - full score if outcome matched
-            links_score = 0.5
             result.logs.append("OK: no links expected")
+        elif links_match:
+            result.logs.append(f"OK: all {len(expected_link_set)} expected links present")
         else:
-            # Check if all expected links are present
-            missing_links = expected_link_set - actual_link_set
-            extra_links = actual_link_set - expected_link_set
+            result.logs.append(
+                f"FAIL: missing {len(missing_links)} links: "
+                f"{[self._link_str(l) for l in missing_links]}"
+            )
 
-            if not missing_links:
-                links_score = 0.5
-                result.logs.append(f"OK: all {len(expected_link_set)} expected links present")
-            else:
-                # Partial score based on how many links were found
-                found_count = len(expected_link_set) - len(missing_links)
-                links_score = 0.5 * (found_count / len(expected_link_set))
-                result.logs.append(
-                    f"FAIL: missing {len(missing_links)} links: "
-                    f"{[self._link_str(l) for l in missing_links]}"
-                )
+        if extra_links and self.strict_links:
+            result.logs.append(f"INFO: {len(extra_links)} extra links (allowed)")
 
-            if extra_links and self.strict_links:
-                result.logs.append(f"INFO: {len(extra_links)} extra links (allowed)")
-
-        # Calculate final score
-        result.score = outcome_score + links_score
-        result.passed = result.score >= 1.0
+        # Calculate final score (binary model like real benchmark)
+        if outcome_match and links_match:
+            result.score = 1.0
+            result.passed = True
+        elif outcome_match and not links_match:
+            # Outcome correct but links missing - telemetry issue
+            result.score = 0.9
+            result.passed = False  # Still a fail, but close
+        else:
+            # Outcome wrong - complete fail
+            result.score = 0.0
+            result.passed = False
 
         # =====================================================================
         # Additional validation (custom validators)
@@ -163,7 +172,7 @@ class TestEvaluator:
             try:
                 if not scenario.custom_validator(agent_response, api_calls or []):
                     result.passed = False
-                    result.score = max(0.0, result.score - 0.25)
+                    result.score = 0.0  # Custom validator fail = complete fail
                     result.logs.append("FAIL: custom validator failed")
                 else:
                     result.logs.append("OK: custom validator passed")

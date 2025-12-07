@@ -170,14 +170,15 @@ def _detect_placeholders(args: dict) -> Optional[str]:
     """Detect placeholder values in arguments that indicate the model is trying to use values it doesn't have yet."""
     placeholder_patterns = [
         "<<<", ">>>",           # <<<FILL_FROM_SEARCH>>>
-        "FILL_", "PLACEHOLDER", # Common placeholders
+        "FILL_",                # FILL_FROM_SEARCH, etc.
         "{RESULT", "{VALUE",    # Template-style
-        "TBD", "TODO",          # To be determined
-        "...",                  # Ellipsis placeholder
     ]
-    
+
+    # Skip free-text fields - they may contain natural language with words like "placeholder", "TODO"
+    free_text_fields = {"message", "content", "text", "notes", "description", "reason"}
+
     for key, value in args.items():
-        if isinstance(value, str):
+        if isinstance(value, str) and key.lower() not in free_text_fields:
             value_upper = value.upper()
             for pattern in placeholder_patterns:
                 if pattern in value_upper:

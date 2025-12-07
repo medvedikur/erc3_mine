@@ -160,13 +160,11 @@ class MockErc3Client:
         """Handle /whoami request."""
         return dtos.Resp_WhoAmI(
             is_public=self.identity.is_public,
-            user=self.identity.user,
-            name=self.identity.name,
-            email=self.identity.email,
+            current_user=self.identity.user,  # MockWhoAmI.user -> current_user
             department=self.identity.department,
             location=self.identity.location,
             today=self.identity.today,
-            wiki_hash=self.identity.wiki_hash,
+            wiki_sha1=self.identity.wiki_hash,  # MockWhoAmI.wiki_hash -> wiki_sha1
         )
 
     # =========================================================================
@@ -317,9 +315,9 @@ class MockErc3Client:
             proj = self.data.get_project(proj_id)
 
         if not proj:
-            raise Exception(f"Project not found: {proj_id}")
+            return dtos.Resp_GetProject(project=None, found=False)
 
-        return dtos.Resp_GetProject(project=self._to_project_dto(proj))
+        return dtos.Resp_GetProject(project=self._to_project_dto(proj), found=True)
 
     def _handle_update_project_team(self, req) -> dtos.Resp_UpdateProjectTeam:
         """Handle /projects/team/update request."""
@@ -462,7 +460,7 @@ class MockErc3Client:
     def _handle_list_wiki(self, req) -> dtos.Resp_ListWiki:
         """Handle /wiki/list request."""
         # Return standard wiki file list
-        files = [
+        paths = [
             "README.md", "rulebook.md", "hierarchy.md", "background.md",
             "culture.md", "mission_vision.md", "skills.md", "systems.md",
             "offices_index.md", "offices_amsterdam.md", "offices_munich.md", "offices_vienna.md",
@@ -472,7 +470,7 @@ class MockErc3Client:
             "people_marko_petrovic.md", "people_sofia_rinaldi.md", "people_timo_van_dijk.md",
             "people_mira_schaefer.md",
         ]
-        return dtos.Resp_ListWiki(files=files)
+        return dtos.Resp_ListWiki(paths=paths, sha1=self.identity.wiki_hash or "test_wiki_hash")
 
     def _handle_load_wiki(self, req) -> dtos.Resp_LoadWiki:
         """Handle /wiki/load request."""

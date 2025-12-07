@@ -24,13 +24,17 @@ from tests.framework.mock_data import MockProject, MockTeamMember
 # Create scenario with multiple CV projects
 data_builder = MockDataBuilder()
 
-# Add extra projects to make search ambiguous
+# Add extra CV projects with helene_stutz as team member to make search ambiguous
+# (helene_stutz is already Lead of "Packaging Line CV PoC" in BASE_PROJECTS)
 data_builder.add_project(MockProject(
     id="proj_cv_detection_poc",
     name="CV Detection PoC",
     customer="cust_acme_industrial_systems",
     status="active",
-    team=[MockTeamMember(employee="felix_baum", role="Lead", time_slice=0.3)],
+    team=[
+        MockTeamMember(employee="felix_baum", role="Lead", time_slice=0.3),
+        MockTeamMember(employee="helene_stutz", role="Consultant", time_slice=0.2),
+    ],
 ))
 
 data_builder.add_project(MockProject(
@@ -38,7 +42,10 @@ data_builder.add_project(MockProject(
     name="CV Processing Pipeline",
     customer="cust_munich_tech_hub",
     status="exploring",
-    team=[MockTeamMember(employee="ana_kovac", role="Lead", time_slice=0.4)],
+    team=[
+        MockTeamMember(employee="ana_kovac", role="Lead", time_slice=0.4),
+        MockTeamMember(employee="helene_stutz", role="Consultant", time_slice=0.2),
+    ],
 ))
 
 
