@@ -1,7 +1,8 @@
 import json
 import re
 import time
-from typing import List, Optional, Any
+from dataclasses import dataclass, field
+from typing import List, Optional, Any, Set, Dict
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
@@ -14,6 +15,82 @@ from tools import parse_action, Req_Respond, ParseError, SafeReq_UpdateEmployeeI
 from stats import SessionStats, FailureLogger
 from handlers import get_executor, WikiManager, SecurityManager
 from utils import CLI_RED, CLI_GREEN, CLI_YELLOW, CLI_BLUE, CLI_CYAN, CLI_CLR
+
+
+# =============================================================================
+# Agent Turn State
+# =============================================================================
+
+@dataclass
+class AgentTurnState:
+    """
+    Mutable state shared across actions within a task execution.
+
+    This replaces the ad-hoc DummyContext class and provides typed access
+    to all state that persists across turns and actions.
+    """
+    # Required - set at initialization
+    security_manager: 'SecurityManager'
+
+    # Mutation tracking (persists across turns)
+    had_mutations: bool = False
+    mutation_entities: List[Dict] = field(default_factory=list)
+
+    # Search tracking (for auto-linking in read-only operations)
+    search_entities: List[Dict] = field(default_factory=list)
+
+    # Validation tracking
+    missing_tools: List[str] = field(default_factory=list)
+    action_types_executed: Set[str] = field(default_factory=set)
+    outcome_validation_warned: bool = False
+
+    # Pending mutations (mutation tools planned but not yet executed)
+    pending_mutation_tools: Set[str] = field(default_factory=set)
+
+    # Loop detection
+    action_history: List[str] = field(default_factory=list)
+
+    # References (set per-action)
+    task: Optional[Any] = None
+    api: Optional[Any] = None
+
+    def to_shared_dict(self) -> Dict[str, Any]:
+        """
+        Convert state to shared dict format expected by middleware/tools.
+        Used when creating context for parse_action and executor.
+        """
+        return {
+            'security_manager': self.security_manager,
+            'had_mutations': self.had_mutations,
+            'mutation_entities': self.mutation_entities,
+            'search_entities': self.search_entities,
+            'missing_tools': self.missing_tools,
+            'action_types_executed': self.action_types_executed,
+            'outcome_validation_warned': self.outcome_validation_warned,
+            'task': self.task,
+        }
+
+    def create_context(self):
+        """
+        Create a context object compatible with parse_action and executor.
+        Returns an object with .shared dict and .api reference.
+        """
+        class Context:
+            def __init__(ctx_self, shared: Dict, api: Any):
+                ctx_self.shared = shared
+                ctx_self.api = api
+
+        return Context(self.to_shared_dict(), self.api)
+
+    def sync_from_context(self, ctx) -> None:
+        """
+        Sync state back from context after middleware execution.
+        Middleware may modify ctx.shared, so we need to pull changes back.
+        """
+        if ctx.shared.get('outcome_validation_warned'):
+            self.outcome_validation_warned = True
+        # Note: had_mutations, mutation_entities, search_entities are
+        # updated directly in the main loop after successful actions
 
 def extract_json(content: str) -> dict:
     """Extract JSON from LLM response (handles markdown blocks, broken JSON, and multi-JSON concatenation)"""
@@ -188,14 +265,13 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
 
     task_done = False
     who_am_i_called = False  # Track if identity was verified - CRITICAL for security
-    had_mutations = False  # Track if any mutation operation was performed (persists across turns)
-    mutation_entities = []  # Track entity IDs affected by mutations (for auto-linking)
-    search_entities = []  # Track entity IDs from search filters (for auto-linking in read-only operations)
-    pending_mutation_tools = set()  # Track mutation tools that were attempted but not executed
-    action_history = []  # Track action patterns for loop detection (thread-local)
-    missing_tools = []  # Track non-existent tools (for OutcomeValidationMiddleware)
-    action_types_executed = set()  # Track tool names that were successfully executed
-    outcome_validation_warned = False  # Track if OutcomeValidationMiddleware already warned (persists across turns)
+
+    # Initialize turn state (replaces multiple individual variables)
+    state = AgentTurnState(
+        security_manager=security_manager,
+        task=task,
+        api=erc_client,
+    )
 
     for turn in range(max_turns):
         if task_done:
@@ -307,7 +383,7 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
                 for mt in mutation_tool_names:
                     if mt.replace('_', '') in action_str.replace('_', ''):
                         malformed_mutation_tools.append(mt)
-                        pending_mutation_tools.add(mt)
+                        state.pending_mutation_tools.add(mt)
                         break
 
         if malformed_count > 0:
@@ -366,13 +442,13 @@ DO NOT set is_final=true until respond is in action_queue!"""))
             for a in action_queue
         )
 
-        action_history.append(action_pattern)
-        if len(action_history) > 3:
-            action_history.pop(0)
+        state.action_history.append(action_pattern)
+        if len(state.action_history) > 3:
+            state.action_history.pop(0)
 
         # If last 3 patterns are identical and non-empty, agent is looping
-        if len(action_history) == 3 and \
-           action_history[0] == action_history[1] == action_history[2] and \
+        if len(state.action_history) == 3 and \
+           state.action_history[0] == state.action_history[1] == state.action_history[2] and \
            action_pattern:
             print(f"{CLI_YELLOW}⚠ LOOP DETECTED: Agent is repeating the same actions. Breaking loop.{CLI_CLR}")
             messages.append(HumanMessage(content="""[SYSTEM ERROR]: You are stuck in a loop, repeating the same actions for 3 turns without progress!
@@ -383,7 +459,7 @@ This usually means:
 3. There's a permissions issue → respond with 'denied_security'
 
 STOP repeating the same actions. Analyze why you're not making progress and call 'respond' with an appropriate outcome."""))
-            action_history.clear()
+            state.action_history.clear()
             continue
 
         # Execute Actions
@@ -410,29 +486,13 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                 break
             
             print(f"\n  {CLI_BLUE}▶ Parsing action {idx+1}:{CLI_CLR} {json.dumps(action_dict)}")
-            
-            # FIX: Pass a DummyContext with security_manager and mutation tracking
-            # This allows parsing logic to inject current_user for mutation operations
-            class DummyContext:
-                def __init__(self, sm, mutations, mut_entities, search_ents, api_ref, missing, executed, outcome_warned, task_obj):
-                    self.shared = {
-                        'security_manager': sm,
-                        'had_mutations': mutations,
-                        'mutation_entities': mut_entities,
-                        'search_entities': search_ents,  # For auto-linking in read-only operations
-                        'missing_tools': missing,  # For OutcomeValidationMiddleware
-                        'action_types_executed': executed,  # For OutcomeValidationMiddleware
-                        'outcome_validation_warned': outcome_warned,  # Persists across turns
-                        'task': task_obj,  # For accessing task_text in middleware
-                    }
-                    self.api = api_ref
 
-            dummy_ctx = DummyContext(security_manager, had_mutations, mutation_entities, search_entities, erc_client,
-                                     missing_tools, action_types_executed, outcome_validation_warned, task)
-            
+            # Create context from state for parse_action
+            parse_ctx = state.create_context()
+
             # Wrap parse_action to catch ValidationError (e.g., invalid role like "Tester")
             try:
-                action_model = parse_action(action_dict, context=dummy_ctx)
+                action_model = parse_action(action_dict, context=parse_ctx)
             except ValidationError as ve:
                 error_msg = f"Validation error: {ve.errors()[0]['msg'] if ve.errors() else str(ve)}"
                 print(f"  {CLI_RED}✗ Validation error: {error_msg}{CLI_CLR}")
@@ -450,8 +510,8 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                 # Track non-existent tools for OutcomeValidationMiddleware
                 if "does not exist" in error_msg.lower() or "unknown tool" in error_msg.lower():
                     tool_name = action_model.tool if hasattr(action_model, 'tool') else action_dict.get('tool', 'unknown')
-                    if tool_name and tool_name not in missing_tools:
-                        missing_tools.append(tool_name)
+                    if tool_name and tool_name not in state.missing_tools:
+                        state.missing_tools.append(tool_name)
                         print(f"  {CLI_YELLOW}📝 Tracked missing tool: {tool_name}{CLI_CLR}")
 
                 continue
@@ -482,8 +542,8 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                     continue
 
                 # Block ok_answer if there are pending mutations that were never executed
-                if pending_mutation_tools and action_model.outcome == "ok_answer":
-                    pending_list = ', '.join(pending_mutation_tools)
+                if state.pending_mutation_tools and action_model.outcome == "ok_answer":
+                    pending_list = ', '.join(state.pending_mutation_tools)
                     print(f"  {CLI_YELLOW}⚠ BLOCKED: Cannot respond 'ok_answer' with pending mutations: {pending_list}{CLI_CLR}")
                     results.append(f"Action {idx+1} BLOCKED: You cannot respond with 'ok_answer' because you attempted to execute mutation tool(s) [{pending_list}] in a previous turn but they were NOT executed (malformed JSON or parse error). You MUST re-execute these mutation(s) before claiming success.")
                     continue
@@ -492,23 +552,15 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                 stats.add_api_call(task_id=task.task_id)
 
             # Execute with handler - pass shared state for middleware
-            initial_shared = {
-                'security_manager': security_manager,
-                'had_mutations': had_mutations,
-                'mutation_entities': mutation_entities,
-                'search_entities': search_entities,  # For auto-linking in read-only operations
-                'missing_tools': missing_tools,
-                'action_types_executed': action_types_executed,
-                'outcome_validation_warned': outcome_validation_warned,
-                'failure_logger': failure_logger,  # For API call logging
-                'task_id': task.task_id,  # For API call logging
-            }
+            initial_shared = state.to_shared_dict()
+            initial_shared['failure_logger'] = failure_logger  # For API call logging
+            initial_shared['task_id'] = task.task_id  # For API call logging
+
             ctx = executor.execute(action_dict, action_model, initial_shared=initial_shared)
             results.extend(ctx.results)
 
-            # Update persistent flags from middleware
-            if ctx.shared.get('outcome_validation_warned'):
-                outcome_validation_warned = True
+            # Sync state back from context (middleware may have modified it)
+            state.sync_from_context(ctx)
 
             # Check if execution failed
             if any("FAILED" in r or "ERROR" in r for r in ctx.results):
@@ -517,59 +569,57 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                 # Track successfully executed tool for OutcomeValidationMiddleware
                 tool_name = action_dict.get('tool', '')
                 if tool_name:
-                    action_types_executed.add(tool_name)
+                    state.action_types_executed.add(tool_name)
             
             # Track successful mutation operations
             if isinstance(action_model, MUTATION_TYPES) and not any("FAILED" in r or "ERROR" in r for r in ctx.results):
-                had_mutations = True
-                # Update context for subsequent respond calls
-                dummy_ctx.shared['had_mutations'] = True
+                state.had_mutations = True
 
                 # Clear this mutation from pending (it was successfully executed)
                 if isinstance(action_model, client.Req_LogTimeEntry):
-                    pending_mutation_tools.discard('time_log')
+                    state.pending_mutation_tools.discard('time_log')
                 elif isinstance(action_model, client.Req_UpdateEmployeeInfo):
-                    pending_mutation_tools.discard('employees_update')
+                    state.pending_mutation_tools.discard('employees_update')
                 elif isinstance(action_model, client.Req_UpdateProjectStatus):
-                    pending_mutation_tools.discard('projects_status_update')
-                    pending_mutation_tools.discard('projects_update')  # Also clear generic name
+                    state.pending_mutation_tools.discard('projects_status_update')
+                    state.pending_mutation_tools.discard('projects_update')  # Also clear generic name
                 elif isinstance(action_model, client.Req_UpdateProjectTeam):
-                    pending_mutation_tools.discard('projects_team_update')
-                    pending_mutation_tools.discard('projects_update')  # Also clear generic name
+                    state.pending_mutation_tools.discard('projects_team_update')
+                    state.pending_mutation_tools.discard('projects_update')  # Also clear generic name
                 elif isinstance(action_model, client.Req_UpdateTimeEntry):
-                    pending_mutation_tools.discard('time_update')
+                    state.pending_mutation_tools.discard('time_update')
                 elif isinstance(action_model, client.Req_UpdateWiki):
-                    pending_mutation_tools.discard('wiki_update')
+                    state.pending_mutation_tools.discard('wiki_update')
 
                 # Extract entity IDs from the mutation for auto-linking
                 # time_log → project, employee, AND logged_by (authorizer)
                 if isinstance(action_model, client.Req_LogTimeEntry):
                     if action_model.project:
-                        mutation_entities.append({"id": action_model.project, "kind": "project"})
+                        state.mutation_entities.append({"id": action_model.project, "kind": "project"})
                     if action_model.employee:
-                        mutation_entities.append({"id": action_model.employee, "kind": "employee"})
+                        state.mutation_entities.append({"id": action_model.employee, "kind": "employee"})
                     # CRITICAL: Also add the authorizer (logged_by) as a link
                     # This is the Lead/Manager who authorized logging time for someone else
                     if action_model.logged_by and action_model.logged_by != action_model.employee:
-                        mutation_entities.append({"id": action_model.logged_by, "kind": "employee"})
+                        state.mutation_entities.append({"id": action_model.logged_by, "kind": "employee"})
                 # employees_update → employee
                 elif isinstance(action_model, client.Req_UpdateEmployeeInfo):
                     if action_model.employee:
-                        mutation_entities.append({"id": action_model.employee, "kind": "employee"})
+                        state.mutation_entities.append({"id": action_model.employee, "kind": "employee"})
                 # projects_status_update → project
                 elif isinstance(action_model, client.Req_UpdateProjectStatus):
                     if hasattr(action_model, 'id') and action_model.id:
-                        mutation_entities.append({"id": action_model.id, "kind": "project"})
+                        state.mutation_entities.append({"id": action_model.id, "kind": "project"})
                 # projects_team_update → project AND all team members
                 elif isinstance(action_model, client.Req_UpdateProjectTeam):
                     if hasattr(action_model, 'id') and action_model.id:
-                        mutation_entities.append({"id": action_model.id, "kind": "project"})
+                        state.mutation_entities.append({"id": action_model.id, "kind": "project"})
                     # CRITICAL: Also add all team members as links
                     if hasattr(action_model, 'team') and action_model.team:
                         for member in action_model.team:
                             emp_id = member.get('employee') if isinstance(member, dict) else getattr(member, 'employee', None)
                             if emp_id:
-                                mutation_entities.append({"id": emp_id, "kind": "employee"})
+                                state.mutation_entities.append({"id": emp_id, "kind": "employee"})
                 # time_update → we DON'T add time_entry ID to links (invalid kind!)
                 # The project and employee are captured from ctx.shared['time_update_entities']
                 # which is set by core.py during the fetch-merge process
@@ -577,10 +627,7 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                     # Get entities from core.py's fetch-merge (project, employee)
                     time_update_entities = ctx.shared.get('time_update_entities', [])
                     for entity in time_update_entities:
-                        mutation_entities.append(entity)
-
-                # Update dummy_ctx with new entities
-                dummy_ctx.shared['mutation_entities'] = mutation_entities
+                        state.mutation_entities.append(entity)
 
             # Track search entities for read-only operations (separate from mutations)
             # These entities are referenced in search filters and should appear in response links
@@ -593,22 +640,19 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                 # time_search → employee being queried
                 if isinstance(action_model, client.Req_SearchTimeEntries):
                     if action_model.employee:
-                        search_entities.append({"id": action_model.employee, "kind": "employee"})
+                        state.search_entities.append({"id": action_model.employee, "kind": "employee"})
                     if action_model.project:
-                        search_entities.append({"id": action_model.project, "kind": "project"})
+                        state.search_entities.append({"id": action_model.project, "kind": "project"})
                 # time_summary_employee → employees being queried
                 elif isinstance(action_model, client.Req_TimeSummaryByEmployee):
                     employees = getattr(action_model, 'employees', None) or []
                     for emp in employees:
-                        search_entities.append({"id": emp, "kind": "employee"})
+                        state.search_entities.append({"id": emp, "kind": "employee"})
                 # time_summary_project → projects being queried
                 elif isinstance(action_model, client.Req_TimeSummaryByProject):
                     projects = getattr(action_model, 'projects', None) or []
                     for proj in projects:
-                        search_entities.append({"id": proj, "kind": "project"})
-
-                # Update dummy_ctx with search entities
-                dummy_ctx.shared['search_entities'] = search_entities
+                        state.search_entities.append({"id": proj, "kind": "project"})
 
             if ctx.stop_execution:
                 stop_execution = True

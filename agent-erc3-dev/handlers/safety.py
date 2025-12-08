@@ -561,6 +561,85 @@ class OutcomeValidationMiddleware(ResponseGuard):
         )
 
 
+class SubjectiveQueryGuard(ResponseGuard):
+    """
+    Catches ok_answer on subjective/vague queries using combo approach:
+
+    1. PRIMARY: Check query_specificity parameter from agent
+       - If agent declares "ambiguous" but uses ok_answer → block
+    2. FALLBACK: Basic heuristic for obvious cases (agent didn't set param or lied)
+       - Task has vague pattern + no specific ID → block
+
+    This forces agent to explicitly think about query specificity.
+    """
+
+    target_outcomes = {"ok_answer"}
+    require_public = None  # Both public and internal users
+
+    # Fallback: Vague patterns (determiner + adjective + entity)
+    VAGUE_PATTERNS = [
+        r'\b(that|the)\s+(cool|nice|best|great|good|interesting|important)\s+\w+',
+        r'\bcool\s+(project|person|employee|customer)\b',
+        r'\bbest\s+(project|person|employee|customer)\b',
+        r'\bthat\s+(one|project|thing)\b',
+    ]
+
+    # Specific ID patterns - if present, query is likely specific
+    SPECIFIC_ID_PATTERN = r'\b(proj_|emp_|cust_)[a-z0-9_]+'
+
+    def __init__(self):
+        self._vague_re = re.compile('|'.join(self.VAGUE_PATTERNS), re.IGNORECASE)
+        self._specific_id_re = re.compile(self.SPECIFIC_ID_PATTERN, re.IGNORECASE)
+
+    def _check(self, ctx: ToolContext, outcome: str) -> None:
+        task_text = get_task_text(ctx)
+        if not task_text:
+            return
+
+        # Get agent's declared specificity
+        query_specificity = ctx.shared.get('query_specificity', 'unspecified')
+
+        # PRIMARY CHECK: Agent explicitly declared query as ambiguous
+        if query_specificity == 'ambiguous':
+            self._soft_block(
+                ctx,
+                warning_key='subjective_query_warned',
+                log_msg="SubjectiveQueryGuard: Agent declared 'ambiguous' but used ok_answer",
+                block_msg=(
+                    "⚠️ CONTRADICTION: You declared `query_specificity: 'ambiguous'` but responded with `ok_answer`!\n\n"
+                    "If the query is ambiguous, you MUST use `none_clarification_needed` and ask the user to clarify.\n"
+                    "Even if you found only ONE result, ask: 'I found [X]. Is this what you meant?'\n\n"
+                    "Either:\n"
+                    "1. Change outcome to `none_clarification_needed` (if truly ambiguous)\n"
+                    "2. Change query_specificity to `specific` (if you're certain about the answer)"
+                )
+            )
+            return
+
+        # FALLBACK CHECK: Agent didn't declare or claimed "specific" - verify with heuristic
+        # Only trigger if: has vague pattern AND no specific ID in task
+        has_vague_pattern = bool(self._vague_re.search(task_text))
+        has_specific_id = bool(self._specific_id_re.search(task_text))
+
+        if has_vague_pattern and not has_specific_id:
+            # Agent might be lying or forgot to set the parameter
+            self._soft_block(
+                ctx,
+                warning_key='subjective_query_warned',
+                log_msg=f"SubjectiveQueryGuard: Vague pattern detected, specificity='{query_specificity}'",
+                block_msg=(
+                    "⚠️ AMBIGUITY CHECK: The query contains vague/subjective terms (e.g., 'cool', 'that', 'best') "
+                    "and NO specific entity ID.\n\n"
+                    "You responded with `ok_answer` but did you verify the query is truly specific?\n\n"
+                    "**REQUIRED**: Set `query_specificity` in your respond call:\n"
+                    "- `'specific'` = Query has clear identifiers or unambiguous names\n"
+                    "- `'ambiguous'` = Query uses vague terms, pronouns, or subjective adjectives\n\n"
+                    "If ambiguous → use `none_clarification_needed` and ask user to clarify.\n"
+                    "If specific → set `query_specificity: 'specific'` and call respond again."
+                )
+            )
+
+
 class ProjectSearchReminderMiddleware(ResponseGuard):
     """
     Reminds agent to use projects_search for project-related queries.

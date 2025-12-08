@@ -720,6 +720,16 @@ def _parse_respond(ctx: ParseContext) -> Any:
     """Submit final response to user. Handles link auto-detection and validation."""
     args = ctx.args
 
+    # Extract query_specificity - agent must declare if query was specific or ambiguous
+    # Values: "specific" (clear query with IDs/names), "ambiguous" (vague terms like "cool", "that")
+    query_specificity = (args.get("query_specificity") or args.get("querySpecificity") or
+                         args.get("specificity") or "unspecified")
+    if isinstance(query_specificity, str):
+        query_specificity = query_specificity.lower().strip()
+    # Store in shared context for middleware to check
+    if ctx.context and hasattr(ctx.context, 'shared'):
+        ctx.context.shared['query_specificity'] = query_specificity
+
     # Extract message (handle various field names from different LLMs)
     message = (args.get("message") or args.get("Message") or
                args.get("text") or args.get("Text") or

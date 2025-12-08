@@ -11,6 +11,7 @@ from .safety import (
     PublicUserSemanticGuard,
     BasicLookupDenialGuard,
     ProjectModificationClarificationGuard,
+    SubjectiveQueryGuard,
 )
 
 def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManager, task=None):
@@ -22,6 +23,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         TimeLoggingClarificationGuard(),              # Ensures time log clarifications include project
         ProjectModificationClarificationGuard(),      # Ensures project mod clarifications include project link
         BasicLookupDenialGuard(),                     # Catches denied_security for basic org-chart lookups
+        SubjectiveQueryGuard(),                       # Blocks ok_answer on subjective queries (cool, best, that)
         OutcomeValidationMiddleware(),                # Validates denied outcomes (unsupported vs security)
         PublicUserSemanticGuard(),                    # Ensures guests use denied_security for internal data
         ResponseValidationMiddleware(),               # Validates respond has proper message/links
