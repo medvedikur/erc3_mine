@@ -33,7 +33,7 @@ data_builder.add_project(MockProject(
     status="active",
     team=[
         MockTeamMember(employee="felix_baum", role="Lead", time_slice=0.3),
-        MockTeamMember(employee="helene_stutz", role="Consultant", time_slice=0.2),
+        MockTeamMember(employee="helene_stutz", role="Other", time_slice=0.2),  # "Other" is valid role for Consultant
     ],
 ))
 
@@ -44,7 +44,7 @@ data_builder.add_project(MockProject(
     status="exploring",
     team=[
         MockTeamMember(employee="ana_kovac", role="Lead", time_slice=0.4),
-        MockTeamMember(employee="helene_stutz", role="Consultant", time_slice=0.2),
+        MockTeamMember(employee="helene_stutz", role="Other", time_slice=0.2),  # "Other" is valid role for Consultant
     ],
 ))
 
