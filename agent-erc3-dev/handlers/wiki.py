@@ -57,7 +57,16 @@ class WikiVersionStore:
     """
     File-based storage for wiki versions.
     Each version stored in wiki_dump/{sha1_prefix}/ folder.
+
+    Uses class-level cache for pages/chunks to avoid repeated disk I/O
+    when multiple WikiManager instances load the same version (parallel mode).
     """
+    # Class-level cache shared across all instances (thread-safe)
+    _pages_cache: Dict[str, Dict[str, str]] = {}
+    _chunks_cache: Dict[str, Tuple[List[Dict[str, Any]], Optional[Any]]] = {}
+    _summaries_cache: Dict[str, Dict[str, str]] = {}
+    _cache_lock = threading.Lock()
+
     def __init__(self, base_dir: str = WIKI_DUMP_DIR):
         self.base_dir = base_dir
         self.versions_index = os.path.join(base_dir, "versions.json")
@@ -137,16 +146,27 @@ class WikiVersionStore:
             print(f"⚠️ Failed to save summaries: {e}")
 
     def get_summaries(self, sha1: str) -> Dict[str, str]:
-        """Load page summaries for a wiki version."""
+        """Load page summaries for a wiki version. Uses class-level cache."""
+        # Check cache first
+        cache_key = f"{self.base_dir}:{sha1}"
+        if cache_key in WikiVersionStore._summaries_cache:
+            return WikiVersionStore._summaries_cache[cache_key].copy()
+
         version_dir = self._get_version_dir(sha1)
         summaries_path = os.path.join(version_dir, "summaries.json")
+        summaries = {}
         if os.path.exists(summaries_path):
             try:
                 with open(summaries_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    summaries = json.load(f)
             except Exception as e:
                 print(f"⚠️ Failed to load summaries: {e}")
-        return {}
+
+        # Store in cache
+        with WikiVersionStore._cache_lock:
+            WikiVersionStore._summaries_cache[cache_key] = summaries
+
+        return summaries.copy()
 
     def save_chunks(self, sha1: str, chunks: List[Dict[str, Any]], embeddings=None):
         """Save indexed chunks for a wiki version."""
@@ -177,24 +197,29 @@ class WikiVersionStore:
                 print(f"⚠️ Failed to save embeddings: {e}")
     
     def get_pages(self, sha1: str) -> Dict[str, str]:
-        """Load pages for a specific wiki version."""
+        """Load pages for a specific wiki version. Uses class-level cache."""
+        # Check cache first (thread-safe)
+        cache_key = f"{self.base_dir}:{sha1}"
+        if cache_key in WikiVersionStore._pages_cache:
+            return WikiVersionStore._pages_cache[cache_key].copy()
+
         version_dir = self._get_version_dir(sha1)
         pages = {}
-        
+
         # Read metadata to get paths
         metadata_path = os.path.join(version_dir, "metadata.json")
         if not os.path.exists(metadata_path):
             return pages
-        
+
         with open(metadata_path, 'r', encoding='utf-8') as f:
             metadata = json.load(f)
-        
+
         # Load each page
         for path in metadata.get("paths", []):
             safe_name = path.replace("/", "_").replace("\\", "_")
             if not safe_name.endswith(".md"):
                 safe_name += ".md"
-            
+
             file_path = os.path.join(version_dir, safe_name)
             if os.path.exists(file_path):
                 with open(file_path, 'r', encoding='utf-8') as f:
@@ -207,21 +232,32 @@ class WikiVersionStore:
                             continue
                         clean_lines.append(line)
                     pages[path] = '\n'.join(clean_lines).strip()
-        
-        return pages
+
+        # Store in cache (thread-safe)
+        with WikiVersionStore._cache_lock:
+            WikiVersionStore._pages_cache[cache_key] = pages
+
+        return pages.copy()
     
     def get_chunks(self, sha1: str) -> Tuple[List[Dict[str, Any]], Optional[Any]]:
-        """Load chunks and embeddings for a specific wiki version."""
+        """Load chunks and embeddings for a specific wiki version. Uses class-level cache."""
+        # Check cache first (thread-safe)
+        cache_key = f"{self.base_dir}:{sha1}"
+        if cache_key in WikiVersionStore._chunks_cache:
+            cached = WikiVersionStore._chunks_cache[cache_key]
+            # Return deep copy of chunks (they have mutable sets), embeddings can be shared
+            return [dict(c) for c in cached[0]], cached[1]
+
         version_dir = self._get_version_dir(sha1)
         chunks = []
         embeddings = None
-        
+
         # Load chunks
         chunks_path = os.path.join(version_dir, "chunks.json")
         if os.path.exists(chunks_path):
             with open(chunks_path, 'r', encoding='utf-8') as f:
                 chunks_data = json.load(f)
-            
+
             for chunk in chunks_data:
                 chunks.append({
                     "content": chunk["content"],
@@ -229,7 +265,7 @@ class WikiVersionStore:
                     "id": chunk["id"],
                     "tokens": set(chunk.get("tokens", []))
                 })
-        
+
         # Load embeddings
         embeddings_path = os.path.join(version_dir, "embeddings.npy")
         if os.path.exists(embeddings_path) and HAS_EMBEDDINGS:
@@ -238,8 +274,12 @@ class WikiVersionStore:
                 embeddings = torch.tensor(emb_array)
             except Exception as e:
                 print(f"⚠️ Failed to load embeddings: {e}")
-        
-        return chunks, embeddings
+
+        # Store in cache (thread-safe)
+        with WikiVersionStore._cache_lock:
+            WikiVersionStore._chunks_cache[cache_key] = (chunks, embeddings)
+
+        return [dict(c) for c in chunks], embeddings
     
     def get_all_versions(self) -> List[Dict[str, Any]]:
         """Get list of all stored wiki versions."""

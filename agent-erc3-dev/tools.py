@@ -628,8 +628,14 @@ def _parse_time_get(ctx: ParseContext) -> Any:
 @ToolParser.register("time_search", "timesearch", "searchtime")
 def _parse_time_search(ctx: ParseContext) -> Any:
     """Search time entries with filters."""
+    # Handle "me" as employee reference -> current_user
+    employee_arg = ctx.args.get("employee") or ctx.args.get("employee_id")
+    if employee_arg and str(employee_arg).lower() == "me":
+        employee_arg = ctx.current_user
+    employee_val = employee_arg or ctx.current_user
+
     return client.Req_SearchTimeEntries(
-        employee=ctx.args.get("employee") or ctx.args.get("employee_id") or ctx.current_user,
+        employee=employee_val,
         project=ctx.args.get("project") or ctx.args.get("project_id"),
         date_from=ctx.args.get("date_from"),
         date_to=ctx.args.get("date_to"),

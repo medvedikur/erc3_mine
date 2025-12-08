@@ -5,6 +5,29 @@ from erc3.erc3 import client, dtos
 from .base import ToolContext, Middleware, ActionHandler
 from utils import CLI_RED, CLI_GREEN, CLI_BLUE, CLI_YELLOW, CLI_CLR
 
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
+def merge_non_none(payload: dict, model: Any, fields: List[str]) -> None:
+    """
+    Copy non-None fields from model to payload.
+
+    Used in fetch-merge-dispatch pattern for partial updates where API
+    requires all fields but we only want to update some.
+
+    Args:
+        payload: Target dict to update
+        model: Source model with fields to copy
+        fields: List of field names to check and copy
+    """
+    for field in fields:
+        value = getattr(model, field, None)
+        if value is not None:
+            payload[field] = value
+
+
 class DefaultActionHandler:
     """Standard handler that executes the action against the API"""
     def __init__(self):
@@ -291,12 +314,12 @@ class DefaultActionHandler:
                 # Otherwise missing fields are cleared! We must fetch current data first.
                 elif isinstance(ctx.model, client.Req_UpdateEmployeeInfo):
                     employee_id = ctx.model.employee
-                    
+
                     # Step 1: Fetch current employee data to preserve existing values
                     try:
                         current_data = ctx.api.get_employee(employee_id)
                         emp = current_data.employee
-                        
+
                         # Step 2: Build complete payload - start with current data
                         payload = {
                             'employee': employee_id,
@@ -306,35 +329,23 @@ class DefaultActionHandler:
                             'skills': emp.skills if emp.skills else [],
                             'wills': emp.wills if emp.wills else [],
                         }
-                        
+
                         # Step 3: Override with new values from the request
                         if ctx.model.salary is not None:
                             payload['salary'] = int(ctx.model.salary)
                         if ctx.model.changed_by:
                             payload['changed_by'] = ctx.model.changed_by
-                        # Override other fields only if explicitly set (not None/empty)
-                        if getattr(ctx.model, 'notes', None) is not None:
-                            payload['notes'] = ctx.model.notes
-                        if getattr(ctx.model, 'location', None) is not None:
-                            payload['location'] = ctx.model.location
-                        if getattr(ctx.model, 'department', None) is not None:
-                            payload['department'] = ctx.model.department
-                        if getattr(ctx.model, 'skills', None) is not None:
-                            payload['skills'] = ctx.model.skills
-                        if getattr(ctx.model, 'wills', None) is not None:
-                            payload['wills'] = ctx.model.wills
-                            
+                        merge_non_none(payload, ctx.model, ['notes', 'location', 'department', 'skills', 'wills'])
+
                     except Exception as e:
                         print(f"  {CLI_YELLOW}⚠ Could not fetch current employee data: {e}. Using request data only.{CLI_CLR}")
                         # Fallback: use only what we have
-                        payload = {
-                            'employee': employee_id,
-                        }
+                        payload = {'employee': employee_id}
                         if ctx.model.salary is not None:
                             payload['salary'] = int(ctx.model.salary)
                         if ctx.model.changed_by:
                             payload['changed_by'] = ctx.model.changed_by
-                    
+
                     # Create model with complete payload
                     update_model = client.Req_UpdateEmployeeInfo(**payload)
                     result = ctx.api.dispatch(update_model)
@@ -392,23 +403,12 @@ class DefaultActionHandler:
                                 'billable': current_entry.billable,
                                 'status': current_entry.status or "",
                             }
-                            
+
                             # Override with new values
-                            if ctx.model.date is not None:
-                                payload['date'] = ctx.model.date
-                            if ctx.model.hours is not None:
-                                payload['hours'] = ctx.model.hours
-                            if ctx.model.work_category is not None:
-                                payload['work_category'] = ctx.model.work_category
-                            if ctx.model.notes is not None:
-                                payload['notes'] = ctx.model.notes
-                            if ctx.model.billable is not None:
-                                payload['billable'] = ctx.model.billable
-                            if ctx.model.status is not None:
-                                payload['status'] = ctx.model.status
-                            if ctx.model.changed_by:
-                                payload['changed_by'] = ctx.model.changed_by
-                            
+                            merge_non_none(payload, ctx.model, [
+                                'date', 'hours', 'work_category', 'notes', 'billable', 'status', 'changed_by'
+                            ])
+
                             update_model = client.Req_UpdateTimeEntry(**payload)
                             result = ctx.api.dispatch(update_model)
                         else:

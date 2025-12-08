@@ -556,6 +556,11 @@ STOP repeating the same actions. Analyze why you're not making progress and call
             initial_shared['failure_logger'] = failure_logger  # For API call logging
             initial_shared['task_id'] = task.task_id  # For API call logging
 
+            # CRITICAL: Copy query_specificity from parse context to executor context
+            # _parse_respond stores it in parse_ctx.shared, middleware needs it in executor ctx
+            if hasattr(parse_ctx, 'shared') and 'query_specificity' in parse_ctx.shared:
+                initial_shared['query_specificity'] = parse_ctx.shared['query_specificity']
+
             ctx = executor.execute(action_dict, action_model, initial_shared=initial_shared)
             results.extend(ctx.results)
 

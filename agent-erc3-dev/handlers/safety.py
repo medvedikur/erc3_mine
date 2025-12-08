@@ -596,6 +596,12 @@ class SubjectiveQueryGuard(ResponseGuard):
         if not task_text:
             return
 
+        # CRITICAL: Skip if mutation was already performed - action is done, can't undo
+        # For TIME LOGGING with ambiguous queries, agent filters by authorization (per prompts.py)
+        # so if time was logged successfully, we should accept ok_answer even if query was ambiguous
+        if ctx.shared.get('had_mutations'):
+            return
+
         # Get agent's declared specificity
         query_specificity = ctx.shared.get('query_specificity', 'unspecified')
 
