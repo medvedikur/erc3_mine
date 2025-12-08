@@ -377,31 +377,24 @@ class TimeLoggingClarificationGuard(Middleware):
         if self._has_project_reference(message, links):
             return  # All good
 
-        # Check if already warned
-        warning_key = 'time_log_project_guard_warned'
+        # SOFT BLOCK: Block first time, allow on repeat
+        warning_key = 'time_log_clarification_warned'
         if ctx.shared.get(warning_key):
-            # Already warned, let it through but log
-            print(f"  {CLI_YELLOW}⚠️ TimeLog Guard: Agent confirmed clarification without project link{CLI_CLR}")
+            print(f"  {CLI_GREEN}✓ TimeLog Guard: Agent confirmed clarification after warning{CLI_CLR}")
             return
 
-        # First time - block and ask to identify project first
-        print(f"  {CLI_YELLOW}🔍 TimeLog Guard: Clarification for time logging without project identification{CLI_CLR}")
-
+        print(f"  {CLI_YELLOW}🛑 TimeLog Guard: Clarification without project link - blocking{CLI_CLR}")
         ctx.shared[warning_key] = True
         ctx.stop_execution = True
         ctx.results.append(
-            f"🔍 TIME LOGGING GUARD: You're asking for clarification on a time logging task, "
-            f"but you haven't identified the project yet!\n\n"
-            f"**The benchmark expects project links even in clarification responses.**\n\n"
-            f"Before asking for CC codes or other clarifications, you MUST:\n"
-            f"1. Search for the employee's projects: `projects_search(member='employee_id')`\n"
-            f"2. Identify which project matches (look for keywords in ID and name)\n"
-            f"3. Check your authorization (are you Lead/AM/Manager?)\n"
-            f"4. THEN ask for clarification, including the project ID in your message and links\n\n"
-            f"Example correct response: \"I can log time for Felix (felix_baum) on 'Line 3 PoC' "
-            f"(proj_acme_line3_cv_poc), but I need the CC code. What is it?\"\n\n"
-            f"**If you've already searched and genuinely cannot identify the project**, "
-            f"respond again with your clarification."
+            f"🛑 TIME LOGGING CLARIFICATION: You're asking for clarification about a time logging task, "
+            f"but you MUST include the project link in your response!\n\n"
+            f"**REQUIRED STEPS:**\n"
+            f"1. Use `projects_search(member=target_employee_id)` to find the project\n"
+            f"2. Include the project ID in your message (e.g., 'proj_acme_line3_cv_poc')\n"
+            f"3. Add the project to your `links` array\n\n"
+            f"The benchmark expects project links even in clarification responses.\n"
+            f"Search for the project first, then ask for clarification WITH the project link."
         )
 
 
@@ -659,30 +652,11 @@ class OutcomeValidationMiddleware(Middleware):
         if not had_project_search:
             return
 
-        # Check if already warned
-        warning_key = 'ok_not_found_mutation_warned'
-        already_warned = ctx.shared.get(warning_key, False)
-
-        if already_warned:
-            print(f"  {CLI_GREEN}✓ Outcome Validation: Agent confirmed 'ok_not_found' after warning{CLI_CLR}")
-            return
-
-        print(f"  {CLI_YELLOW}🔍 Outcome Validation: 'ok_not_found' on mutation task with projects_search{CLI_CLR}")
-        ctx.shared[warning_key] = True
-        ctx.stop_execution = True
+        # Soft hint only - don't block based on regex task text matching
+        print(f"  {CLI_YELLOW}💡 Mutation Hint: 'ok_not_found' on possible mutation task{CLI_CLR}")
         ctx.results.append(
-            f"🔍 OUTCOME VALIDATION: You responded with 'ok_not_found' for a MUTATION task!\n\n"
-            f"**This is likely incorrect.** For mutation tasks (status change, update), you should:\n\n"
-            f"1. If projects_search found ANY results, check for FUZZY MATCHES:\n"
-            f"   - 'Triage PoC for Intake Notes' ≈ 'Intake Notes Triage PoC' (same words, different order)\n"
-            f"   - Don't respond 'ok_not_found' just because the name order is different!\n\n"
-            f"2. If a fuzzy match exists, call `projects_get(id='proj_...')` to verify:\n"
-            f"   - Your role in the team (Lead/Engineer/etc.)\n"
-            f"   - Whether you have authorization to modify it\n\n"
-            f"3. If NOT authorized (not Lead/Owner/Manager of Lead):\n"
-            f"   - Respond with `denied_security`, NOT `ok_not_found`!\n\n"
-            f"**Use 'ok_not_found' ONLY if NO project matches the query at all.**\n\n"
-            f"**If you're certain no matching project exists**, call respond again with the same outcome."
+            f"💡 HINT: You responded 'ok_not_found' after projects_search. "
+            f"If any results looked similar (fuzzy match), check authorization before giving up."
         )
 
 
@@ -725,25 +699,11 @@ class ProjectSearchReminderMiddleware(Middleware):
         if 'projects_search' in action_types_executed:
             return  # Agent did search projects, ok_not_found is valid
 
-        # Check if already warned
-        warning_key = 'project_search_reminder_warned'
-        if ctx.shared.get(warning_key):
-            print(f"  {CLI_GREEN}✓ Project Search Reminder: Agent confirmed ok_not_found after warning{CLI_CLR}")
-            return
-
-        # Warn agent to try projects_search
-        print(f"  {CLI_YELLOW}🔍 Project Search Reminder: ok_not_found without projects_search{CLI_CLR}")
-        ctx.shared[warning_key] = True
-        ctx.stop_execution = True
+        # Soft hint only - don't block, just add reminder
+        print(f"  {CLI_YELLOW}💡 Project Search Hint: ok_not_found without projects_search{CLI_CLR}")
         ctx.results.append(
-            f"🔍 REMINDER: You responded 'ok_not_found' for a project-related query, "
-            f"but you haven't used `projects_search` yet!\n\n"
-            f"**Wiki does NOT contain project existence/status info** - only the database does.\n\n"
-            f"Before giving up, try:\n"
-            f"- `projects_search(status=['archived'])` for archived projects\n"
-            f"- `projects_search(query='keyword')` for active projects\n"
-            f"- `projects_search()` to get all projects and filter yourself\n\n"
-            f"**If you've already searched and are certain**, respond again with ok_not_found."
+            f"💡 HINT: You responded 'ok_not_found' but didn't use `projects_search`. "
+            f"Wiki doesn't contain project status - consider searching the database."
         )
 
 
