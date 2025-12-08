@@ -287,19 +287,34 @@ class ProjectModificationClarificationGuard(Middleware):
         action_types_executed = ctx.shared.get('action_types_executed', set())
         has_searched = 'projects_search' in action_types_executed
 
-        # Soft hint only - don't block, just add reminder to results
-        print(f"  {CLI_YELLOW}💡 Project Mod Hint: Clarification without project link{CLI_CLR}")
+        # Check if already warned - if so, let it through
+        warning_key = 'project_mod_clarification_warned'
+        if ctx.shared.get(warning_key):
+            print(f"  {CLI_GREEN}✓ Project Mod Guard: Agent confirmed clarification after warning{CLI_CLR}")
+            return
+
+        # Hard block - stop execution and ask agent to include project link
+        print(f"  {CLI_YELLOW}🛑 Project Mod Guard: Clarification without project link - blocking{CLI_CLR}")
+        ctx.shared[warning_key] = True
+        ctx.stop_execution = True
 
         if not has_searched:
             ctx.results.append(
-                f"💡 HINT: You're asking for clarification about a project modification, "
-                f"but haven't searched for the project yet. Consider using `projects_search` "
-                f"to identify and include the project link in your response."
+                f"🛑 PROJECT MODIFICATION CLARIFICATION: You're asking for clarification about a project modification, "
+                f"but you MUST include the project link in your response!\n\n"
+                f"**REQUIRED STEPS:**\n"
+                f"1. Use `projects_search` to find the project (e.g., search by name or keyword)\n"
+                f"2. Include the project ID in your message (e.g., 'proj_acme_line3_cv_poc')\n"
+                f"3. Add the project to your `links` array\n\n"
+                f"The benchmark expects project links even in clarification responses."
             )
         else:
             ctx.results.append(
-                f"💡 HINT: You searched for projects but didn't include the project link "
-                f"in your clarification. Consider adding the project to your `links` array."
+                f"🛑 PROJECT MODIFICATION CLARIFICATION: You searched for projects but didn't include the project link "
+                f"in your clarification response!\n\n"
+                f"**REQUIRED:** Add the project to your `links` array, like:\n"
+                f"`\"links\": [{{\"id\": \"proj_xxx\", \"kind\": \"project\"}}]`\n\n"
+                f"The benchmark expects project links even in clarification responses."
             )
 
 

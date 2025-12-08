@@ -242,6 +242,10 @@ class MockErc3Client:
             emp.location = req.location
         if hasattr(req, 'department') and req.department is not None:
             emp.department = req.department
+        if hasattr(req, 'skills') and req.skills:
+            emp.skills = req.skills
+        if hasattr(req, 'wills') and req.wills:
+            emp.wills = req.wills
 
         self._updated_employees[emp_id] = emp
 
@@ -478,7 +482,13 @@ class MockErc3Client:
             "people_marko_petrovic.md", "people_sofia_rinaldi.md", "people_timo_van_dijk.md",
             "people_mira_schaefer.md",
         ]
-        return dtos.Resp_ListWiki(paths=paths, sha1=self.identity.wiki_hash or "test_wiki_hash")
+
+        # Post-merger wiki version includes merger.md
+        wiki_hash = self.identity.wiki_hash or "test_wiki_hash"
+        if wiki_hash.startswith("a744c2c0"):
+            paths.append("merger.md")
+
+        return dtos.Resp_ListWiki(paths=paths, sha1=wiki_hash)
 
     def _handle_load_wiki(self, req) -> dtos.Resp_LoadWiki:
         """Handle /wiki/load request."""
@@ -517,21 +527,45 @@ class MockErc3Client:
 
     def _handle_log_time(self, req) -> dtos.Resp_LogTimeEntry:
         """Handle /time/log request."""
-        entry = {
-            "employee": getattr(req, 'employee', None),
-            "project": getattr(req, 'project', None),
-            "customer": getattr(req, 'customer', None),
-            "date": getattr(req, 'date', None),
-            "hours": getattr(req, 'hours', 0),
-            "work_category": getattr(req, 'work_category', 'dev'),
-            "notes": getattr(req, 'notes', ''),
-            "billable": getattr(req, 'billable', True),
-            "status": getattr(req, 'status', 'draft'),
-        }
-        entry_id = f"time_{len(self._logged_time_entries) + 1}"
-        self._logged_time_entries.append({"id": entry_id, **entry})
+        employee = getattr(req, 'employee', None)
+        project = getattr(req, 'project', None)
+        customer = getattr(req, 'customer', None)
+        date = getattr(req, 'date', None)
+        hours = getattr(req, 'hours', 0)
+        work_category = getattr(req, 'work_category', 'dev')
+        notes = getattr(req, 'notes', '') or ''
+        billable = getattr(req, 'billable', True)
+        status = getattr(req, 'status', 'draft')
 
-        return dtos.Resp_LogTimeEntry(success=True, id=entry_id)
+        entry_id = f"time_{len(self._logged_time_entries) + 1}"
+
+        entry = {
+            "id": entry_id,
+            "employee": employee,
+            "project": project,
+            "customer": customer,
+            "date": date,
+            "hours": hours,
+            "work_category": work_category,
+            "notes": notes,
+            "billable": billable,
+            "status": status,
+        }
+        self._logged_time_entries.append(entry)
+
+        # Resp_LogTimeEntry inherits from TimeEntryWithID which requires all TimeEntry fields
+        return dtos.Resp_LogTimeEntry(
+            id=entry_id,
+            employee=employee,
+            project=project,
+            customer=customer,
+            date=date,
+            hours=hours,
+            work_category=work_category,
+            notes=notes,
+            billable=billable,
+            status=status,
+        )
 
     def _handle_search_time(self, req) -> dtos.Resp_SearchTimeEntries:
         """Handle /time/search request."""
@@ -803,6 +837,22 @@ class MockErc3Client:
             def __init__(self, file):
                 self.file = file
         return self._handle_load_wiki(MockReq(path))
+
+    def get_project(self, project_id: str = None, id: str = None) -> dtos.Resp_GetProject:
+        """Direct method for middleware compatibility."""
+        pid = project_id or id
+        class MockReq:
+            def __init__(self, proj_id):
+                self.id = proj_id
+        return self._handle_get_project(MockReq(pid))
+
+    def get_employee(self, employee_id: str = None, id: str = None) -> dtos.Resp_GetEmployee:
+        """Direct method for middleware compatibility."""
+        eid = employee_id or id
+        class MockReq:
+            def __init__(self, emp_id):
+                self.id = emp_id
+        return self._handle_get_employee(MockReq(eid))
 
     def log_llm(
         self,

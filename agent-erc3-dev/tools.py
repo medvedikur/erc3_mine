@@ -825,7 +825,7 @@ def _parse_respond(ctx: ParseContext) -> Any:
             unique_links.append(link)
     links = unique_links
 
-    # Clear links for error/denied outcomes
+    # Clear links for error/denied outcomes - security best practice
     if outcome in ("error_internal", "denied_security"):
         links = []
 

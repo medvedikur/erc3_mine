@@ -222,7 +222,8 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
             raw_content = generation.text
             usage = llm_output.get("token_usage", {})
             
-            if not usage or usage.get("total_tokens", 0) == 0:
+            # Fallback if usage is missing or completion_tokens is 0 (some providers don't return it)
+            if not usage or usage.get("completion_tokens", 0) == 0:
                 est_completion = len(raw_content) // 4
                 est_prompt = sum(len(m.content) for m in messages) // 4
                 usage = {
