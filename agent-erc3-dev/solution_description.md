@@ -12,9 +12,11 @@ This solution reimplements the SGR (Schema-Guided Reasoning) agent using **LangC
 - `prompts.py`: The SGR system prompt enforcing the thinking process, adapted for the Employee Assistant domain.
 - `pricing.py`: Dynamic cost calculator fetching model prices from OpenRouter API.
 - `handlers/`:
-  - `core.py`: Execution engine with middleware support, partial update handling (fetch-merge-dispatch), and API quirk patches.
+  - `core.py`: Execution engine with middleware support, partial update handling (fetch-merge-dispatch), API quirk patches, and failure logging.
   - `wiki.py`: Middleware for automatic Company Wiki synchronization with versioned local storage. Implements hybrid RAG search.
+  - `safety.py`: Lightweight middleware guards (AmbiguityGuard, ProjectSearchReminder) providing runtime hints.
   - `base.py`: Protocols for handlers and middleware.
+- `config.py`: Central configuration for benchmark type, workspace, models, threads, and logging paths.
 - `wiki_dump/`: Local storage for wiki versions (keyed by SHA1 hash).
 - `logs/`: Directory containing detailed execution logs and failure reports.
 
@@ -38,7 +40,20 @@ Changes in 1.2.0:
 - Token fields are now typed: `prompt_tokens`, `completion_tokens`, `cached_prompt_tokens`
 - Old `usage` object parameter removed
 
-### Configuration (.env)
+### Configuration
+
+#### config.py (Central Configuration)
+```python
+# Benchmark type: "erc3-test" (24 tasks), "erc3-dev" (dev tasks), "erc3" (production)
+BENCHMARK = "erc3-test"
+WORKSPACE = "test-workspace-1"
+SESSION_NAME = "@mishka ERC3-Test Agent"
+API_BASE_URL = "https://erc.timetoact-group.at"
+
+# Can be overridden via CLI: python main.py -benchmark erc3-dev
+```
+
+#### .env (Secrets)
 ```bash
 # Competition Key
 ERC3_API_KEY=key-...
@@ -146,6 +161,16 @@ def _extract_learning_from_error(error, request):
 - ✅ Encourages retry with learned corrections
 
 ### 3. Smart Action Handler (`handlers/core.py`)
+
+#### API Call Logging
+The ActionExecutor logs all API calls to the failure_logger (when available) for debugging:
+```python
+def _log_api_call(self, ctx, action_name: str, request: Any, response: Any = None, error: str = None):
+    failure_logger = ctx.shared.get('failure_logger')
+    task_id = ctx.shared.get('task_id')
+    if failure_logger and task_id:
+        failure_logger.log_api_call(task_id, action_name, req_dict, resp_dict, error)
+```
 
 #### Fetch-Merge-Dispatch for Partial Updates
 The ERC3 API does NOT support partial updates - missing fields are cleared. We implement a fetch-merge-dispatch pattern:
@@ -305,6 +330,8 @@ The agent supports parallel task execution via `-threads N` flag, reducing total
 | **requests.Session** | Thread-local | Not thread-safe by design |
 | **stdout/stderr** | ThreadLocalStdout dispatcher | Routes output to per-task log files |
 
+**CRITICAL**: Always pass `task_id` explicitly to `stats.add_llm_usage(task_id=...)` and `stats.add_api_call(task_id=...)`. Do NOT rely on `_current_task_id` class variable — this causes race conditions in parallel mode where stats from one task get attributed to another.
+
 #### Output Handling
 
 ```python
@@ -329,6 +356,8 @@ The agent follows a strict "Mental Protocol" defined in `prompts.py`:
 - **Identity Check**: Always verifies current user role (`who_am_i`) to determine permissions.
 - **Permissions**: Explicitly instructs NOT to deny based solely on job title, but to check entity ownership (e.g. Project Lead).
 - **Data Source Separation**: Enforces using Database tools for entities (Projects, People) and Wiki for rules/policies.
+- **Self-Logging Exception**: No Lead/AM/Manager authorization required when logging time for yourself — only project membership needed.
+- **Format Validation Hints**: Warns about common data entry traps (e.g., O vs 0 in project codes like `CC-NORD-AI-12O`).
 
 ### 9. Mutation Tracking for Links (`agent.py` + `tools.py`)
 
@@ -458,11 +487,21 @@ class MyMiddleware:
     def pre_execute(self, ctx: ToolContext) -> None:
         # Intercept before action execution
         pass
-    
+
     def post_execute(self, ctx: ToolContext) -> None:
         # Process results after execution
         pass
 ```
+
+#### Lightweight Hints over Blocking (handlers/safety.py)
+
+**Philosophy**: Prefer non-blocking hints over fragile regex-based blocking. Complex regex patterns matching words like "other", "that", "this" cause false positives (e.g., blocking "all other values are correct").
+
+**Current Middlewares**:
+- `AmbiguityGuardMiddleware`: If agent responds `ok_not_found` without having searched the database (projects_search, employees_search, etc.), adds a hint suggesting to search first.
+- `ProjectSearchReminderMiddleware`: For project-related `ok_not_found` responses, reminds agent to search `projects_search` (not just wiki) for archived/historical projects.
+
+**Key Principle**: These middlewares track `action_types_executed` in `ctx.shared` and provide guidance only when the agent skips expected steps — no blocking, just hints.
 
 ### 3. Local RAG & Caching
 Instead of re-fetching wiki content or searching via the API repeatedly, the agent maintains a local vector/token index of the wiki. This allows for fast, free, and repeated searches within a task session without hitting API rate limits or costs.

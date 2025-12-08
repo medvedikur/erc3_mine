@@ -237,7 +237,7 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
             )
 
             if stats:
-                stats.add_llm_usage(cost_model_id, usage_obj)
+                stats.add_llm_usage(cost_model_id, usage_obj, task_id=task.task_id)
 
             # Log to ERC3 (SDK 1.2.0+ format with completion)
             api.log_llm(
@@ -493,7 +493,7 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                     continue
 
             if stats:
-                stats.add_api_call()
+                stats.add_api_call(task_id=task.task_id)
 
             # Execute with handler - pass shared state for middleware
             initial_shared = {
