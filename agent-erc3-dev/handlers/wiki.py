@@ -5,10 +5,7 @@ import threading
 from typing import Dict, List, Optional, Tuple, Any
 from erc3.erc3 import client
 from .base import ToolContext, Middleware
-from utils import CLI
-
-CLI_YELLOW = CLI.YELLOW
-CLI_CLR = CLI.RESET
+from utils import CLI_YELLOW, CLI_CLR
 
 # Try importing sentence_transformers for local embeddings
 try:

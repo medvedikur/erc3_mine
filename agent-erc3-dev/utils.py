@@ -2,6 +2,15 @@ import requests
 import random
 from typing import List
 
+# === Public API ===
+__all__ = [
+    'CLI',
+    'CLI_RED', 'CLI_GREEN', 'CLI_BLUE', 'CLI_YELLOW', 'CLI_CYAN', 'CLI_CLR',
+    'GENESIS_NODES',
+    'fetch_active_nodes',
+    'get_available_nodes',
+]
+
 # === Genesis Nodes for Gonka Network ===
 GENESIS_NODES = [
     "http://node1.gonka.ai:8000",

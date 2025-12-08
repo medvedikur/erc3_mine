@@ -13,14 +13,7 @@ from prompts import SGR_SYSTEM_PROMPT
 from tools import parse_action, Req_Respond, ParseError, SafeReq_UpdateEmployeeInfo
 from stats import SessionStats, FailureLogger
 from handlers import get_executor, WikiManager, SecurityManager
-from utils import CLI
-
-CLI_RED = CLI.RED
-CLI_GREEN = CLI.GREEN
-CLI_YELLOW = CLI.YELLOW
-CLI_BLUE = CLI.BLUE
-CLI_CYAN = CLI.CYAN
-CLI_CLR = CLI.RESET
+from utils import CLI_RED, CLI_GREEN, CLI_YELLOW, CLI_BLUE, CLI_CYAN, CLI_CLR
 
 def extract_json(content: str) -> dict:
     """Extract JSON from LLM response (handles markdown blocks, broken JSON, and multi-JSON concatenation)"""

@@ -3,13 +3,7 @@ from typing import List, Any, Dict, Tuple, Optional, Iterable
 from erc3 import ApiException
 from erc3.erc3 import client, dtos
 from .base import ToolContext, Middleware, ActionHandler
-from utils import CLI
-
-CLI_RED = CLI.RED
-CLI_GREEN = CLI.GREEN
-CLI_BLUE = CLI.BLUE
-CLI_YELLOW = CLI.YELLOW
-CLI_CLR = CLI.RESET
+from utils import CLI_RED, CLI_GREEN, CLI_BLUE, CLI_YELLOW, CLI_CLR
 
 class DefaultActionHandler:
     """Standard handler that executes the action against the API"""

@@ -79,7 +79,7 @@ VERBOSE_MODE = args.verbose
 PARALLEL_MODE = NUM_THREADS > 1
 BENCHMARK_TYPE = args.benchmark or config.BENCHMARK
 
-from utils import CLI
+from utils import CLI, CLI_CLR
 
 # Colors for thread identification (parallel mode)
 THREAD_COLORS = [
@@ -92,7 +92,6 @@ THREAD_COLORS = [
     "\x1B[92m",  # Light Green
     "\x1B[93m",  # Light Yellow
 ]
-CLI_CLR = CLI.RESET
 
 # Create parallel logs directory (only if parallel mode)
 PARALLEL_LOGS_DIR = None
