@@ -380,6 +380,14 @@ class DefaultActionHandler:
                                     break
                         
                         if current_entry:
+                            # Save project/employee for auto-linking (time_entry is not a valid link kind!)
+                            time_update_entities = []
+                            if hasattr(current_entry, 'project') and current_entry.project:
+                                time_update_entities.append({"id": current_entry.project, "kind": "project"})
+                            if hasattr(current_entry, 'employee') and current_entry.employee:
+                                time_update_entities.append({"id": current_entry.employee, "kind": "employee"})
+                            ctx.shared['time_update_entities'] = time_update_entities
+
                             # Build payload starting with current data
                             payload = {
                                 'id': entry_id,

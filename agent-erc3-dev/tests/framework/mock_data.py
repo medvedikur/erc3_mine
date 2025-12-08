@@ -355,6 +355,74 @@ BASE_PROJECTS = [
     ),
 ]
 
+BASE_TIME_ENTRIES = [
+    MockTimeEntry(
+        id="time_001",
+        employee="jonas_weiss",
+        project="proj_acme_line3_cv_poc",
+        customer="cust_acme_industrial_systems",
+        date="2025-07-15",
+        hours=6.0,
+        work_category="dev",
+        notes="Feature implementation",
+        billable=True,
+        status="submitted",
+        logged_by="jonas_weiss",
+    ),
+    MockTimeEntry(
+        id="time_002",
+        employee="jonas_weiss",
+        project="proj_acme_line3_cv_poc",
+        customer="cust_acme_industrial_systems",
+        date="2025-07-16",
+        hours=8.0,
+        work_category="dev",
+        notes="Bug fixes",
+        billable=True,
+        status="submitted",
+        logged_by="jonas_weiss",
+    ),
+    MockTimeEntry(
+        id="time_003",
+        employee="felix_baum",
+        project="proj_acme_line3_cv_poc",
+        customer="cust_acme_industrial_systems",
+        date="2025-07-15",
+        hours=4.0,
+        work_category="dev",
+        notes="Code review",
+        billable=True,
+        status="approved",
+        logged_by="felix_baum",
+    ),
+    MockTimeEntry(
+        id="time_004",
+        employee="helene_stutz",
+        project="proj_scandifoods_packaging_cv_poc",
+        customer="cust_scandi_foods_ab",
+        date="2025-07-15",
+        hours=5.0,
+        work_category="consulting",
+        notes="Requirements gathering",
+        billable=True,
+        status="draft",
+        logged_by="helene_stutz",
+    ),
+    MockTimeEntry(
+        id="time_005",
+        employee="jonas_weiss",
+        project="proj_acme_line3_cv_poc",
+        customer="cust_acme_industrial_systems",
+        date="2025-07-17",
+        hours=2.0,
+        work_category="meeting",
+        notes="Internal sync",
+        billable=False,
+        status="draft",
+        logged_by="jonas_weiss",
+    ),
+]
+
 BASE_CUSTOMERS = [
     MockCustomer(
         id="cust_acme_industrial_systems",
@@ -418,7 +486,7 @@ class MockDataBuilder:
         self.employees = deepcopy(BASE_EMPLOYEES)
         self.projects = deepcopy(BASE_PROJECTS)
         self.customers = deepcopy(BASE_CUSTOMERS)
-        self.time_entries: List[MockTimeEntry] = []
+        self.time_entries: List[MockTimeEntry] = deepcopy(BASE_TIME_ENTRIES)
         self.api_errors: Dict[str, Exception] = {}
         self.custom_responses: Dict[str, Any] = {}
 

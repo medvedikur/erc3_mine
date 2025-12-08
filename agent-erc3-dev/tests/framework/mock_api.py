@@ -108,6 +108,10 @@ class MockErc3Client:
             "Req_SearchWiki": "wiki_search",
             "Req_LogTimeEntry": "time_log",
             "Req_SearchTimeEntries": "time_search",
+            "Req_GetTimeEntry": "time_get",
+            "Req_UpdateTimeEntry": "time_update",
+            "Req_TimeSummaryByEmployee": "time_summary_employee",
+            "Req_TimeSummaryByProject": "time_summary_project",
         }
         return key_map.get(type_name)
 
@@ -136,6 +140,10 @@ class MockErc3Client:
             client.Req_SearchWiki: self._handle_search_wiki,
             client.Req_LogTimeEntry: self._handle_log_time,
             client.Req_SearchTimeEntries: self._handle_search_time,
+            client.Req_GetTimeEntry: self._handle_get_time,
+            client.Req_UpdateTimeEntry: self._handle_update_time,
+            client.Req_TimeSummaryByEmployee: self._handle_time_summary_by_employee,
+            client.Req_TimeSummaryByProject: self._handle_time_summary_by_project,
             client.Req_ProvideAgentResponse: self._handle_respond,
         }
 
@@ -527,13 +535,239 @@ class MockErc3Client:
 
     def _handle_search_time(self, req) -> dtos.Resp_SearchTimeEntries:
         """Handle /time/search request."""
-        # Return logged entries + mock data entries
-        entries = self.data.time_entries + [
-            type('MockEntry', (), e) for e in self._logged_time_entries
-        ]
+        employee = getattr(req, 'employee', None)
+        project = getattr(req, 'project', None)
+        date_from = getattr(req, 'date_from', None)
+        date_to = getattr(req, 'date_to', None)
+        offset = getattr(req, 'offset', 0)
+        limit = getattr(req, 'limit', 5)
+
+        # Combine mock data entries + logged entries
+        all_entries = list(self.data.time_entries)
+        for logged in self._logged_time_entries:
+            from .mock_data import MockTimeEntry
+            all_entries.append(MockTimeEntry(**logged))
+
+        # Filter
+        results = []
+        for entry in all_entries:
+            if employee and entry.employee != employee:
+                continue
+            if project and entry.project != project:
+                continue
+            if date_from and entry.date < date_from:
+                continue
+            if date_to and entry.date > date_to:
+                continue
+            results.append(entry)
+
+        paged = results[offset:offset + limit]
+        next_offset = offset + limit if offset + limit < len(results) else -1
+
+        # Calculate totals
+        total_hours = sum(e.hours for e in results)
+        total_billable = sum(e.hours for e in results if e.billable)
+        total_non_billable = sum(e.hours for e in results if not e.billable)
+
         return dtos.Resp_SearchTimeEntries(
-            entries=[],  # Simplified
-            next_offset=-1,
+            entries=[self._to_time_entry_with_id_dto(e) for e in paged],
+            next_offset=next_offset,
+            total_hours=total_hours,
+            total_billable=total_billable,
+            total_non_billable=total_non_billable,
+        )
+
+    def _handle_get_time(self, req) -> dtos.Resp_GetTimeEntry:
+        """Handle /time/get request."""
+        entry_id = getattr(req, 'id', None)
+
+        # Search in mock data
+        for entry in self.data.time_entries:
+            if entry.id == entry_id:
+                return dtos.Resp_GetTimeEntry(entry=self._to_time_entry_dto(entry), found=True)
+
+        # Search in logged entries
+        for logged in self._logged_time_entries:
+            if logged.get('id') == entry_id:
+                from .mock_data import MockTimeEntry
+                entry = MockTimeEntry(**logged)
+                return dtos.Resp_GetTimeEntry(entry=self._to_time_entry_dto(entry), found=True)
+
+        return dtos.Resp_GetTimeEntry(entry=None, found=False)
+
+    def _handle_update_time(self, req) -> dtos.Resp_TimeEntryUpdated:
+        """Handle /time/update request."""
+        entry_id = getattr(req, 'id', None)
+
+        # Find and update entry in logged entries
+        for logged in self._logged_time_entries:
+            if logged.get('id') == entry_id:
+                if hasattr(req, 'hours') and req.hours is not None:
+                    logged['hours'] = req.hours
+                if hasattr(req, 'notes') and req.notes is not None:
+                    logged['notes'] = req.notes
+                if hasattr(req, 'date') and req.date is not None:
+                    logged['date'] = req.date
+                if hasattr(req, 'billable') and req.billable is not None:
+                    logged['billable'] = req.billable
+                if hasattr(req, 'status') and req.status is not None:
+                    logged['status'] = req.status
+                return dtos.Resp_TimeEntryUpdated()
+
+        # Also check base time entries
+        for entry in self.data.time_entries:
+            if entry.id == entry_id:
+                if hasattr(req, 'hours') and req.hours is not None:
+                    entry.hours = req.hours
+                if hasattr(req, 'notes') and req.notes is not None:
+                    entry.notes = req.notes
+                return dtos.Resp_TimeEntryUpdated()
+
+        raise Exception(f"Time entry not found: {entry_id}")
+
+    def _handle_time_summary_by_employee(self, req) -> dtos.Resp_TimeSummaryByEmployee:
+        """Handle /time/summary/by-employee request."""
+        employees_filter = getattr(req, 'employees', [])
+        projects_filter = getattr(req, 'projects', [])
+        date_from = getattr(req, 'date_from', None)
+        date_to = getattr(req, 'date_to', None)
+        billable_filter = getattr(req, 'billable', '')
+
+        # Combine all entries
+        all_entries = list(self.data.time_entries)
+        for logged in self._logged_time_entries:
+            from .mock_data import MockTimeEntry
+            all_entries.append(MockTimeEntry(**logged))
+
+        # Aggregate by employee
+        summary = {}
+        for entry in all_entries:
+            # Apply filters
+            if employees_filter and entry.employee not in employees_filter:
+                continue
+            if projects_filter and entry.project not in projects_filter:
+                continue
+            if date_from and entry.date < date_from:
+                continue
+            if date_to and entry.date > date_to:
+                continue
+            if billable_filter == 'billable' and not entry.billable:
+                continue
+            if billable_filter == 'non_billable' and entry.billable:
+                continue
+
+            emp = entry.employee
+            if emp not in summary:
+                summary[emp] = {'employee': emp, 'total_hours': 0, 'billable_hours': 0, 'non_billable_hours': 0}
+            summary[emp]['total_hours'] += entry.hours
+            if entry.billable:
+                summary[emp]['billable_hours'] += entry.hours
+            else:
+                summary[emp]['non_billable_hours'] += entry.hours
+
+        return dtos.Resp_TimeSummaryByEmployee(
+            summaries=[
+                dtos.TimeSummaryByEmployee(
+                    employee=s['employee'],
+                    total_hours=s['total_hours'],
+                    billable_hours=s['billable_hours'],
+                    non_billable_hours=s['non_billable_hours'],
+                )
+                for s in summary.values()
+            ]
+        )
+
+    def _handle_time_summary_by_project(self, req) -> dtos.Resp_TimeSummaryByProject:
+        """Handle /time/summary/by-project request."""
+        employees_filter = getattr(req, 'employees', [])
+        projects_filter = getattr(req, 'projects', [])
+        date_from = getattr(req, 'date_from', None)
+        date_to = getattr(req, 'date_to', None)
+        billable_filter = getattr(req, 'billable', '')
+
+        # Combine all entries
+        all_entries = list(self.data.time_entries)
+        for logged in self._logged_time_entries:
+            from .mock_data import MockTimeEntry
+            all_entries.append(MockTimeEntry(**logged))
+
+        # Aggregate by project
+        summary = {}
+        for entry in all_entries:
+            if not entry.project:
+                continue
+            # Apply filters
+            if employees_filter and entry.employee not in employees_filter:
+                continue
+            if projects_filter and entry.project not in projects_filter:
+                continue
+            if date_from and entry.date < date_from:
+                continue
+            if date_to and entry.date > date_to:
+                continue
+            if billable_filter == 'billable' and not entry.billable:
+                continue
+            if billable_filter == 'non_billable' and entry.billable:
+                continue
+
+            proj = entry.project
+            if proj not in summary:
+                summary[proj] = {
+                    'project': proj,
+                    'customer': entry.customer or '',
+                    'total_hours': 0,
+                    'billable_hours': 0,
+                    'non_billable_hours': 0,
+                    'employees': set()
+                }
+            summary[proj]['total_hours'] += entry.hours
+            summary[proj]['employees'].add(entry.employee)
+            if entry.billable:
+                summary[proj]['billable_hours'] += entry.hours
+            else:
+                summary[proj]['non_billable_hours'] += entry.hours
+
+        return dtos.Resp_TimeSummaryByProject(
+            summaries=[
+                dtos.TimeSummaryByProject(
+                    project=s['project'],
+                    customer=s['customer'],
+                    total_hours=s['total_hours'],
+                    billable_hours=s['billable_hours'],
+                    non_billable_hours=s['non_billable_hours'],
+                    distinct_employees=len(s['employees']),
+                )
+                for s in summary.values()
+            ]
+        )
+
+    def _to_time_entry_dto(self, entry) -> dtos.TimeEntry:
+        """Convert MockTimeEntry to DTO (without ID)."""
+        return dtos.TimeEntry(
+            employee=entry.employee,
+            project=entry.project,
+            customer=entry.customer,
+            date=entry.date,
+            hours=entry.hours,
+            work_category=entry.work_category,
+            notes=entry.notes or "",
+            billable=entry.billable,
+            status=entry.status or "draft",
+        )
+
+    def _to_time_entry_with_id_dto(self, entry) -> dtos.TimeEntryWithID:
+        """Convert MockTimeEntry to DTO with ID (for search results)."""
+        return dtos.TimeEntryWithID(
+            id=entry.id,
+            employee=entry.employee,
+            project=entry.project,
+            customer=entry.customer,
+            date=entry.date,
+            hours=entry.hours,
+            work_category=entry.work_category,
+            notes=entry.notes or "",
+            billable=entry.billable,
+            status=entry.status or "draft",
         )
 
     # =========================================================================

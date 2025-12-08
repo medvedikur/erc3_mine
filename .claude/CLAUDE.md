@@ -34,14 +34,29 @@
 - **Configuration**: Central config in `config.py` (benchmark type, workspace, models, threads, etc.)
 
 ## Middleware Pattern (handlers/safety.py)
-- **Two blocking modes**:
-  1. **Hard block**: For logically impossible actions (e.g., salary raise without amount) — stop execution, return error
-  2. **Soft block**: For risky but possible actions (high error probability) — return warning, ask agent to reconsider or provide additional data. If agent confirms same action again, allow through.
-- **Lightweight hints over blocking**: Prefer non-blocking hints that guide the agent (e.g., "you didn't search DB before ok_not_found") rather than fragile regex-based blocking
-- **State tracking**: Use `ctx.shared` dict to track warnings shown, mutations performed, action_types_executed, etc. across middleware calls
+- **Three blocking modes**:
+  1. **Hard block**: ONLY for logically impossible actions verified via API (e.g., employee not in project team). Stop execution, return error.
+  2. **Soft block**: For risky actions with `warning_key` check — block first time, allow through on repeat. Use sparingly.
+  3. **Soft hint** (PREFERRED): Non-blocking hints that guide the agent. Response goes through, hint is just added to results.
+
+- **⚠️ DANGER: Regex-based blocking**:
+  - NEVER use hard block based on regex word matching — too many false positives
+  - Example: `\bproject\b` matches "project" in ANY context, not just project modifications
+  - Example: `\bpause\b` matches "let me pause to think" not just "pause the project"
+  - If using regex detection, ALWAYS use soft hint (no blocking) or soft block with warning_key
+
+- **Safe blocking criteria**:
+  - ✅ API-verified state (employee membership, project existence)
+  - ✅ Concrete format validation (CC-XXX-XXX-XXX pattern in specific field)
+  - ❌ Word presence in task text (can match unrelated contexts)
+  - ❌ Outcome + keyword combination (too many edge cases)
+
+- **State tracking**: Use `ctx.shared` dict to track warnings shown, mutations performed, action_types_executed, etc.
 - **Key middlewares**:
-  - `AmbiguityGuardMiddleware`: Adds hint if agent responds `ok_not_found` without searching database
-  - `ProjectSearchReminderMiddleware`: Reminds to search projects_search for project-related queries
+  - `AmbiguityGuardMiddleware`: Soft hint if `ok_not_found` without DB search
+  - `ProjectSearchReminderMiddleware`: Soft block for project queries without projects_search
+  - `BasicLookupDenialGuard`: Soft hint for denied_security on org-chart lookups
+  - `ProjectModificationClarificationGuard`: Soft hint for clarification without project link
 
 ## API Response Enrichment
 - **Hints in responses**: API handlers can inject helpful hints into responses (not just raw data), e.g.:

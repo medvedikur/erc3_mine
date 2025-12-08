@@ -113,14 +113,34 @@ class SecurityMiddleware(Middleware):
 
     def process(self, ctx: ToolContext) -> None:
         ctx.shared['security_manager'] = self.manager
-        
+
         # --- CRITICAL: Inject Identity Verification Message ---
         # If this is a who_am_i call, add the result to ctx.results so LLM sees it
         if isinstance(ctx.model, client.Req_WhoAmI):
             # This will be populated AFTER the API call in handle()
             # We need to inject it post-execution, so we mark it and handle later
             pass
-        
+
+        # --- PUBLIC USER GUARD ---
+        # Block sensitive operations for public/guest users
+        if self.manager.is_public:
+            blocked = self._is_blocked_for_public(ctx.model)
+            if blocked:
+                ctx.stop_execution = True
+                action_name = ctx.model.__class__.__name__
+                msg = (
+                    f"Security Violation: Public/guest users cannot access internal data. "
+                    f"Action '{action_name}' is restricted to authenticated employees."
+                )
+                print(f"🛑 PUBLIC USER BLOCKED: {action_name}")
+                ctx.results.append(
+                    f"Action ({action_name}): BLOCKED - SECURITY\n"
+                    f"Error: {msg}\n"
+                    f"💡 HINT: Use outcome='denied_security' in your response. "
+                    f"Do NOT use 'ok_not_found' - the data exists but is restricted."
+                )
+                return
+
         # --- Permission Enforcement ---
         current_user = self.manager.current_user
         if not current_user:
@@ -131,6 +151,36 @@ class SecurityMiddleware(Middleware):
             # Special case: If status is 'archived', allow any team member? NO.
             # Only Leads can archive.
             self._enforce_project_ownership(ctx, ctx.model.id, current_user)
+
+    def _is_blocked_for_public(self, model: Any) -> bool:
+        """
+        Check if an operation should be blocked for public/guest users.
+
+        Public users can ONLY access:
+        - who_am_i (identity check)
+        - wiki operations (public knowledge base)
+        - respond (to send answers)
+
+        Everything else is internal data and should be blocked.
+        """
+        # Allowed operations for public users
+        allowed_types = (
+            client.Req_WhoAmI,
+            client.Req_ListWiki,
+            client.Req_LoadWiki,
+            client.Req_SearchWiki,
+            client.Req_ProvideAgentResponse,
+        )
+
+        if isinstance(model, allowed_types):
+            return False
+
+        # Everything else is blocked for public users:
+        # - Customer operations (Req_SearchCustomers, Req_GetCustomer, Req_ListCustomers)
+        # - Employee operations (Req_SearchEmployees, Req_GetEmployee, Req_ListEmployees, Req_UpdateEmployeeInfo)
+        # - Project operations (Req_SearchProjects, Req_GetProject, Req_ListProjects, Req_UpdateProjectStatus, Req_UpdateProjectTeam)
+        # - Time operations (Req_SearchTimeEntries, Req_GetTimeEntry, Req_LogTimeEntry, Req_UpdateTimeEntry, Req_TimeSummaryByEmployee, Req_TimeSummaryByProject)
+        return True
 
     def _enforce_project_ownership(self, ctx: ToolContext, project_id: str, user_id: str):
         try:

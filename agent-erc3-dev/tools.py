@@ -641,16 +641,75 @@ def _parse_time_search(ctx: ParseContext) -> Any:
 
 @ToolParser.register("time_update", "timeupdate", "updatetime")
 def _parse_time_update(ctx: ParseContext) -> Any:
-    """Update existing time entry."""
-    return client.Req_UpdateTimeEntry(
+    """Update existing time entry.
+
+    Uses model_construct() to bypass validation since all fields are required
+    in SDK but agent only provides fields to update. core.py does fetch-merge.
+    """
+    hours_raw = ctx.args.get("hours")
+    hours = float(hours_raw) if hours_raw is not None else None
+
+    return client.Req_UpdateTimeEntry.model_construct(
         id=ctx.args.get("id"),
         date=ctx.args.get("date"),
-        hours=float(ctx.args.get("hours", 0)),
+        hours=hours,
         work_category=ctx.args.get("work_category"),
         notes=ctx.args.get("notes"),
         billable=ctx.args.get("billable"),
         status=ctx.args.get("status"),
         changed_by=ctx.args.get("changed_by")
+    )
+
+
+@ToolParser.register("time_summary_employee", "timesummaryemployee", "timesummarybyemployee", "employeetimesummary")
+def _parse_time_summary_by_employee(ctx: ParseContext) -> Any:
+    """Get time summary aggregated by employee."""
+    # Handle single values -> lists
+    employees = ctx.args.get("employees") or ctx.args.get("employee")
+    if employees and isinstance(employees, str):
+        employees = [employees]
+
+    projects = ctx.args.get("projects") or ctx.args.get("project")
+    if projects and isinstance(projects, str):
+        projects = [projects]
+
+    customers = ctx.args.get("customers") or ctx.args.get("customer")
+    if customers and isinstance(customers, str):
+        customers = [customers]
+
+    return client.Req_TimeSummaryByEmployee(
+        date_from=ctx.args.get("date_from"),
+        date_to=ctx.args.get("date_to"),
+        employees=employees or [],
+        projects=projects or [],
+        customers=customers or [],
+        billable=ctx.args.get("billable", "")
+    )
+
+
+@ToolParser.register("time_summary_project", "timesummaryproject", "timesummarybyproject", "projecttimesummary")
+def _parse_time_summary_by_project(ctx: ParseContext) -> Any:
+    """Get time summary aggregated by project."""
+    # Handle single values -> lists
+    employees = ctx.args.get("employees") or ctx.args.get("employee")
+    if employees and isinstance(employees, str):
+        employees = [employees]
+
+    projects = ctx.args.get("projects") or ctx.args.get("project")
+    if projects and isinstance(projects, str):
+        projects = [projects]
+
+    customers = ctx.args.get("customers") or ctx.args.get("customer")
+    if customers and isinstance(customers, str):
+        customers = [customers]
+
+    return client.Req_TimeSummaryByProject(
+        date_from=ctx.args.get("date_from"),
+        date_to=ctx.args.get("date_to"),
+        employees=employees or [],
+        projects=projects or [],
+        customers=customers or [],
+        billable=ctx.args.get("billable", "")
     )
 
 
@@ -746,6 +805,15 @@ def _parse_respond(ctx: ParseContext) -> Any:
             if ctx.current_user:
                 if not any(l.get("id") == ctx.current_user and l.get("kind") == "employee" for l in links):
                     links.append({"id": ctx.current_user, "kind": "employee"})
+
+        # Add search entities to links (for read-only operations)
+        # Only add if there were NO mutations (otherwise mutation_entities already has all needed)
+        # This captures entities from search filters (e.g., employee in time_search)
+        if not had_mutations:
+            search_entities = ctx.context.shared.get('search_entities', [])
+            for entity in search_entities:
+                if not any(l.get("id") == entity.get("id") and l.get("kind") == entity.get("kind") for l in links):
+                    links.append(entity)
 
     # Deduplicate links
     seen = set()

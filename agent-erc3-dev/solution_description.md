@@ -493,15 +493,37 @@ class MyMiddleware:
         pass
 ```
 
-#### Lightweight Hints over Blocking (handlers/safety.py)
+#### Middleware Blocking Philosophy (handlers/safety.py)
 
-**Philosophy**: Prefer non-blocking hints over fragile regex-based blocking. Complex regex patterns matching words like "other", "that", "this" cause false positives (e.g., blocking "all other values are correct").
+**Three Blocking Modes**:
+1. **Hard block**: ONLY for logically impossible actions verified via API (e.g., employee not in project team). Stops execution immediately.
+2. **Soft block**: For risky actions — blocks first time with warning, allows through on repeat (via `warning_key` check). Use sparingly.
+3. **Soft hint** (PREFERRED): Non-blocking guidance. Response goes through, hint is just appended to results.
+
+**⚠️ DANGER: Regex-Based Blocking**
+
+NEVER use hard block based on regex word matching in task text — too many false positives:
+- `\bproject\b` matches "project" in ANY context (not just project modifications)
+- `\bpause\b` matches "let me pause to think" (not just "pause the project")
+- `\bcustomer\b` matches "customer service philosophy" (not just customer data queries)
+
+**Safe Blocking Criteria**:
+- ✅ API-verified state (employee membership via `get_project`, project existence)
+- ✅ Concrete format validation (CC-XXX-XXX-XXX pattern in specific `notes` field)
+- ❌ Word presence in task text (matches unrelated contexts)
+- ❌ Outcome + keyword combination (too many edge cases)
 
 **Current Middlewares**:
-- `AmbiguityGuardMiddleware`: If agent responds `ok_not_found` without having searched the database (projects_search, employees_search, etc.), adds a hint suggesting to search first.
-- `ProjectSearchReminderMiddleware`: For project-related `ok_not_found` responses, reminds agent to search `projects_search` (not just wiki) for archived/historical projects.
+- `AmbiguityGuardMiddleware`: Soft hint if agent responds `ok_not_found` without DB search
+- `ProjectSearchReminderMiddleware`: Soft block for project queries without `projects_search`
+- `TimeLoggingClarificationGuard`: Soft block for time log clarifications without project link
+- `ProjectModificationClarificationGuard`: Soft hint for project modification clarifications without project link
+- `BasicLookupDenialGuard`: Soft hint for `denied_security` on basic org-chart lookups
+- `OutcomeValidationMiddleware`: Soft block for suspicious denied outcomes (no permission check, wrong outcome type)
+- `PublicUserSemanticGuard`: Soft block for guests using `ok_not_found` instead of `denied_security`
+- `ProjectMembershipMiddleware`: Hard block (API-verified) for time logging to wrong project
 
-**Key Principle**: These middlewares track `action_types_executed` in `ctx.shared` and provide guidance only when the agent skips expected steps — no blocking, just hints.
+**Key Principle**: Track `action_types_executed` in `ctx.shared` to verify what agent actually did, rather than guessing from task text.
 
 ### 3. Local RAG & Caching
 Instead of re-fetching wiki content or searching via the API repeatedly, the agent maintains a local vector/token index of the wiki. This allows for fast, free, and repeated searches within a task session without hitting API rate limits or costs.

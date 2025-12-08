@@ -197,6 +197,7 @@ def run_agent(model_name: str, api: ERC3, task: TaskInfo,
     who_am_i_called = False  # Track if identity was verified - CRITICAL for security
     had_mutations = False  # Track if any mutation operation was performed (persists across turns)
     mutation_entities = []  # Track entity IDs affected by mutations (for auto-linking)
+    search_entities = []  # Track entity IDs from search filters (for auto-linking in read-only operations)
     pending_mutation_tools = set()  # Track mutation tools that were attempted but not executed
     action_history = []  # Track action patterns for loop detection (thread-local)
     missing_tools = []  # Track non-existent tools (for OutcomeValidationMiddleware)
@@ -419,11 +420,12 @@ STOP repeating the same actions. Analyze why you're not making progress and call
             # FIX: Pass a DummyContext with security_manager and mutation tracking
             # This allows parsing logic to inject current_user for mutation operations
             class DummyContext:
-                def __init__(self, sm, mutations, entities, api_ref, missing, executed, outcome_warned, task_obj):
+                def __init__(self, sm, mutations, mut_entities, search_ents, api_ref, missing, executed, outcome_warned, task_obj):
                     self.shared = {
                         'security_manager': sm,
                         'had_mutations': mutations,
-                        'mutation_entities': entities,
+                        'mutation_entities': mut_entities,
+                        'search_entities': search_ents,  # For auto-linking in read-only operations
                         'missing_tools': missing,  # For OutcomeValidationMiddleware
                         'action_types_executed': executed,  # For OutcomeValidationMiddleware
                         'outcome_validation_warned': outcome_warned,  # Persists across turns
@@ -431,7 +433,7 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                     }
                     self.api = api_ref
 
-            dummy_ctx = DummyContext(security_manager, had_mutations, mutation_entities, erc_client,
+            dummy_ctx = DummyContext(security_manager, had_mutations, mutation_entities, search_entities, erc_client,
                                      missing_tools, action_types_executed, outcome_validation_warned, task)
             
             # Wrap parse_action to catch ValidationError (e.g., invalid role like "Tester")
@@ -500,6 +502,7 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                 'security_manager': security_manager,
                 'had_mutations': had_mutations,
                 'mutation_entities': mutation_entities,
+                'search_entities': search_entities,  # For auto-linking in read-only operations
                 'missing_tools': missing_tools,
                 'action_types_executed': action_types_executed,
                 'outcome_validation_warned': outcome_validation_warned,
@@ -573,14 +576,46 @@ STOP repeating the same actions. Analyze why you're not making progress and call
                             emp_id = member.get('employee') if isinstance(member, dict) else getattr(member, 'employee', None)
                             if emp_id:
                                 mutation_entities.append({"id": emp_id, "kind": "employee"})
-                # time_update → time entry (but we link the project/employee from result if available)
+                # time_update → we DON'T add time_entry ID to links (invalid kind!)
+                # The project and employee are captured from ctx.shared['time_update_entities']
+                # which is set by core.py during the fetch-merge process
                 elif isinstance(action_model, client.Req_UpdateTimeEntry):
-                    if action_model.id:
-                        mutation_entities.append({"id": action_model.id, "kind": "time_entry"})
+                    # Get entities from core.py's fetch-merge (project, employee)
+                    time_update_entities = ctx.shared.get('time_update_entities', [])
+                    for entity in time_update_entities:
+                        mutation_entities.append(entity)
 
                 # Update dummy_ctx with new entities
                 dummy_ctx.shared['mutation_entities'] = mutation_entities
-            
+
+            # Track search entities for read-only operations (separate from mutations)
+            # These entities are referenced in search filters and should appear in response links
+            SEARCH_TYPES = (
+                client.Req_SearchTimeEntries,
+                client.Req_TimeSummaryByEmployee,
+                client.Req_TimeSummaryByProject,
+            )
+            if isinstance(action_model, SEARCH_TYPES) and not any("FAILED" in r or "ERROR" in r for r in ctx.results):
+                # time_search → employee being queried
+                if isinstance(action_model, client.Req_SearchTimeEntries):
+                    if action_model.employee:
+                        search_entities.append({"id": action_model.employee, "kind": "employee"})
+                    if action_model.project:
+                        search_entities.append({"id": action_model.project, "kind": "project"})
+                # time_summary_employee → employees being queried
+                elif isinstance(action_model, client.Req_TimeSummaryByEmployee):
+                    employees = getattr(action_model, 'employees', None) or []
+                    for emp in employees:
+                        search_entities.append({"id": emp, "kind": "employee"})
+                # time_summary_project → projects being queried
+                elif isinstance(action_model, client.Req_TimeSummaryByProject):
+                    projects = getattr(action_model, 'projects', None) or []
+                    for proj in projects:
+                        search_entities.append({"id": proj, "kind": "project"})
+
+                # Update dummy_ctx with search entities
+                dummy_ctx.shared['search_entities'] = search_entities
+
             if ctx.stop_execution:
                 stop_execution = True
 

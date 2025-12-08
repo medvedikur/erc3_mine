@@ -11,6 +11,162 @@ CLI_BLUE = CLI.BLUE
 CLI_CLR = CLI.RESET
 
 
+class BasicLookupDenialGuard(Middleware):
+    """
+    Middleware that catches when authenticated users deny basic org-chart lookups.
+
+    Problem: Agent finds customer data (account manager), but decides to deny based on
+    overly strict interpretation of rulebook ("I'm not involved with this customer").
+
+    Reality: Basic organizational lookups like "who is the account manager" are NOT sensitive.
+    They're org-chart info available to ALL employees. Only DETAILED customer data
+    (contracts, financials, internal notes) requires project involvement.
+
+    This catches: authenticated user + denied_security + basic lookup query
+    """
+
+    # Patterns for basic lookup queries (NOT modification, NOT sensitive details)
+    BASIC_LOOKUP_PATTERNS = [
+        r'\bwho\s+is\s+(the\s+)?account\s+manager\b',
+        r'\baccount\s+manager\s+for\b',
+        r'\bAM\s+for\b',
+        r'\bwho\s+(is\s+)?lead(s|ing)?\b',
+        r'\bproject\s+lead\s+for\b',
+        r'\bwho\s+manages?\b',
+    ]
+
+    # Patterns that indicate it's NOT a basic lookup (modification, detailed access)
+    NON_LOOKUP_PATTERNS = [
+        r'\bchange\b', r'\bupdate\b', r'\bmodify\b', r'\bedit\b',
+        r'\bdelete\b', r'\bremove\b', r'\bpause\b', r'\barchive\b',
+        r'\bcontract\b', r'\bfinancial\b', r'\bbudget\b', r'\brevenue\b',
+        r'\binternal\s+notes?\b', r'\bconfidential\b',
+    ]
+
+    def __init__(self):
+        self._lookup_re = re.compile('|'.join(self.BASIC_LOOKUP_PATTERNS), re.IGNORECASE)
+        self._non_lookup_re = re.compile('|'.join(self.NON_LOOKUP_PATTERNS), re.IGNORECASE)
+
+    def process(self, ctx: ToolContext) -> None:
+        if not isinstance(ctx.model, client.Req_ProvideAgentResponse):
+            return
+
+        outcome = ctx.model.outcome or ""
+        if outcome != "denied_security":
+            return
+
+        # Skip for public users - they SHOULD deny
+        security_manager = ctx.shared.get('security_manager')
+        if security_manager and getattr(security_manager, 'is_public', False):
+            return
+
+        task = ctx.shared.get('task')
+        task_text = getattr(task, 'task_text', '') if task else ''
+        if not task_text:
+            return
+
+        # Check if it's a basic lookup query
+        if not self._lookup_re.search(task_text):
+            return
+
+        # Check if it's actually a modification/sensitive request
+        if self._non_lookup_re.search(task_text):
+            return  # Not a simple lookup, denial might be valid
+
+        # Soft hint only - don't block, just add reminder to results
+        print(f"  {CLI_YELLOW}💡 Basic Lookup Hint: denied_security for possible org-chart lookup{CLI_CLR}")
+        ctx.results.append(
+            f"💡 HINT: You responded 'denied_security' but this looks like a basic org-chart lookup.\n"
+            f"Basic info like 'who is the Account Manager' is typically available to all employees.\n"
+            f"If you found the data, consider responding with `ok_answer` instead."
+        )
+
+
+class PublicUserSemanticGuard(Middleware):
+    """
+    Middleware that ensures public/guest users use 'denied_security' for internal data queries.
+
+    Problem: Agent sees it's a guest, doesn't try customers_search (because it knows guests can't),
+    but responds with 'ok_not_found' instead of 'denied_security'.
+
+    The distinction is critical:
+    - ok_not_found = "The data doesn't exist"
+    - denied_security = "The data exists but you can't access it"
+
+    For guests asking about internal entities (customers, employees, projects, time entries),
+    the correct response is ALWAYS denied_security, not ok_not_found.
+    """
+
+    # Patterns that indicate queries about internal/sensitive entities
+    SENSITIVE_ENTITY_PATTERNS = [
+        # Customer-related
+        r'\bcustomer\b', r'\baccount\s+manager\b', r'\bAM\s+for\b', r'\bclient\b',
+        r'\bACME\b', r'\bScandi\b', r'\bNordic\b',  # Common customer names
+        # Employee-related (excluding generic greetings)
+        r'\bsalary\b', r'\bemployee\s+id\b', r'\bwho\s+is\b.*\b(lead|manager|engineer)\b',
+        r'\breports?\s+to\b', r'\bteam\s+member\b',
+        # Project-related
+        r'\bproject\s+(id|status|team)\b', r'\bwho\s+leads?\b',
+        # Time-related
+        r'\btime\s+entries?\b', r'\bhours?\s+logged\b', r'\btime\s+summary\b',
+    ]
+
+    def __init__(self):
+        self._sensitive_re = re.compile(
+            '|'.join(self.SENSITIVE_ENTITY_PATTERNS),
+            re.IGNORECASE
+        )
+
+    def process(self, ctx: ToolContext) -> None:
+        # Only intercept respond calls
+        if not isinstance(ctx.model, client.Req_ProvideAgentResponse):
+            return
+
+        # Only for public users
+        security_manager = ctx.shared.get('security_manager')
+        if not security_manager or not getattr(security_manager, 'is_public', False):
+            return
+
+        outcome = ctx.model.outcome or ""
+
+        # Only check ok_not_found - other outcomes are fine
+        if outcome != "ok_not_found":
+            return
+
+        # Get task text
+        task = ctx.shared.get('task')
+        task_text = getattr(task, 'task_text', '') if task else ''
+
+        if not task_text:
+            return
+
+        # Check if task is about sensitive/internal entities
+        if not self._sensitive_re.search(task_text):
+            return  # Not a sensitive query, ok_not_found might be valid
+
+        # Check if already warned
+        warning_key = 'public_user_semantic_warned'
+        if ctx.shared.get(warning_key):
+            print(f"  {CLI_GREEN}✓ Public User Guard: Agent confirmed ok_not_found after warning{CLI_CLR}")
+            return
+
+        # Block and require denied_security
+        print(f"  {CLI_YELLOW}🛑 Public User Guard: 'ok_not_found' for internal data query by guest{CLI_CLR}")
+        ctx.shared[warning_key] = True
+        ctx.stop_execution = True
+        ctx.results.append(
+            f"🛑 PUBLIC USER SEMANTIC ERROR: You are a GUEST and responded 'ok_not_found' "
+            f"for a query about internal company data (customers, employees, projects, etc.).\n\n"
+            f"**THIS IS INCORRECT!** The correct outcome is `denied_security`.\n\n"
+            f"The distinction:\n"
+            f"- `ok_not_found` = \"The data doesn't exist\" (WRONG for internal data)\n"
+            f"- `denied_security` = \"The data exists but you cannot access it\" (CORRECT for guests)\n\n"
+            f"As a guest, you have NO ACCESS to internal company data. "
+            f"The data exists - you just can't see it. That's a security denial, not 'not found'.\n\n"
+            f"**Please respond with `denied_security` and explain that guests cannot access internal data.**"
+        )
+
+
 class AmbiguityGuardMiddleware(Middleware):
     """
     Lightweight middleware for ok_not_found responses only.
@@ -51,6 +207,99 @@ class AmbiguityGuardMiddleware(Middleware):
             ctx.results.append(
                 f"\n💡 HINT: You responded 'ok_not_found' but didn't search the database. "
                 f"Consider using projects_search/employees_search before concluding something doesn't exist."
+            )
+
+
+class ProjectModificationClarificationGuard(Middleware):
+    """
+    Middleware that ensures project modification clarifications include project links.
+
+    Problem: When asking for JIRA tickets or other clarifications for project changes,
+    the agent might respond before searching for the project. But the benchmark
+    expects the project link even in clarification responses.
+
+    Solution: If task mentions modifying a specific project and agent responds with
+    clarification without a project link, block and ask agent to search for project first.
+    """
+
+    # Patterns that indicate project modification intent
+    PROJECT_MOD_PATTERNS = [
+        r'\bpause\b.{0,50}\bproject\b',      # "pause the Line 3 project"
+        r'\barchive\b.{0,50}\bproject\b',    # "archive X project"
+        r'\bchange\s+project\s+status\b',
+        r'\bupdate\s+project\s+status\b',
+        r'\bset\s+project\s+to\b',
+        r'\bswitch\s+project\b',
+        r'\bproject\b.{0,30}\bto\s+(paused|archived|active)\b',  # "project X to paused"
+    ]
+
+    # Patterns that extract project name candidates from task
+    PROJECT_NAME_PATTERNS = [
+        r'pause\s+(?:the\s+)?["\']?([A-Za-z0-9\s]+?)["\']?\s+project',
+        r'project\s+["\']?([A-Za-z0-9\s]+?)["\']?\s+to\s+',
+    ]
+
+    def __init__(self):
+        self._mod_re = re.compile('|'.join(self.PROJECT_MOD_PATTERNS), re.IGNORECASE)
+
+    def _has_project_reference(self, message: str, links: list) -> bool:
+        """Check if response contains project reference."""
+        if links:
+            for link in links:
+                if isinstance(link, dict):
+                    link_id = link.get('id', '')
+                    link_kind = link.get('kind', '')
+                    if link_id.startswith('proj_') or link_kind == 'project':
+                        return True
+                elif isinstance(link, str) and link.startswith('proj_'):
+                    return True
+
+        if message and re.search(r'proj_[a-z0-9_]+', message, re.IGNORECASE):
+            return True
+
+        return False
+
+    def process(self, ctx: ToolContext) -> None:
+        if not isinstance(ctx.model, client.Req_ProvideAgentResponse):
+            return
+
+        outcome = ctx.model.outcome or ""
+        if outcome != "none_clarification_needed":
+            return
+
+        task = ctx.shared.get('task')
+        task_text = getattr(task, 'task_text', '') if task else ''
+        if not task_text:
+            return
+
+        # Check if this is a project modification task
+        if not self._mod_re.search(task_text):
+            return
+
+        message = ctx.model.message or ""
+        links = ctx.model.links or []
+
+        # Check if project is referenced
+        if self._has_project_reference(message, links):
+            return  # All good
+
+        # Check if projects_search was called
+        action_types_executed = ctx.shared.get('action_types_executed', set())
+        has_searched = 'projects_search' in action_types_executed
+
+        # Soft hint only - don't block, just add reminder to results
+        print(f"  {CLI_YELLOW}💡 Project Mod Hint: Clarification without project link{CLI_CLR}")
+
+        if not has_searched:
+            ctx.results.append(
+                f"💡 HINT: You're asking for clarification about a project modification, "
+                f"but haven't searched for the project yet. Consider using `projects_search` "
+                f"to identify and include the project link in your response."
+            )
+        else:
+            ctx.results.append(
+                f"💡 HINT: You searched for projects but didn't include the project link "
+                f"in your clarification. Consider adding the project to your `links` array."
             )
 
 
