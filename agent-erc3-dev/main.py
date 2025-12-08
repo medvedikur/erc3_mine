@@ -47,6 +47,8 @@ parser.add_argument('-verbose', '--verbose', action='store_true',
                     help='Show all output in console (for parallel: interleaved but real-time)')
 parser.add_argument('-tests_on', '--tests_on', action='store_true',
                     help='Run local tests instead of benchmark tasks')
+parser.add_argument('-benchmark', '--benchmark', type=str, default=None,
+                    help='Benchmark type: erc3-test, erc3-dev, erc3 (overrides config.py)')
 args = parser.parse_args()
 
 # Load environment variables
@@ -68,12 +70,14 @@ from pricing import calculator
 from agent import run_agent
 from stats import SessionStats, failure_logger
 from handlers.wiki import WikiManager, get_embedding_model
+import config
 
-# Configuration
+# Configuration (CLI args override config.py)
 USE_OPENROUTER = args.openrouter
 NUM_THREADS = args.threads
 VERBOSE_MODE = args.verbose
 PARALLEL_MODE = NUM_THREADS > 1
+BENCHMARK_TYPE = args.benchmark or config.BENCHMARK
 
 from utils import CLI
 
@@ -570,17 +574,21 @@ def main():
 ╚════════════════════════════════════════════════════════════════════╝
 """)
 
-    base_url = "https://erc.timetoact-group.at"
+    base_url = config.API_BASE_URL
     core = ERC3(key=ERC3_API_KEY, base_url=base_url)
 
     # Start session
     architecture_desc = f"SGR Agent {'Parallel ' if PARALLEL_MODE else ''}({backend_name} {MODEL_ID})"
+    session_name = f"{config.SESSION_NAME}{f' (Parallel x{NUM_THREADS})' if PARALLEL_MODE else ''}"
+
+    print(f"📋 Benchmark: {BENCHMARK_TYPE}")
+
     res = core.start_session(
-        benchmark="erc3-test",
-        workspace="test-workspace-1",
-        name=f"@mishka ERC3-Test Agent{f' (Parallel x{NUM_THREADS})' if PARALLEL_MODE else ''}",
+        benchmark=BENCHMARK_TYPE,
+        workspace=config.WORKSPACE,
+        name=session_name,
         architecture=architecture_desc,
-        flags=["compete_accuracy", "compete_budget", "compete_speed", "compete_local"],
+        flags=config.COMPETITION_FLAGS,
     )
 
     status = core.session_status(res.session_id)

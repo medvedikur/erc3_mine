@@ -13,92 +13,17 @@ CLI_CLR = CLI.RESET
 
 class AmbiguityGuardMiddleware(Middleware):
     """
-    Middleware that detects potentially ambiguous queries and asks the agent
-    to reconsider when it responds with 'ok_not_found'.
+    Lightweight middleware for ok_not_found responses only.
 
-    The problem: When a user asks "What's that cool project?", and the agent
-    finds no projects, it might incorrectly respond with 'ok_not_found'.
-    But the query itself is ambiguous ("that", "cool" are context-dependent),
-    so the correct response should be 'none_clarification_needed'.
+    Problem: Agent searches wiki, doesn't find something, responds ok_not_found.
+    But maybe they should have searched the database (projects_search, employees_search).
 
-    This middleware:
-    1. Detects ambiguity signals in task_text (referential words, subjective terms)
-    2. When agent responds with 'ok_not_found', injects a warning asking to reconsider
-    3. If agent confirms (responds again with same outcome), allows it through
+    This middleware just adds a gentle reminder for ok_not_found - no blocking.
+    For subjective queries ("cool", "best"), we rely on the prompt rules.
     """
 
-    # Patterns that suggest the query references external context we don't have
-    REFERENTIAL_PATTERNS = [
-        r'\bthat\b',           # "that project", "that person"
-        r'\bthis\b',           # "this thing"
-        r'\bthe one\b',        # "the one we discussed"
-        r'\bsame\b',           # "same project as before"
-        r'\bother\b',          # "the other one"
-        r'\bprevious\b',       # "previous project"
-        r'\blast\b',           # "last time"
-        r'\byou know\b',       # "you know which one"
-        r'\bwe (discussed|talked|mentioned)\b',  # references to prior conversation
-    ]
-
-    # Subjective terms that can't be resolved without user definition
-    SUBJECTIVE_PATTERNS = [
-        r'\bcool\b',
-        r'\bbest\b',
-        r'\bnice\b',
-        r'\bgood\b',
-        r'\bgreat\b',
-        r'\binteresting\b',
-        r'\bimportant\b',
-        r'\bfavorite\b',
-        r'\bfavourite\b',
-        r'\bawesome\b',
-        r'\bamazing\b',
-        r'\btop\b',            # "top project"
-        r'\bmain\b',           # "main project" (could be subjective)
-        r'\bbig\b',            # "big project"
-    ]
-
-    def __init__(self):
-        # Compile patterns for efficiency
-        self._referential_re = re.compile(
-            '|'.join(self.REFERENTIAL_PATTERNS),
-            re.IGNORECASE
-        )
-        self._subjective_re = re.compile(
-            '|'.join(self.SUBJECTIVE_PATTERNS),
-            re.IGNORECASE
-        )
-
-    def _detect_ambiguity(self, text: str) -> Tuple[bool, List[str]]:
-        """
-        Analyze text for ambiguity signals.
-        Returns (is_ambiguous, list_of_detected_signals)
-        """
-        if not text:
-            return False, []
-
-        signals = []
-
-        # Check for referential patterns
-        ref_matches = self._referential_re.findall(text)
-        if ref_matches:
-            signals.extend([f"referential: '{m}'" for m in ref_matches[:3]])
-
-        # Check for subjective patterns
-        subj_matches = self._subjective_re.findall(text)
-        if subj_matches:
-            signals.extend([f"subjective: '{m}'" for m in subj_matches[:3]])
-
-        # Question about unspecified entity
-        # e.g., "What's the name of..." without specific identifier
-        if re.search(r"what'?s\s+(the\s+)?(name|id)\s+of", text, re.IGNORECASE):
-            if not re.search(r'proj_|emp_|cust_|\w+_\w+', text):  # no specific ID
-                signals.append("question: asks for name/id without specific identifier")
-
-        return len(signals) > 0, signals
-
     def process(self, ctx: ToolContext) -> None:
-        # Only intercept respond calls with ok_not_found
+        # Only intercept ok_not_found responses
         if not isinstance(ctx.model, client.Req_ProvideAgentResponse):
             return
 
@@ -113,44 +38,20 @@ class AmbiguityGuardMiddleware(Middleware):
         if not task_text:
             return
 
-        # Check if we already warned about this
-        ambiguity_warning_key = 'ambiguity_guard_warned'
-        already_warned = ctx.shared.get(ambiguity_warning_key, False)
+        # Check what tools were used
+        action_types_executed = ctx.shared.get('action_types_executed', set())
 
-        # Detect ambiguity
-        is_ambiguous, signals = self._detect_ambiguity(task_text)
+        # If agent didn't search database at all, add a hint (but don't block)
+        searched_db = any(t in action_types_executed for t in [
+            'projects_search', 'employees_search', 'customers_search', 'time_search'
+        ])
 
-        if not is_ambiguous:
-            return
-
-        if already_warned:
-            # Agent saw the warning and still chose ok_not_found - respect the decision
-            print(f"  {CLI_GREEN}✓ Ambiguity Guard: Agent confirmed 'ok_not_found' after warning{CLI_CLR}")
-            return
-
-        # First time seeing this - inject warning and block
-        print(f"  {CLI_YELLOW}🤔 Ambiguity Guard: Detected ambiguous query with 'ok_not_found' response{CLI_CLR}")
-        print(f"     Signals: {', '.join(signals)}")
-
-        # Mark that we warned (so next time we allow through)
-        ctx.shared[ambiguity_warning_key] = True
-
-        # Stop execution and ask agent to reconsider
-        ctx.stop_execution = True
-        ctx.results.append(
-            f"🤔 AMBIGUITY CHECK: I detected potential ambiguity in the user's request:\n"
-            f"   Task: \"{task_text}\"\n"
-            f"   Signals: {', '.join(signals)}\n\n"
-            f"You responded with `ok_not_found`, but this might be incorrect.\n\n"
-            f"**Consider**: Is the user asking about something SPECIFIC that doesn't exist? "
-            f"Or is the query itself UNCLEAR/AMBIGUOUS (needs clarification)?\n\n"
-            f"- If the query uses words like 'that', 'cool', 'best' without context, "
-            f"the user might be referring to something you don't have information about.\n"
-            f"- `ok_not_found` = \"I searched for X and it doesn't exist\"\n"
-            f"- `none_clarification_needed` = \"I don't understand what you're asking for\"\n\n"
-            f"**If you're confident `ok_not_found` is correct**, call respond again with the same outcome.\n"
-            f"**If the query is ambiguous**, use `none_clarification_needed` and ask what they mean."
-        )
+        if not searched_db:
+            # Just add a hint to the response, don't block
+            ctx.results.append(
+                f"\n💡 HINT: You responded 'ok_not_found' but didn't search the database. "
+                f"Consider using projects_search/employees_search before concluding something doesn't exist."
+            )
 
 
 class TimeLoggingClarificationGuard(Middleware):
