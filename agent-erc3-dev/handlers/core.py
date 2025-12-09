@@ -7,6 +7,20 @@ from utils import CLI_RED, CLI_GREEN, CLI_BLUE, CLI_YELLOW, CLI_CLR
 
 
 # =============================================================================
+# Constants
+# =============================================================================
+
+# Stopwords for filtering task/query keywords when matching wiki filenames
+# Used in wiki_search hints, wiki change hints, and wiki_list hints
+_TASK_STOPWORDS = {
+    'the', 'a', 'an', 'is', 'are', 'what', 'how', 'to', 'for', 'of', 'in',
+    'and', 'or', 'with', 'after', 'new', 'i', 'my', 'me', 'do', 'can',
+    'please', 'need', 'want', 'about', 'on', 'be', 'have', 'has', 'get',
+    'requirements', 'time', 'tracking'
+}
+
+
+# =============================================================================
 # Utility Functions
 # =============================================================================
 
@@ -112,6 +126,40 @@ class DefaultActionHandler:
                 if wiki_manager:
                     print(f"  {CLI_BLUE}🔍 Using Local Wiki Search (Smart RAG){CLI_CLR}")
                     search_result_text = wiki_manager.search(ctx.model.query_regex)
+
+                    # FILENAME MATCH HINT: Check if any wiki filenames match query keywords
+                    # This helps agent find relevant files that semantic search might miss
+                    query = ctx.model.query_regex.lower()
+                    query_words = set(re.findall(r'\w+', query))
+                    # Filter out common stopwords
+                    stopwords = _TASK_STOPWORDS
+                    query_words = query_words - stopwords
+
+                    if query_words and wiki_manager.pages:
+                        matching_files = []
+                        for wiki_path in wiki_manager.pages.keys():
+                            # Extract filename without extension
+                            filename = wiki_path.replace('.md', '').replace('_', ' ').lower()
+                            filename_words = set(re.findall(r'\w+', filename))
+
+                            # Check for significant word overlap
+                            overlap = query_words & filename_words
+                            if overlap and len(overlap) >= 1:
+                                # Check if this file is already in search results
+                                if wiki_path not in search_result_text:
+                                    matching_files.append((wiki_path, overlap))
+
+                        if matching_files:
+                            hint_lines = []
+                            for path, overlap in matching_files[:3]:  # Max 3 suggestions
+                                hint_lines.append(f"  - `{path}` (matches: {', '.join(overlap)})")
+                            filename_hint = (
+                                f"\n💡 FILENAME MATCH: These wiki files match your query keywords but weren't in top search results:\n"
+                                + "\n".join(hint_lines) +
+                                f"\nConsider loading them with `wiki_load(\"{matching_files[0][0]}\")` for more relevant info."
+                            )
+                            search_result_text += filename_hint
+                            print(f"  {CLI_YELLOW}📝 Added filename match hint: {[f[0] for f in matching_files]}{CLI_CLR}")
 
                     print(f"  {CLI_GREEN}✓ SUCCESS (Local){CLI_CLR}")
                     ctx.results.append(f"Action ({action_name}): SUCCESS\nResult: {search_result_text}")
@@ -238,7 +286,27 @@ class DefaultActionHandler:
                         # System error prevented search, re-raise it
                         raise exact_error
 
-                    # 5. Construct Final Response
+                    # 5. Post-filter: Keep only results where ALL query words appear in name/id
+                    # This prevents "Line 3" search from returning "Packaging Line CV PoC"
+                    query_words = [w.lower() for w in query.split() if w.strip()] if query else []
+                    if query_words and len(projects_map) > 1:
+                        filtered_map = {}
+                        for pid, proj in projects_map.items():
+                            name_lower = (proj.name or '').lower()
+                            id_lower = (proj.id or '').lower()
+                            combined = f"{name_lower} {id_lower}"
+                            # Check if ALL query words appear
+                            if all(qw in combined for qw in query_words):
+                                filtered_map[pid] = proj
+
+                        # Only apply filter if it leaves at least 1 result
+                        if filtered_map:
+                            removed = len(projects_map) - len(filtered_map)
+                            if removed > 0:
+                                print(f"  {CLI_BLUE}🔍 Post-filter: Removed {removed} partial matches (kept {len(filtered_map)} with all query words){CLI_CLR}")
+                            projects_map = filtered_map
+
+                    # 6. Construct Final Response
                     if hasattr(client, 'Resp_ProjectSearchResults'):
                         ResponseClass = client.Resp_ProjectSearchResults
                     else:
@@ -246,7 +314,7 @@ class DefaultActionHandler:
                         ResponseClass = dtos.Resp_ProjectSearchResults
 
                     next_offset = res_exact.next_offset if res_exact else 0
-                    
+
                     result = ResponseClass(
                         projects=list(projects_map.values()),
                         next_offset=next_offset
@@ -431,7 +499,7 @@ class DefaultActionHandler:
                         error_str = str(e).lower()
                         if "page limit exceeded" in error_str and has_limit:
                             # Parse max limit from error like "page limit exceeded: 5 > 3" or "1 > -1"
-                            import re
+                            # Note: re is imported at module level
                             match = re.search(r'(\d+)\s*>\s*(-?\d+)', str(e))
                             if match:
                                 max_limit = int(match.group(2))
@@ -526,6 +594,95 @@ class DefaultActionHandler:
                         f"{critical_docs}\n\n"
                         f"Action based on outdated rules will be REJECTED."
                     )
+
+                # 🔥 TASK-RELEVANT FILE HINT on wiki change: Suggest files matching task keywords
+                # Critical because the above summaries may not cover topic-specific files
+                task = ctx.shared.get('task')
+                task_text = (getattr(task, 'task_text', '') if task else '').lower()
+
+                # Skip hints for public/guest users - they have limited access and hints
+                # can lead them to internal wiki pages causing incorrect ok_answer responses
+                security_manager = ctx.shared.get('security_manager')
+                is_public_user = getattr(security_manager, 'is_public', False) if security_manager else False
+
+                # Skip hints for self-mutation tasks - these don't need wiki consultation
+                # and suggesting files like skills.md can cause agent to over-think simple updates
+                self_mutation_patterns = [
+                    r'\b(add|update|change|set)\b.{0,20}\bmy\s+(skills?|location|department|notes?)\b',
+                    r'\bmy\s+(skills?|location|department)\b.{0,20}\b(add|update|change|set)\b',
+                ]
+                is_self_mutation = any(re.search(p, task_text) for p in self_mutation_patterns)
+
+                if task_text and wiki_manager.pages and not is_self_mutation and not is_public_user:
+                    task_words = set(re.findall(r'\w+', task_text))
+                    stopwords = _TASK_STOPWORDS
+                    task_words = task_words - stopwords
+
+                    if task_words:
+                        matching_files = []
+                        critical_paths = {'rulebook.md', 'merger.md', 'hierarchy.md'}
+
+                        for wiki_path in wiki_manager.pages.keys():
+                            # Skip files already in critical docs
+                            if wiki_path in critical_paths:
+                                continue
+
+                            filename = wiki_path.replace('.md', '').replace('_', ' ').replace('/', ' ').lower()
+                            filename_words = set(re.findall(r'\w+', filename))
+
+                            overlap = task_words & filename_words
+                            if overlap and len(overlap) >= 1:
+                                matching_files.append((wiki_path, overlap))
+
+                        matching_files.sort(key=lambda x: len(x[1]), reverse=True)
+
+                        if matching_files:
+                            hint_lines = []
+                            for path, overlap in matching_files[:3]:
+                                hint_lines.append(f"  - `{path}` (matches: {', '.join(overlap)})")
+                            task_file_hint = (
+                                f"\n💡 TASK-SPECIFIC FILES: Beyond the critical docs above, these wiki files match your task keywords:\n"
+                                + "\n".join(hint_lines) +
+                                f"\n⚠️ You should `wiki_load(\"{matching_files[0][0]}\")` for topic-specific details NOT covered in summaries above."
+                            )
+                            ctx.results.append(task_file_hint)
+                            print(f"  {CLI_YELLOW}📝 Task-specific file hint (wiki change): {[f[0] for f in matching_files[:3]]}{CLI_CLR}")
+
+            # 🔥 TASK-RELEVANT FILE HINT: When wiki_list is called, suggest files that match task keywords
+            if isinstance(result, client.Resp_ListWiki) and wiki_manager and wiki_manager.pages:
+                task = ctx.shared.get('task')
+                task_text = (getattr(task, 'task_text', '') if task else '').lower()
+
+                if task_text:
+                    # Extract meaningful keywords from task
+                    task_words = set(re.findall(r'\w+', task_text))
+                    stopwords = _TASK_STOPWORDS
+                    task_words = task_words - stopwords
+
+                    if task_words:
+                        matching_files = []
+                        for wiki_path in wiki_manager.pages.keys():
+                            filename = wiki_path.replace('.md', '').replace('_', ' ').replace('/', ' ').lower()
+                            filename_words = set(re.findall(r'\w+', filename))
+
+                            overlap = task_words & filename_words
+                            if overlap and len(overlap) >= 1:
+                                matching_files.append((wiki_path, overlap))
+
+                        # Sort by overlap count (descending)
+                        matching_files.sort(key=lambda x: len(x[1]), reverse=True)
+
+                        if matching_files:
+                            hint_lines = []
+                            for path, overlap in matching_files[:3]:
+                                hint_lines.append(f"  - `{path}` (matches: {', '.join(overlap)})")
+                            task_file_hint = (
+                                f"\n💡 TASK-RELEVANT FILES: Based on your task, these wiki files might be especially relevant:\n"
+                                + "\n".join(hint_lines) +
+                                f"\nConsider loading them with `wiki_load(\"{matching_files[0][0]}\")` for detailed info."
+                            )
+                            ctx.results.append(task_file_hint)
+                            print(f"  {CLI_YELLOW}📝 Task-relevant file hint: {[f[0] for f in matching_files[:3]]}{CLI_CLR}")
 
             # 🔥 PUBLIC USER MERGER POLICY: If user is public and merger.md exists, inject it
             # This ensures public chatbot always includes acquiring company name in responses

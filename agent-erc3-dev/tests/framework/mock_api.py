@@ -488,6 +488,11 @@ class MockErc3Client:
         if wiki_hash.startswith("a744c2c0"):
             paths.append("merger.md")
 
+        # Post-Tempo wiki version includes merger.md AND tempo_migration.md
+        if wiki_hash.startswith("b8f5d3a0"):
+            paths.append("merger.md")
+            paths.append("tempo_migration.md")
+
         return dtos.Resp_ListWiki(paths=paths, sha1=wiki_hash)
 
     def _handle_load_wiki(self, req) -> dtos.Resp_LoadWiki:

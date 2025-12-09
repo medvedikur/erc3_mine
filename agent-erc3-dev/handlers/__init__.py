@@ -7,6 +7,7 @@ from .safety import (
     ResponseValidationMiddleware,
     AmbiguityGuardMiddleware,
     TimeLoggingClarificationGuard,
+    SingleCandidateOkHint,
     OutcomeValidationMiddleware,
     PublicUserSemanticGuard,
     BasicLookupDenialGuard,
@@ -21,6 +22,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         ProjectSearchReminderMiddleware(),            # Reminds to use projects_search for project queries
         AmbiguityGuardMiddleware(),                   # Catches ambiguous queries with wrong outcome
         TimeLoggingClarificationGuard(),              # Ensures time log clarifications include project
+        SingleCandidateOkHint(),                      # Nudges ok_answer when single candidate found
         ProjectModificationClarificationGuard(),      # Ensures project mod clarifications include project link
         BasicLookupDenialGuard(),                     # Catches denied_security for basic org-chart lookups
         SubjectiveQueryGuard(),                       # Blocks ok_answer on subjective queries (cool, best, that)
