@@ -1,23 +1,14 @@
 import re
-from typing import List, Any, Dict, Tuple, Optional, Iterable
+from typing import List, Any, Dict, Optional, Iterable
 from erc3 import ApiException
 from erc3.erc3 import client, dtos
 from .base import ToolContext, Middleware, ActionHandler
+from .action_handlers import (
+    WikiSearchHandler, WikiLoadHandler, CompositeActionHandler,
+    ProjectSearchHandler, EmployeeSearchHandler
+)
+from .enrichers import ProjectRankingEnricher, ProjectOverlapAnalyzer, WikiHintEnricher
 from utils import CLI_RED, CLI_GREEN, CLI_BLUE, CLI_YELLOW, CLI_CLR
-
-
-# =============================================================================
-# Constants
-# =============================================================================
-
-# Stopwords for filtering task/query keywords when matching wiki filenames
-# Used in wiki_search hints, wiki change hints, and wiki_list hints
-_TASK_STOPWORDS = {
-    'the', 'a', 'an', 'is', 'are', 'what', 'how', 'to', 'for', 'of', 'in',
-    'and', 'or', 'with', 'after', 'new', 'i', 'my', 'me', 'do', 'can',
-    'please', 'need', 'want', 'about', 'on', 'be', 'have', 'has', 'get',
-    'requirements', 'time', 'tracking'
-}
 
 
 # =============================================================================
@@ -43,12 +34,21 @@ def merge_non_none(payload: dict, model: Any, fields: List[str]) -> None:
 
 
 class DefaultActionHandler:
-    """Standard handler that executes the action against the API"""
+    """
+    Standard handler that executes actions against the API.
+
+    This is the fallback handler used by CompositeActionHandler when no
+    specialized handler matches the action type.
+    """
     def __init__(self):
-        # Cache employee -> list[ProjectBrief] to avoid repeated paging
-        self._project_cache: Dict[str, List[Any]] = {}
-        self._project_detail_cache: Dict[str, Any] = {}
-        self._hint_cache: set[Tuple[str, str]] = set()
+        # Enrichers (with their own caches)
+        self._project_ranking = ProjectRankingEnricher()
+        self._project_overlap = ProjectOverlapAnalyzer()
+        self._wiki_hints = WikiHintEnricher()
+
+    def can_handle(self, ctx: ToolContext) -> bool:
+        """Default handler can handle any action."""
+        return True
 
     def _log_api_call(self, ctx, action_name: str, request: Any, response: Any = None, error: str = None):
         """Log API call to failure logger if available."""
@@ -107,81 +107,17 @@ class DefaultActionHandler:
         return None
 
     def handle(self, ctx: ToolContext) -> None:
+        """
+        Default action handler for API dispatch with enrichments.
+
+        Note: Wiki actions (Req_SearchWiki, Req_LoadWiki) are handled by
+        specialized handlers (WikiSearchHandler, WikiLoadHandler) before
+        this handler is called.
+        """
         action_name = ctx.model.__class__.__name__
         print(f"  {CLI_BLUE}▶ Executing:{CLI_CLR} {action_name}")
-        
-        # Link Auto-Detection for Respond Action
-        if isinstance(ctx.model, client.Req_ProvideAgentResponse) and not ctx.model.links:
-            # If no links provided, try to find relevant entities from context history
-            # This is a fallback if regex in tools.py missed them or they weren't in the text
-            # We can scan the previous results in ctx (though ctx is fresh per action)
-            # OR we can scan the shared context if we stored history there.
-            # Currently we don't store full history in shared.
-            pass
 
         try:
-            # SPECIAL HANDLING: Wiki Search (Local vs Remote)
-            if isinstance(ctx.model, client.Req_SearchWiki):
-                wiki_manager = ctx.shared.get('wiki_manager')
-                if wiki_manager:
-                    print(f"  {CLI_BLUE}🔍 Using Local Wiki Search (Smart RAG){CLI_CLR}")
-                    search_result_text = wiki_manager.search(ctx.model.query_regex)
-
-                    # FILENAME MATCH HINT: Check if any wiki filenames match query keywords
-                    # This helps agent find relevant files that semantic search might miss
-                    query = ctx.model.query_regex.lower()
-                    query_words = set(re.findall(r'\w+', query))
-                    # Filter out common stopwords
-                    stopwords = _TASK_STOPWORDS
-                    query_words = query_words - stopwords
-
-                    if query_words and wiki_manager.pages:
-                        matching_files = []
-                        for wiki_path in wiki_manager.pages.keys():
-                            # Extract filename without extension
-                            filename = wiki_path.replace('.md', '').replace('_', ' ').lower()
-                            filename_words = set(re.findall(r'\w+', filename))
-
-                            # Check for significant word overlap
-                            overlap = query_words & filename_words
-                            if overlap and len(overlap) >= 1:
-                                # Check if this file is already in search results
-                                if wiki_path not in search_result_text:
-                                    matching_files.append((wiki_path, overlap))
-
-                        if matching_files:
-                            hint_lines = []
-                            for path, overlap in matching_files[:3]:  # Max 3 suggestions
-                                hint_lines.append(f"  - `{path}` (matches: {', '.join(overlap)})")
-                            filename_hint = (
-                                f"\n💡 FILENAME MATCH: These wiki files match your query keywords but weren't in top search results:\n"
-                                + "\n".join(hint_lines) +
-                                f"\nConsider loading them with `wiki_load(\"{matching_files[0][0]}\")` for more relevant info."
-                            )
-                            search_result_text += filename_hint
-                            print(f"  {CLI_YELLOW}📝 Added filename match hint: {[f[0] for f in matching_files]}{CLI_CLR}")
-
-                    print(f"  {CLI_GREEN}✓ SUCCESS (Local){CLI_CLR}")
-                    ctx.results.append(f"Action ({action_name}): SUCCESS\nResult: {search_result_text}")
-                    return
-
-            # SPECIAL HANDLING: Wiki Load (Local vs Remote)
-            if isinstance(ctx.model, client.Req_LoadWiki):
-                wiki_manager = ctx.shared.get('wiki_manager')
-                if wiki_manager:
-                    file_path = ctx.model.file
-                    print(f"  {CLI_BLUE}📄 Using Local Wiki Load: {file_path}{CLI_CLR}")
-
-                    # Try to get page content from WikiManager
-                    if wiki_manager.has_page(file_path):
-                        content = wiki_manager.get_page(file_path)
-                        print(f"  {CLI_GREEN}✓ SUCCESS (Local){CLI_CLR}")
-                        ctx.results.append(f"Action ({action_name}): SUCCESS\nFile: {file_path}\nContent:\n{content}")
-                    else:
-                        print(f"  {CLI_YELLOW}⚠ Page not found: {file_path}{CLI_CLR}")
-                        ctx.results.append(f"Action ({action_name}): Page '{file_path}' not found in wiki.")
-                    return
-
             # SPECIAL HANDLING: Payload Cleaning for Req_UpdateEmployeeInfo
             # Ensure empty lists for skills/wills/notes/location/department are removed before dispatch
             # to prevent accidental wiping or event triggering.
@@ -217,175 +153,14 @@ class DefaultActionHandler:
 
             # Default API execution
             try:
-        
-                # SPECIAL HANDLING: Smart Broadening for Project Search
-                # If searching by team member AND query, do a dual search (Exact + Broad)
-                # This enables finding projects where the query matches the ID/Description but not the Name (which API filters on).
-                if isinstance(ctx.model, client.Req_SearchProjects):
-                    projects_map = {}
-                    exact_error = None
-                    
-                    # 1. Exact Match (Original Request)
-                    try:
-                        res_exact = ctx.api.dispatch(ctx.model)
-                        if hasattr(res_exact, 'projects') and res_exact.projects:
-                            for p in res_exact.projects:
-                                projects_map[p.id] = p
-                    except Exception as e:
-                        error_msg = str(e).lower()
-                        # Check if this is a system error (not "no results")
-                        if any(x in error_msg for x in ['limit exceeded', 'internal error', 'server error', 'timeout']):
-                            exact_error = e
-                            print(f"  {CLI_YELLOW}⚠ Exact search failed with system error: {e}{CLI_CLR}")
-                        else:
-                            print(f"  {CLI_YELLOW}⚠ Exact search failed: {e}{CLI_CLR}")
-                        res_exact = None
-
-                    # 2. Smart Broadening (if team + query)
-                    if ctx.model.team and ctx.model.query:
-                        print(f"  {CLI_BLUE}🔍 Smart Search: Executing dual-pass project search (Query + Broad){CLI_CLR}")
-                        import copy
-                        model_broad = copy.deepcopy(ctx.model)
-                        model_broad.query = None # Remove text filter
-                        
-                        try:
-                            res_broad = ctx.api.dispatch(model_broad)
-                            if hasattr(res_broad, 'projects') and res_broad.projects:
-                                for p in res_broad.projects:
-                                    if p.id not in projects_map:
-                                        projects_map[p.id] = p
-                        except Exception as e:
-                            print(f"  {CLI_YELLOW}⚠ Broad search failed: {e}{CLI_CLR}")
-                    
-                    # 3. Keyword Fallback (if query has multiple words and exact match yielded few results)
-                    query = ctx.model.query
-                    if query and len(projects_map) < 3 and " " in query.strip():
-                        print(f"  {CLI_BLUE}🔍 Smart Search: Executing keyword fallback search{CLI_CLR}")
-                        keywords = [k.strip() for k in query.split() if len(k.strip()) > 3]
-                        
-                        for kw in keywords:
-                            if kw.lower() == query.lower():
-                                continue
-                                
-                            print(f"  {CLI_BLUE}  → Searching for keyword: '{kw}'{CLI_CLR}")
-                            import copy
-                            model_kw = copy.deepcopy(ctx.model)
-                            model_kw.query = kw
-                            
-                            try:
-                                res_kw = ctx.api.dispatch(model_kw)
-                                if hasattr(res_kw, 'projects') and res_kw.projects:
-                                    for p in res_kw.projects:
-                                        if p.id not in projects_map:
-                                            projects_map[p.id] = p
-                            except Exception as e:
-                                print(f"  {CLI_YELLOW}⚠ Keyword search '{kw}' failed: {e}{CLI_CLR}")
-
-                    # 4. Check if we have a system error that prevents any results
-                    if exact_error and len(projects_map) == 0:
-                        # System error prevented search, re-raise it
-                        raise exact_error
-
-                    # 5. Construct Final Response
-                    if hasattr(client, 'Resp_ProjectSearchResults'):
-                        ResponseClass = client.Resp_ProjectSearchResults
-                    else:
-                        from erc3.erc3 import dtos
-                        ResponseClass = dtos.Resp_ProjectSearchResults
-
-                    next_offset = res_exact.next_offset if res_exact else 0
-
-                    result = ResponseClass(
-                        projects=list(projects_map.values()),
-                        next_offset=next_offset
-                    )
-                    print(f"  {CLI_BLUE}🔍 Merged {len(projects_map)} unique projects.{CLI_CLR}")
-                # SPECIAL HANDLING: Smart Keyword Fallback for Employee Search
-                # If query has multiple words (e.g., "Mira Schaefer") and no results, try individual keywords
-                elif isinstance(ctx.model, client.Req_SearchEmployees):
-                    employees_map = {}
-                    exact_error = None
-
-                    # 1. Exact Match (Original Request) with page limit retry
-                    try:
-                        res_exact = ctx.api.dispatch(ctx.model)
-                        if hasattr(res_exact, 'employees') and res_exact.employees:
-                            for e in res_exact.employees:
-                                employees_map[e.id] = e
-                    except Exception as e:
-                        error_msg = str(e).lower()
-                        # Check for page limit exceeded - retry with correct limit
-                        if 'page limit exceeded' in error_msg:
-                            match = re.search(r'(\d+)\s*>\s*(\d+)', str(e))
-                            if match:
-                                max_limit = int(match.group(2))
-                                if max_limit > 0:
-                                    print(f"  {CLI_YELLOW}⚠ Page limit exceeded. Retrying with limit={max_limit}.{CLI_CLR}")
-                                    import copy
-                                    model_retry = copy.deepcopy(ctx.model)
-                                    model_retry.limit = max_limit
-                                    try:
-                                        res_exact = ctx.api.dispatch(model_retry)
-                                        if hasattr(res_exact, 'employees') and res_exact.employees:
-                                            for emp in res_exact.employees:
-                                                employees_map[emp.id] = emp
-                                    except Exception as retry_e:
-                                        exact_error = retry_e
-                                        print(f"  {CLI_YELLOW}⚠ Retry also failed: {retry_e}{CLI_CLR}")
-                                        res_exact = None
-                                else:
-                                    exact_error = e
-                                    print(f"  {CLI_YELLOW}⚠ API forbids pagination (max_limit={max_limit}){CLI_CLR}")
-                                    res_exact = None
-                            else:
-                                exact_error = e
-                                print(f"  {CLI_YELLOW}⚠ Exact search failed with system error: {e}{CLI_CLR}")
-                                res_exact = None
-                        elif any(x in error_msg for x in ['internal error', 'server error', 'timeout']):
-                            exact_error = e
-                            print(f"  {CLI_YELLOW}⚠ Exact search failed with system error: {e}{CLI_CLR}")
-                            res_exact = None
-                        else:
-                            print(f"  {CLI_YELLOW}⚠ Exact search failed: {e}{CLI_CLR}")
-                            res_exact = None
-
-                    # 2. Keyword Fallback (if query has multiple words and exact match yielded no/few results)
-                    query = ctx.model.query
-                    if query and len(employees_map) < 2 and " " in query.strip():
-                        print(f"  {CLI_BLUE}🔍 Smart Search: Executing keyword fallback for employees{CLI_CLR}")
-                        keywords = [k.strip() for k in query.split() if len(k.strip()) > 2]
-
-                        for kw in keywords:
-                            if kw.lower() == query.lower():
-                                continue
-
-                            print(f"  {CLI_BLUE}  → Searching for keyword: '{kw}'{CLI_CLR}")
-                            import copy
-                            model_kw = copy.deepcopy(ctx.model)
-                            model_kw.query = kw
-
-                            try:
-                                res_kw = ctx.api.dispatch(model_kw)
-                                if hasattr(res_kw, 'employees') and res_kw.employees:
-                                    for emp in res_kw.employees:
-                                        if emp.id not in employees_map:
-                                            employees_map[emp.id] = emp
-                            except Exception as e:
-                                print(f"  {CLI_YELLOW}⚠ Keyword search '{kw}' failed: {e}{CLI_CLR}")
-
-                    # 3. Check if we have a system error that prevents any results
-                    if exact_error and len(employees_map) == 0:
-                        raise exact_error
-
-                    # 4. Construct Final Response
-                    next_offset = res_exact.next_offset if res_exact else -1
-
-                    result = client.Resp_SearchEmployees(
-                        employees=list(employees_map.values()),
-                        next_offset=next_offset
-                    )
-                    if len(employees_map) > 0:
-                        print(f"  {CLI_BLUE}🔍 Merged {len(employees_map)} unique employees.{CLI_CLR}")
+                # Check if specialized handler had an error
+                if '_search_error' in ctx.shared:
+                    raise ctx.shared.pop('_search_error')
+                # Check if specialized handler already processed (ProjectSearchHandler, EmployeeSearchHandler)
+                elif '_project_search_result' in ctx.shared:
+                    result = ctx.shared.pop('_project_search_result')
+                elif '_employee_search_result' in ctx.shared:
+                    result = ctx.shared.pop('_employee_search_result')
                 # SPECIAL HANDLING: Employee Update - API requires ALL fields to be sent
                 # Otherwise missing fields are cleared! We must fetch current data first.
                 elif isinstance(ctx.model, client.Req_UpdateEmployeeInfo):
@@ -603,94 +378,30 @@ class DefaultActionHandler:
                         f"Action based on outdated rules will be REJECTED."
                     )
 
-                # 🔥 TASK-RELEVANT FILE HINT on wiki change: Suggest files matching task keywords
-                # Critical because the above summaries may not cover topic-specific files
+                # 🔥 TASK-RELEVANT FILE HINT on wiki change
                 task = ctx.shared.get('task')
-                task_text = (getattr(task, 'task_text', '') if task else '').lower()
-
-                # Skip hints for public/guest users - they have limited access and hints
-                # can lead them to internal wiki pages causing incorrect ok_answer responses
+                task_text = getattr(task, 'task_text', '') if task else ''
                 security_manager = ctx.shared.get('security_manager')
                 is_public_user = getattr(security_manager, 'is_public', False) if security_manager else False
 
-                # Skip hints for self-mutation tasks - these don't need wiki consultation
-                # and suggesting files like skills.md can cause agent to over-think simple updates
-                self_mutation_patterns = [
-                    r'\b(add|update|change|set)\b.{0,20}\bmy\s+(skills?|location|department|notes?)\b',
-                    r'\bmy\s+(skills?|location|department)\b.{0,20}\b(add|update|change|set)\b',
-                ]
-                is_self_mutation = any(re.search(p, task_text) for p in self_mutation_patterns)
-
-                if task_text and wiki_manager.pages and not is_self_mutation and not is_public_user:
-                    task_words = set(re.findall(r'\w+', task_text))
-                    stopwords = _TASK_STOPWORDS
-                    task_words = task_words - stopwords
-
-                    if task_words:
-                        matching_files = []
-                        critical_paths = {'rulebook.md', 'merger.md', 'hierarchy.md'}
-
-                        for wiki_path in wiki_manager.pages.keys():
-                            # Skip files already in critical docs
-                            if wiki_path in critical_paths:
-                                continue
-
-                            filename = wiki_path.replace('.md', '').replace('_', ' ').replace('/', ' ').lower()
-                            filename_words = set(re.findall(r'\w+', filename))
-
-                            overlap = task_words & filename_words
-                            if overlap and len(overlap) >= 1:
-                                matching_files.append((wiki_path, overlap))
-
-                        matching_files.sort(key=lambda x: len(x[1]), reverse=True)
-
-                        if matching_files:
-                            hint_lines = []
-                            for path, overlap in matching_files[:3]:
-                                hint_lines.append(f"  - `{path}` (matches: {', '.join(overlap)})")
-                            task_file_hint = (
-                                f"\n💡 TASK-SPECIFIC FILES: Beyond the critical docs above, these wiki files match your task keywords:\n"
-                                + "\n".join(hint_lines) +
-                                f"\n⚠️ You should `wiki_load(\"{matching_files[0][0]}\")` for topic-specific details NOT covered in summaries above."
-                            )
-                            ctx.results.append(task_file_hint)
-                            print(f"  {CLI_YELLOW}📝 Task-specific file hint (wiki change): {[f[0] for f in matching_files[:3]]}{CLI_CLR}")
+                hint = self._wiki_hints.get_task_file_hints(
+                    wiki_manager, task_text, is_public_user,
+                    skip_critical=True, context="wiki_change"
+                )
+                if hint:
+                    ctx.results.append(hint)
 
             # 🔥 TASK-RELEVANT FILE HINT: When wiki_list is called, suggest files that match task keywords
             if isinstance(result, client.Resp_ListWiki) and wiki_manager and wiki_manager.pages:
                 task = ctx.shared.get('task')
-                task_text = (getattr(task, 'task_text', '') if task else '').lower()
+                task_text = getattr(task, 'task_text', '') if task else ''
 
-                if task_text:
-                    # Extract meaningful keywords from task
-                    task_words = set(re.findall(r'\w+', task_text))
-                    stopwords = _TASK_STOPWORDS
-                    task_words = task_words - stopwords
-
-                    if task_words:
-                        matching_files = []
-                        for wiki_path in wiki_manager.pages.keys():
-                            filename = wiki_path.replace('.md', '').replace('_', ' ').replace('/', ' ').lower()
-                            filename_words = set(re.findall(r'\w+', filename))
-
-                            overlap = task_words & filename_words
-                            if overlap and len(overlap) >= 1:
-                                matching_files.append((wiki_path, overlap))
-
-                        # Sort by overlap count (descending)
-                        matching_files.sort(key=lambda x: len(x[1]), reverse=True)
-
-                        if matching_files:
-                            hint_lines = []
-                            for path, overlap in matching_files[:3]:
-                                hint_lines.append(f"  - `{path}` (matches: {', '.join(overlap)})")
-                            task_file_hint = (
-                                f"\n💡 TASK-RELEVANT FILES: Based on your task, these wiki files might be especially relevant:\n"
-                                + "\n".join(hint_lines) +
-                                f"\nConsider loading them with `wiki_load(\"{matching_files[0][0]}\")` for detailed info."
-                            )
-                            ctx.results.append(task_file_hint)
-                            print(f"  {CLI_YELLOW}📝 Task-relevant file hint: {[f[0] for f in matching_files[:3]]}{CLI_CLR}")
+                hint = self._wiki_hints.get_task_file_hints(
+                    wiki_manager, task_text, is_public_user=False,
+                    skip_critical=False, context="wiki_list"
+                )
+                if hint:
+                    ctx.results.append(hint)
 
             # 🔥 PUBLIC USER MERGER POLICY: If user is public and merger.md exists, inject it
             # This ensures public chatbot always includes acquiring company name in responses
@@ -791,7 +502,11 @@ class DefaultActionHandler:
 
             # Inject automatic disambiguation hints for project searches
             if isinstance(ctx.model, client.Req_SearchProjects):
-                self._analyze_project_overlap(ctx, result)
+                task = ctx.shared.get("task")
+                task_text = getattr(task, "task_text", "") if task else ""
+                overlap_hint = self._project_overlap.analyze(ctx, result, task_text)
+                if overlap_hint:
+                    ctx.results.append(overlap_hint)
 
                 # ARCHIVED PROJECT HINT: If searching with member filter and looking for archived,
                 # suggest searching without member filter
@@ -814,68 +529,9 @@ class DefaultActionHandler:
                     )
 
                 # MATCH RANKING: Rank search results by match quality to help agent decide
-                # Levels: EXACT (full phrase in name) > STRONG (query prefix) > PARTIAL (some words match)
-                if query and len(projects) > 1:
-                    query_lower = query.lower().strip()
-                    query_words = set(query_lower.split())
-
-                    ranked_results = []
-                    for p in projects:
-                        proj_name = (getattr(p, 'name', '') or '').lower().strip()
-                        proj_id = getattr(p, 'id', '')
-                        name_words = set(proj_name.split())
-
-                        # Calculate match level
-                        if proj_name == query_lower:
-                            rank = "EXACT"
-                            score = 100
-                        elif proj_name.startswith(query_lower + ' ') or proj_name.startswith(query_lower + ':'):
-                            rank = "STRONG"  # Query is prefix of project name
-                            score = 90
-                        elif f' {query_lower} ' in f' {proj_name} ':
-                            rank = "STRONG"  # Query phrase appears within name
-                            score = 85
-                        elif query_words <= name_words:
-                            rank = "GOOD"  # All query words present in name
-                            score = 70
-                        else:
-                            overlap = len(query_words & name_words)
-                            if overlap > 0:
-                                rank = "PARTIAL"
-                                score = 30 + (overlap / len(query_words)) * 30
-                            else:
-                                rank = "WEAK"
-                                score = 10
-
-                        ranked_results.append((score, rank, proj_name, proj_id))
-
-                    # Sort by score descending
-                    ranked_results.sort(key=lambda x: -x[0])
-
-                    # Generate ranking hint
-                    ranking_lines = []
-                    for score, rank, name, pid in ranked_results:
-                        ranking_lines.append(f"  [{rank}] {name} ({pid})")
-
-                    # Check if there's a clear winner (significantly higher score)
-                    top_score = ranked_results[0][0]
-                    second_score = ranked_results[1][0] if len(ranked_results) > 1 else 0
-                    clear_winner = top_score >= 85 and (top_score - second_score) >= 30
-
-                    if clear_winner:
-                        _, top_rank, top_name, top_id = ranked_results[0]
-                        ctx.results.append(
-                            f"\n💡 SEARCH RANKING for query '{query}':\n" + "\n".join(ranking_lines) +
-                            f"\n\n✅ CLEAR MATCH: '{top_name}' ({top_id}) is a {top_rank} match. "
-                            f"Other results are significantly weaker. Proceed with this project."
-                        )
-                    else:
-                        # Multiple strong matches or no clear winner - genuinely ambiguous
-                        ctx.results.append(
-                            f"\n📊 SEARCH RANKING for query '{query}':\n" + "\n".join(ranking_lines) +
-                            f"\n\nUse this ranking to determine the best match. "
-                            f"EXACT/STRONG matches contain the full query phrase; PARTIAL matches only share some words."
-                        )
+                ranking_hint = self._project_ranking.enrich(projects, query)
+                if ranking_hint:
+                    ctx.results.append(ranking_hint)
 
                 # MUTATION AUTHORIZATION HINT: Remind agent to verify role before status changes
                 # This prevents the agent from returning ok_not_found when they should check auth
@@ -917,222 +573,6 @@ class DefaultActionHandler:
             self._log_api_call(ctx, action_name, ctx.model, error=str(e))
 
     # --- Helper utilities -------------------------------------------------
-    def _analyze_project_overlap(self, ctx: ToolContext, search_result: Any) -> None:
-        """
-        Implements STEP 0 enforcement from prompts.py: whenever the agent searches
-        for someone else's projects, automatically surface overlaps with the current
-        user's portfolio so the LLM doesn't stop early with clarification requests.
-        """
-        team_filter = getattr(ctx.model, "team", None)
-        if not team_filter or not getattr(team_filter, "employee_id", None):
-            print(f"  {CLI_YELLOW}📊 Overlap analysis skipped: no team filter{CLI_CLR}")
-            return
-
-        security_manager = ctx.shared.get("security_manager")
-        current_user = getattr(security_manager, "current_user", None) if security_manager else None
-        if not current_user:
-            return
-
-        target_employee = team_filter.employee_id
-        if not target_employee or target_employee == current_user:
-            return
-
-        target_projects = getattr(search_result, "projects", None) or []
-        if not target_projects:
-            return
-
-        # Avoid spamming the same hint multiple times per target/turn
-        hint_key = (target_employee, ctx.model.__class__.__name__)
-        if hint_key in self._hint_cache:
-            return
-
-        # Gather the current user's projects to detect overlaps
-        own_projects = self._fetch_projects_for_member(ctx, current_user)
-        if not own_projects:
-            return
-
-        target_project_map = {getattr(p, "id", None): p for p in target_projects if getattr(p, "id", None)}
-        overlap = [p for p in own_projects if getattr(p, "id", None) in target_project_map]
-
-        if not overlap:
-            return
-
-        self._hint_cache.add(hint_key)
-
-        # Extract task query to filter by relevant keywords (e.g., "CV project")
-        task = ctx.shared.get("task")
-        task_text = getattr(task, "task_text", "") if task else ""
-        task_lower = task_text.lower()
-
-        # Look for project-identifying keywords in task
-        # Common patterns: "CV project", "triage project", etc.
-        filter_keywords = []
-        if "cv " in task_lower or " cv" in task_lower or "cv project" in task_lower:
-            filter_keywords.append("cv")
-        # Add more patterns as needed
-
-        # Filter overlap by keywords if present
-        # ALSO filter target_projects to see how many CV projects the target employee has
-        target_keyword_matches = []
-        if filter_keywords:
-            filtered_overlap = []
-            for p in overlap:
-                proj_id = getattr(p, "id", "") or ""
-                proj_name = getattr(p, "name", "") or ""
-                for kw in filter_keywords:
-                    if kw in proj_id.lower() or kw in proj_name.lower():
-                        filtered_overlap.append(p)
-                        break
-            # Also check how many keyword-matching projects the TARGET has (not just overlap)
-            for p in target_projects:
-                proj_id = getattr(p, "id", "") or ""
-                proj_name = getattr(p, "name", "") or ""
-                for kw in filter_keywords:
-                    if kw in proj_id.lower() or kw in proj_name.lower():
-                        target_keyword_matches.append(p)
-                        break
-            if filtered_overlap:
-                overlap = filtered_overlap
-                print(f"  {CLI_YELLOW}📊 Filtered overlap by keywords {filter_keywords}: {len(overlap)} projects{CLI_CLR}")
-
-            # CRITICAL: Check how many keyword-matching projects current_user is Lead of
-            # where target_employee is ALSO a member. This determines ambiguity.
-            # We check target_keyword_matches (not just overlap) because we need to know
-            # if current_user could log time to multiple CV projects for target.
-            lead_keyword_projects = []
-            for proj in target_keyword_matches:
-                project_id = getattr(proj, "id", None)
-                project_detail = self._get_project_detail(ctx, project_id) if project_id else None
-                if project_detail:
-                    team = getattr(project_detail, "team", None) or []
-                    for member in team:
-                        employee = getattr(member, "employee", getattr(member, "employee_id", None))
-                        role = getattr(member, "role", None)
-                        if employee == current_user and role == "Lead":
-                            lead_keyword_projects.append(proj)
-                            break
-
-            # Only print and hint if this page actually has keyword-matching projects
-            # This prevents confusing "0 projects" messages on subsequent pagination pages
-            if target_keyword_matches:
-                print(f"  {CLI_YELLOW}📊 Target keyword projects: {target_employee} works on {len(target_keyword_matches)} '{filter_keywords[0]}' projects{CLI_CLR}")
-                for p in target_keyword_matches:
-                    print(f"     - {self._format_project_label(p)}")
-                print(f"  {CLI_YELLOW}📊 Lead check: {current_user} is Lead of {len(lead_keyword_projects)} of them{CLI_CLR}")
-            else:
-                # No keyword-matching projects on this page - skip hinting entirely
-                # The correct hint was already given on a previous page (if any)
-                return
-
-            # AUTHORIZATION-BASED DISAMBIGUATION:
-            # Even if target works on multiple keyword-matching projects,
-            # if current_user is Lead on exactly 1 of them - that's the logical choice.
-            # Ambiguity only arises when current_user is Lead on MULTIPLE such projects.
-            if len(lead_keyword_projects) > 1:
-                # Current user is Lead on multiple keyword-matching projects - ambiguity!
-                lead_labels = [self._format_project_label(p) for p in lead_keyword_projects]
-                hint = (
-                    f"⚠️ AMBIGUITY: You ({current_user}) are the Lead of {len(lead_keyword_projects)} "
-                    f"'{filter_keywords[0]}' projects where {target_employee} is a member: "
-                    f"{', '.join(lead_labels)}. "
-                    f"Return `none_clarification_needed` asking which project to log time to."
-                )
-                ctx.results.append(hint)
-                self._hint_cache.add(hint_key)
-                return
-            elif len(lead_keyword_projects) == 1:
-                # Current user is Lead on exactly 1 keyword-matching project - clear choice!
-                hint = (
-                    f"💡 AUTHORIZATION MATCH: You ({current_user}) are the Lead of exactly 1 "
-                    f"'{filter_keywords[0]}' project where {target_employee} works: "
-                    f"{self._format_project_label(lead_keyword_projects[0])}. "
-                    f"This is the correct project to log time to. "
-                    f"IMPORTANT: Include BOTH {target_employee} AND {current_user} (yourself as authorizer) in response links!"
-                )
-                ctx.results.append(hint)
-                self._hint_cache.add(hint_key)
-                return
-
-        # Authorization-aware disambiguation:
-        # If only 1 project where current_user has authorization (Lead), that's the logical choice
-        # even if the target employee works on many projects.
-        # But if current_user has authorization on MULTIPLE overlapping projects → ambiguity!
-        total_results = len(target_projects)
-
-        if len(overlap) == 1:
-            # Only 1 shared project → check if current_user has authorization
-            project_id = getattr(overlap[0], "id", None)
-            project_detail = self._get_project_detail(ctx, project_id) if project_id else None
-
-            # Check if current_user is Lead of this project
-            is_lead = False
-            if project_detail:
-                team = getattr(project_detail, "team", None) or []
-                for member in team:
-                    employee = getattr(member, "employee", getattr(member, "employee_id", None))
-                    role = getattr(member, "role", None)
-                    if employee == current_user and role == "Lead":
-                        is_lead = True
-                        break
-
-            if is_lead:
-                # Current user is Lead of the ONLY shared project → this is the logical choice!
-                hint = (
-                    f"💡 AUTHORIZATION MATCH: {self._format_project_label(overlap[0])} is the ONLY project "
-                    f"where both you ({current_user}) and {target_employee} are members, "
-                    f"AND you are the Lead (authorized to log time for others). "
-                    f"Even though search returned {total_results} total projects for {target_employee}, "
-                    f"this is the logical choice because it's the only one where you have authorization. "
-                    f"IMPORTANT: Include BOTH {target_employee} AND {current_user} (yourself as authorizer) in response links!"
-                )
-            else:
-                # Current user is NOT Lead → no authorization anyway
-                hint = (
-                    f"💡 CONTEXT: Search returned {total_results} projects for {target_employee}. "
-                    f"You share 1 project with them: {self._format_project_label(overlap[0])}, "
-                    f"but you are NOT the Lead. Check authorization via other means (Account Manager, Direct Manager)."
-                )
-        else:
-            # Multiple shared projects → check how many current_user is Lead of
-            lead_projects = []
-            for proj in overlap:
-                project_id = getattr(proj, "id", None)
-                project_detail = self._get_project_detail(ctx, project_id) if project_id else None
-                if project_detail:
-                    team = getattr(project_detail, "team", None) or []
-                    for member in team:
-                        employee = getattr(member, "employee", getattr(member, "employee_id", None))
-                        role = getattr(member, "role", None)
-                        if employee == current_user and role == "Lead":
-                            lead_projects.append(proj)
-                            break
-
-            if len(lead_projects) == 1:
-                # Current user is Lead of exactly 1 shared project → logical choice!
-                hint = (
-                    f"💡 AUTHORIZATION MATCH: Found {len(overlap)} shared projects, "
-                    f"but you are the Lead of only 1: {self._format_project_label(lead_projects[0])}. "
-                    f"This is the logical choice for logging time. "
-                    f"IMPORTANT: Include BOTH {target_employee} AND {current_user} (yourself as authorizer) in response links!"
-                )
-            elif len(lead_projects) > 1:
-                # Multiple projects where current_user is Lead → ambiguity!
-                lead_labels = [self._format_project_label(p) for p in lead_projects]
-                hint = (
-                    f"⚠️ AMBIGUITY: You are the Lead of {len(lead_projects)} shared projects with {target_employee}: "
-                    f"{', '.join(lead_labels)}. "
-                    f"Return `none_clarification_needed` listing these {len(lead_projects)} projects."
-                )
-            else:
-                # Current user is NOT Lead of any shared projects
-                overlap_labels = [self._format_project_label(p) for p in overlap]
-                hint = (
-                    f"💡 CONTEXT: Found {len(overlap)} shared projects but you are NOT the Lead of any: "
-                    f"{', '.join(overlap_labels)}. "
-                    f"Check authorization via Account Manager or Direct Manager roles."
-                )
-
-        ctx.results.append(hint)
 
     def _maybe_hint_archived_logging(self, ctx: ToolContext, request_model: Any, response: Any) -> None:
         task = ctx.shared.get("task")
@@ -1171,93 +611,11 @@ class DefaultActionHandler:
         )
         ctx.results.append(hint)
 
-    def _build_unique_overlap_hint(self, project: Any, project_id: str, current_user: str, target_employee: str) -> str:
-        proj_name = getattr(project, "name", project_id or "unknown project")
-        lead_role = None
-        target_role = None
-        team = getattr(project, "team", None) or []
-        for member in team:
-            employee = getattr(member, "employee", getattr(member, "employee_id", None))
-            if not employee:
-                continue
-            if employee == current_user:
-                lead_role = getattr(member, "role", None)
-            if employee == target_employee:
-                target_role = getattr(member, "role", None)
-
-        role_parts = []
-        if lead_role:
-            role_parts.append(f"you are assigned as {lead_role}")
-        if target_role:
-            role_parts.append(f"{target_employee} is {target_role}")
-
-        role_text = f" ({'; '.join(role_parts)})" if role_parts else ""
-
-        return (
-            f"AUTO-HINT: Unique overlap detected — project '{proj_name}' ({project_id}){role_text}. "
-            "Follow STEP 0 guidance and log the requested hours here."
-        )
-
     def _format_project_label(self, project: Any) -> str:
+        """Format project for display in hints."""
         proj_id = getattr(project, "id", "unknown-id")
         proj_name = getattr(project, "name", proj_id)
         return f"'{proj_name}' ({proj_id})"
-
-    def _fetch_projects_for_member(self, ctx: ToolContext, employee_id: str) -> List[Any]:
-        if not employee_id:
-            return []
-
-        if employee_id in self._project_cache:
-            return self._project_cache[employee_id]
-
-        projects: List[Any] = []
-        limit = 5  # server hard-limit
-        max_pages = 4  # up to 20 projects; enough for disambiguation
-
-        for page in range(max_pages):
-            offset = page * limit
-            try:
-                req = client.Req_SearchProjects(
-                    limit=limit,
-                    offset=offset,
-                    include_archived=True,
-                    team=dtos.ProjectTeamFilter(employee_id=employee_id)
-                )
-                resp = ctx.api.dispatch(req)
-            except Exception as e:
-                print(f"  {CLI_YELLOW}⚠️ Overlap helper: failed to fetch projects for {employee_id} (page {page}): {e}{CLI_CLR}")
-                break
-
-            page_projects = getattr(resp, "projects", None) or []
-            if page_projects:
-                projects.extend(page_projects)
-            if len(page_projects) < limit:
-                break
-
-        self._project_cache[employee_id] = projects
-        return projects
-
-    def _get_project_detail(self, ctx: ToolContext, project_id: str) -> Any:
-        if not project_id:
-            return None
-
-        if project_id in self._project_detail_cache:
-            return self._project_detail_cache[project_id]
-
-        try:
-            resp_project = ctx.api.get_project(project_id)
-        except TypeError:
-            try:
-                resp_project = ctx.api.get_project(project_id=project_id)
-            except TypeError:
-                resp_project = ctx.api.get_project(id=project_id)
-        except Exception as e:
-            print(f"  {CLI_YELLOW}⚠️ Overlap helper: failed to fetch project detail for {project_id}: {e}{CLI_CLR}")
-            return None
-
-        project = getattr(resp_project, "project", None) or resp_project
-        self._project_detail_cache[project_id] = project
-        return project
 
     def _enrich_projects_with_user_role(self, result: Any, current_user: str) -> Optional[str]:
         """
@@ -1423,9 +781,19 @@ class ActionExecutor:
     def __init__(self, api, middleware: List[Middleware] = None, task: Any = None):
         self.api = api
         self.middleware = middleware or []
-        self.handler = DefaultActionHandler()
+        # Use CompositeActionHandler with specialized handlers first, then default
+        default_handler = DefaultActionHandler()
+        self.handler = CompositeActionHandler(
+            handlers=[
+                WikiSearchHandler(),
+                WikiLoadHandler(),
+                ProjectSearchHandler(),
+                EmployeeSearchHandler(),
+            ],
+            default_handler=default_handler
+        )
         self.task = task
-    
+
     def execute(self, action_dict: dict, action_model: Any, initial_shared: dict = None) -> ToolContext:
         ctx = ToolContext(self.api, action_dict, action_model)
         if self.task:

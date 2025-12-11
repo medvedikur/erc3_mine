@@ -4,18 +4,34 @@ This solution reimplements the SGR (Schema-Guided Reasoning) agent using **LangC
 
 ## Structure
 - `main.py`: Entry point supporting both sequential and parallel execution modes. Handles session loop, environment configuration, backend selection (`-openrouter` flag), and task orchestration. Use `-threads N` for parallel execution.
-- `agent.py`: LangChain-based agent loop implementing the "Mental Protocol" (Analyze -> Plan -> Act). Includes security guards against prompt injection.
+- `agent/`: Agent execution module:
+  - `state.py`: AgentTurnState dataclass for tracking mutable state across turns.
+  - `parsing.py`: LLM response parsing (extract_json, OpenAIUsage).
+  - `loop_detection.py`: LoopDetector class for detecting repetitive action patterns.
+  - `runner.py`: Main agent loop (`run_agent()`) with security guards.
 - `llm_provider.py`: Unified LLM provider supporting multiple backends:
   - `GonkaChatModel`: Custom LangChain model for Gonka Network with node failover and retry logic.
   - `OpenRouterChatModel`: OpenAI-compatible client for OpenRouter API.
-- `tools.py`: Tool definitions and Pydantic schemas mapping LLM actions to `erc3` SDK calls. Handles argument normalization and PascalCase compatibility for OpenAI models.
+- `tools/`: Tool parsing module:
+  - `registry.py`: ToolParser registry with automatic dispatch.
+  - `parser.py`: parse_action() and individual tool parsers.
+  - `links.py`: LinkExtractor for auto-detecting entity links.
+  - `patches.py`: SDK runtime patches (SafeReq_UpdateEmployeeInfo).
+  - `normalizers.py`: Argument normalization utilities.
 - `prompts.py`: The SGR system prompt enforcing the thinking process, adapted for the Employee Assistant domain.
 - `pricing.py`: Dynamic cost calculator fetching model prices from OpenRouter API.
 - `handlers/`:
-  - `core.py`: Execution engine with middleware support, partial update handling (fetch-merge-dispatch), API quirk patches, and failure logging.
-  - `wiki.py`: Middleware for automatic Company Wiki synchronization with versioned local storage. Implements hybrid RAG search.
+  - `core.py`: DefaultActionHandler and ActionExecutor with middleware support, partial update handling (fetch-merge-dispatch), API quirk patches, and failure logging.
+  - `action_handlers/`: Specialized action handlers using Strategy pattern:
+    - `base.py`: ActionHandler ABC and CompositeActionHandler for handler orchestration.
+    - `wiki.py`: WikiSearchHandler (local RAG search), WikiLoadHandler (local page loading).
+  - `enrichers/`: API response enrichment classes:
+    - `project_ranking.py`: ProjectRankingEnricher for search result disambiguation.
+    - `project_overlap.py`: ProjectOverlapAnalyzer for authorization-aware project hints.
+    - `wiki_hints.py`: WikiHintEnricher for task-relevant wiki file suggestions.
+  - `wiki.py`: WikiManager for automatic Company Wiki synchronization with versioned local storage. Implements hybrid RAG search.
   - `safety.py`: Lightweight middleware guards (AmbiguityGuard, ProjectSearchReminder) providing runtime hints.
-  - `base.py`: Protocols for handlers and middleware.
+  - `base.py`: Protocols for handlers and middleware (ToolContext, ActionHandler, Middleware).
 - `config.py`: Central configuration for benchmark type, workspace, models, threads, and logging paths.
 - `wiki_dump/`: Local storage for wiki versions (keyed by SHA1 hash).
 - `logs/`: Directory containing detailed execution logs and failure reports.

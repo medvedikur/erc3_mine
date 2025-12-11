@@ -11,11 +11,33 @@
   - Prevent obvious mistakes at execution time
   - Provide helpful hints in API responses (e.g., authorization info, disambiguation suggestions)
 - **Chain of Thought**: Agent uses structured reasoning (thoughts → plan → actions) to work through complex tasks
-- **handlers/ folder purpose**: Contains not just middleware but also:
-  - `core.py` — ActionExecutor for tool execution
+- **agent/ folder purpose**: Agent execution module (refactored):
+  - `state.py` — AgentTurnState dataclass for turn state tracking
+  - `parsing.py` — LLM response parsing (extract_json, OpenAIUsage)
+  - `loop_detection.py` — LoopDetector for repetitive action detection
+  - `runner.py` — Main agent loop (`run_agent()`)
+- **handlers/ folder purpose**: Contains middleware, action handlers, and managers:
+  - `core.py` — DefaultActionHandler, ActionExecutor for tool execution
+  - `action_handlers/` — Specialized handlers (Strategy pattern):
+    - `base.py` — ActionHandler ABC, CompositeActionHandler
+    - `wiki.py` — WikiSearchHandler, WikiLoadHandler
+  - `enrichers/` — API response enrichment:
+    - `project_ranking.py` — ProjectRankingEnricher for search disambiguation
+    - `project_overlap.py` — ProjectOverlapAnalyzer for authorization hints
+    - `wiki_hints.py` — WikiHintEnricher for task-relevant wiki suggestions
+  - `middleware/` — Middleware guards (refactored):
+    - `base.py` — ResponseGuard base class, utility functions
+    - `response_guards.py` — 10 response guard classes
+    - `membership.py` — ProjectMembershipMiddleware
   - `wiki.py` — WikiManager for knowledge base access
   - `security.py` — SecurityManager for authorization
-  - `safety.py` — Middleware guards (ambiguity detection, validation, etc.)
+  - `safety.py` — Re-exports from middleware/ (backwards compat)
+- **tools/ folder purpose**: Tool parsing module:
+  - `registry.py` — ToolParser, ParseContext, ParseError
+  - `parser.py` — parse_action() and tool parsers
+  - `links.py` — LinkExtractor for auto-linking
+  - `patches.py` — SDK runtime patches
+  - `normalizers.py` — Argument normalization
 
 ## Thread Safety & Parallelism
 - **Embedding model**: Global singleton with thread-safe initialization (`get_embedding_model()`)
@@ -33,7 +55,7 @@
 - **Don't duplicate solutions**: After validating experimental code, merge it into the main entry point
 - **Configuration**: Central config in `config.py` (benchmark type, workspace, models, threads, etc.)
 
-## Middleware Pattern (handlers/safety.py)
+## Middleware Pattern (handlers/middleware/)
 - **Three blocking modes**:
   1. **Hard block**: ONLY for logically impossible actions verified via API (e.g., employee not in project team). Stop execution, return error.
   2. **Soft block**: For risky actions with `warning_key` check — block first time, allow through on repeat. Use sparingly.

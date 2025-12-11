@@ -1,13 +1,14 @@
-# Backwards compatibility re-exports
-# All middleware classes are now in handlers/middleware/
+# Middleware module
+# Re-exports for backwards compatibility
 
-from .middleware import (
-    # Base
+from .base import (
     ResponseGuard,
     get_task_text,
     is_public_user,
     has_project_reference,
-    # Response Guards
+)
+
+from .response_guards import (
     BasicLookupDenialGuard,
     PublicUserSemanticGuard,
     AmbiguityGuardMiddleware,
@@ -18,15 +19,17 @@ from .middleware import (
     OutcomeValidationMiddleware,
     SubjectiveQueryGuard,
     ProjectSearchReminderMiddleware,
-    # Membership
-    ProjectMembershipMiddleware,
 )
 
+from .membership import ProjectMembershipMiddleware
+
 __all__ = [
+    # Base
     'ResponseGuard',
     'get_task_text',
     'is_public_user',
     'has_project_reference',
+    # Response Guards
     'BasicLookupDenialGuard',
     'PublicUserSemanticGuard',
     'AmbiguityGuardMiddleware',
@@ -37,5 +40,6 @@ __all__ = [
     'OutcomeValidationMiddleware',
     'SubjectiveQueryGuard',
     'ProjectSearchReminderMiddleware',
+    # Membership
     'ProjectMembershipMiddleware',
 ]

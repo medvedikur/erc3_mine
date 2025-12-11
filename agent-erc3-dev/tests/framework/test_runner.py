@@ -183,7 +183,7 @@ def run_single_test(
     Returns:
         TestResult with evaluation
     """
-    from agent import run_agent
+    from agent.runner import run_agent
     from stats import SessionStats, FailureLogger
     from handlers.wiki import WikiManager
 

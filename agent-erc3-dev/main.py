@@ -67,7 +67,7 @@ if os.path.exists(local_env):
 from erc3 import ERC3
 from erc3.core import TaskInfo
 from pricing import calculator
-from agent import run_agent
+from agent.runner import run_agent
 from stats import SessionStats, failure_logger
 from handlers.wiki import WikiManager, get_embedding_model
 import config
