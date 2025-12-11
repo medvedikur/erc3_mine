@@ -165,7 +165,7 @@ def run_single_test(
     wiki_dump_dir: str,
     backend: str = "openrouter",
     pricing_model: str = None,
-    max_turns: int = 20,
+    max_turns: int = 70,
     verbose: bool = False,
 ) -> TestResult:
     """
@@ -264,7 +264,7 @@ def run_tests(
     wiki_dump_dir: str = "wiki_dump_tests",
     logs_dir: str = "logs_tests",
     verbose: bool = False,
-    max_turns: int = 20,
+    max_turns: int = 70,
 ) -> TestSuiteResult:
     """
     Run all discovered tests.

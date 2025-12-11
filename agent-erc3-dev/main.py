@@ -546,7 +546,7 @@ def run_local_tests():
         wiki_dump_dir="wiki_dump_tests",
         logs_dir="logs_tests",
         verbose=VERBOSE_MODE,
-        max_turns=20,
+        max_turns=70,
     )
 
 

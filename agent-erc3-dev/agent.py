@@ -230,10 +230,10 @@ class OpenAIUsage:
         }
         return data
 
-def run_agent(model_name: str, api: ERC3, task: TaskInfo, 
-              stats: SessionStats = None, 
-              pricing_model: str = None, 
-              max_turns: int = 20,
+def run_agent(model_name: str, api: ERC3, task: TaskInfo,
+              stats: SessionStats = None,
+              pricing_model: str = None,
+              max_turns: int = 70,
               failure_logger: FailureLogger = None,
               wiki_manager: WikiManager = None,
               backend: str = "gonka"):
@@ -436,9 +436,20 @@ DO NOT set is_final=true until respond is in action_queue!"""))
             continue
 
         # LOOP DETECTION: Detect if agent is stuck repeating the same actions
-        # Convert action_queue to a hashable pattern (tool names + arg keys)
+        # Convert action_queue to a hashable pattern (tool names + arg keys + arg values)
+        # Must include VALUES, not just keys - otherwise iterating through different
+        # entities (e.g., projects_search(member="A"), projects_search(member="B"))
+        # looks identical and triggers false loop detection
+        def make_hashable(v):
+            """Convert arg value to hashable form for pattern comparison."""
+            if isinstance(v, dict):
+                return tuple(sorted((k, make_hashable(val)) for k, val in v.items()))
+            elif isinstance(v, list):
+                return tuple(make_hashable(item) for item in v)
+            return v
+
         action_pattern = tuple(
-            (a.get('tool'), tuple(sorted(a.get('args', {}).keys())))
+            (a.get('tool'), tuple(sorted((k, make_hashable(v)) for k, v in a.get('args', {}).items())))
             for a in action_queue
         )
 

@@ -764,8 +764,20 @@ def _parse_respond(ctx: ParseContext) -> Any:
     # Extract and normalize links
     links = args.get("links") or args.get("Links") or []
     if links:
-        links = [{"kind": l.get("kind") or l.get("Kind", ""),
-                  "id": l.get("id") or l.get("ID", "")} for l in links]
+        normalized = []
+        type_map = {"proj": "project", "emp": "employee", "cust": "customer"}
+        for l in links:
+            if isinstance(l, str):
+                # Agent passed string ID directly — auto-detect kind from prefix
+                prefix = l.split('_')[0] if '_' in l else ""
+                normalized.append({"kind": type_map.get(prefix, ""), "id": l})
+            else:
+                # Agent passed dict — support multiple field naming conventions
+                # kind/Kind/type/Type for type, id/ID/value/Value for identifier
+                kind = l.get("kind") or l.get("Kind") or l.get("type") or l.get("Type", "")
+                link_id = l.get("id") or l.get("ID") or l.get("value") or l.get("Value", "")
+                normalized.append({"kind": kind, "id": link_id})
+        links = normalized
 
     # Auto-detect links from message text
     if not links:

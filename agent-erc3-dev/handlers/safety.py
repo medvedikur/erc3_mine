@@ -701,8 +701,12 @@ class SubjectiveQueryGuard(ResponseGuard):
             )
             return
 
-        # FALLBACK CHECK: Agent didn't declare or claimed "specific" - verify with heuristic
-        # Only trigger if: has vague pattern AND no specific ID in task
+        # FALLBACK CHECK: Agent didn't declare specificity - verify with heuristic
+        # Only trigger if: agent didn't say 'specific' AND has vague pattern AND no specific ID in task
+        # If agent explicitly says 'specific', trust it — they resolved the entities via API
+        if query_specificity == 'specific':
+            return  # Agent explicitly confirmed specificity, trust them
+
         has_vague_pattern = bool(self._vague_re.search(task_text))
         has_specific_id = bool(self._specific_id_re.search(task_text))
 

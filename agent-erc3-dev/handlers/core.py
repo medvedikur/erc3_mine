@@ -286,27 +286,7 @@ class DefaultActionHandler:
                         # System error prevented search, re-raise it
                         raise exact_error
 
-                    # 5. Post-filter: Keep only results where ALL query words appear in name/id
-                    # This prevents "Line 3" search from returning "Packaging Line CV PoC"
-                    query_words = [w.lower() for w in query.split() if w.strip()] if query else []
-                    if query_words and len(projects_map) > 1:
-                        filtered_map = {}
-                        for pid, proj in projects_map.items():
-                            name_lower = (proj.name or '').lower()
-                            id_lower = (proj.id or '').lower()
-                            combined = f"{name_lower} {id_lower}"
-                            # Check if ALL query words appear
-                            if all(qw in combined for qw in query_words):
-                                filtered_map[pid] = proj
-
-                        # Only apply filter if it leaves at least 1 result
-                        if filtered_map:
-                            removed = len(projects_map) - len(filtered_map)
-                            if removed > 0:
-                                print(f"  {CLI_BLUE}🔍 Post-filter: Removed {removed} partial matches (kept {len(filtered_map)} with all query words){CLI_CLR}")
-                            projects_map = filtered_map
-
-                    # 6. Construct Final Response
+                    # 5. Construct Final Response
                     if hasattr(client, 'Resp_ProjectSearchResults'):
                         ResponseClass = client.Resp_ProjectSearchResults
                     else:
@@ -326,7 +306,7 @@ class DefaultActionHandler:
                     employees_map = {}
                     exact_error = None
 
-                    # 1. Exact Match (Original Request)
+                    # 1. Exact Match (Original Request) with page limit retry
                     try:
                         res_exact = ctx.api.dispatch(ctx.model)
                         if hasattr(res_exact, 'employees') and res_exact.employees:
@@ -334,12 +314,40 @@ class DefaultActionHandler:
                                 employees_map[e.id] = e
                     except Exception as e:
                         error_msg = str(e).lower()
-                        if any(x in error_msg for x in ['limit exceeded', 'internal error', 'server error', 'timeout']):
+                        # Check for page limit exceeded - retry with correct limit
+                        if 'page limit exceeded' in error_msg:
+                            match = re.search(r'(\d+)\s*>\s*(\d+)', str(e))
+                            if match:
+                                max_limit = int(match.group(2))
+                                if max_limit > 0:
+                                    print(f"  {CLI_YELLOW}⚠ Page limit exceeded. Retrying with limit={max_limit}.{CLI_CLR}")
+                                    import copy
+                                    model_retry = copy.deepcopy(ctx.model)
+                                    model_retry.limit = max_limit
+                                    try:
+                                        res_exact = ctx.api.dispatch(model_retry)
+                                        if hasattr(res_exact, 'employees') and res_exact.employees:
+                                            for emp in res_exact.employees:
+                                                employees_map[emp.id] = emp
+                                    except Exception as retry_e:
+                                        exact_error = retry_e
+                                        print(f"  {CLI_YELLOW}⚠ Retry also failed: {retry_e}{CLI_CLR}")
+                                        res_exact = None
+                                else:
+                                    exact_error = e
+                                    print(f"  {CLI_YELLOW}⚠ API forbids pagination (max_limit={max_limit}){CLI_CLR}")
+                                    res_exact = None
+                            else:
+                                exact_error = e
+                                print(f"  {CLI_YELLOW}⚠ Exact search failed with system error: {e}{CLI_CLR}")
+                                res_exact = None
+                        elif any(x in error_msg for x in ['internal error', 'server error', 'timeout']):
                             exact_error = e
                             print(f"  {CLI_YELLOW}⚠ Exact search failed with system error: {e}{CLI_CLR}")
+                            res_exact = None
                         else:
                             print(f"  {CLI_YELLOW}⚠ Exact search failed: {e}{CLI_CLR}")
-                        res_exact = None
+                            res_exact = None
 
                     # 2. Keyword Fallback (if query has multiple words and exact match yielded no/few results)
                     query = ctx.model.query
@@ -805,46 +813,69 @@ class DefaultActionHandler:
                         f"Try: projects_search(status=['archived'], query='...') WITHOUT member filter."
                     )
 
-                # EXACT MATCH DETECTION: If one result has exact name match, highlight it
+                # MATCH RANKING: Rank search results by match quality to help agent decide
+                # Levels: EXACT (full phrase in name) > STRONG (query prefix) > PARTIAL (some words match)
                 if query and len(projects) > 1:
                     query_lower = query.lower().strip()
-                    exact_matches = []
-                    partial_matches = []
+                    query_words = set(query_lower.split())
+
+                    ranked_results = []
                     for p in projects:
                         proj_name = (getattr(p, 'name', '') or '').lower().strip()
                         proj_id = getattr(p, 'id', '')
+                        name_words = set(proj_name.split())
+
+                        # Calculate match level
                         if proj_name == query_lower:
-                            exact_matches.append((p, proj_name, proj_id))
+                            rank = "EXACT"
+                            score = 100
+                        elif proj_name.startswith(query_lower + ' ') or proj_name.startswith(query_lower + ':'):
+                            rank = "STRONG"  # Query is prefix of project name
+                            score = 90
+                        elif f' {query_lower} ' in f' {proj_name} ':
+                            rank = "STRONG"  # Query phrase appears within name
+                            score = 85
+                        elif query_words <= name_words:
+                            rank = "GOOD"  # All query words present in name
+                            score = 70
                         else:
-                            partial_matches.append((p, proj_name, proj_id))
-
-                    if len(exact_matches) == 1 and partial_matches:
-                        exact_proj, exact_name, exact_id = exact_matches[0]
-                        ctx.results.append(
-                            f"\n💡 EXACT MATCH: '{exact_name}' ({exact_id}) is an EXACT match for your query '{query}'. "
-                            f"The other {len(partial_matches)} result(s) are only partial matches. "
-                            f"You should proceed with the exact match - no clarification needed!"
-                        )
-
-                    # FUZZY MATCH DETECTION: When query words match project name words in different order
-                    elif not exact_matches and partial_matches:
-                        query_words = set(query_lower.split())
-                        best_fuzzy_match = None
-                        best_overlap = 0
-
-                        for p, proj_name, proj_id in partial_matches:
-                            name_words = set(proj_name.split())
                             overlap = len(query_words & name_words)
-                            if overlap >= min(3, len(query_words)) and overlap > best_overlap:
-                                best_fuzzy_match = (p, proj_name, proj_id)
-                                best_overlap = overlap
+                            if overlap > 0:
+                                rank = "PARTIAL"
+                                score = 30 + (overlap / len(query_words)) * 30
+                            else:
+                                rank = "WEAK"
+                                score = 10
 
-                        if best_fuzzy_match:
-                            _, fuzzy_name, fuzzy_id = best_fuzzy_match
-                            ctx.results.append(
-                                f"\n💡 FUZZY MATCH: '{fuzzy_name}' ({fuzzy_id}) appears to match your query '{query}' "
-                                f"(same words, different order). This is likely the intended project."
-                            )
+                        ranked_results.append((score, rank, proj_name, proj_id))
+
+                    # Sort by score descending
+                    ranked_results.sort(key=lambda x: -x[0])
+
+                    # Generate ranking hint
+                    ranking_lines = []
+                    for score, rank, name, pid in ranked_results:
+                        ranking_lines.append(f"  [{rank}] {name} ({pid})")
+
+                    # Check if there's a clear winner (significantly higher score)
+                    top_score = ranked_results[0][0]
+                    second_score = ranked_results[1][0] if len(ranked_results) > 1 else 0
+                    clear_winner = top_score >= 85 and (top_score - second_score) >= 30
+
+                    if clear_winner:
+                        _, top_rank, top_name, top_id = ranked_results[0]
+                        ctx.results.append(
+                            f"\n💡 SEARCH RANKING for query '{query}':\n" + "\n".join(ranking_lines) +
+                            f"\n\n✅ CLEAR MATCH: '{top_name}' ({top_id}) is a {top_rank} match. "
+                            f"Other results are significantly weaker. Proceed with this project."
+                        )
+                    else:
+                        # Multiple strong matches or no clear winner - genuinely ambiguous
+                        ctx.results.append(
+                            f"\n📊 SEARCH RANKING for query '{query}':\n" + "\n".join(ranking_lines) +
+                            f"\n\nUse this ranking to determine the best match. "
+                            f"EXACT/STRONG matches contain the full query phrase; PARTIAL matches only share some words."
+                        )
 
                 # MUTATION AUTHORIZATION HINT: Remind agent to verify role before status changes
                 # This prevents the agent from returning ok_not_found when they should check auth
