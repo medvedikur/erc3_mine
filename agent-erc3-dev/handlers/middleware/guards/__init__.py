@@ -1,40 +1,40 @@
-# Middleware module
-# Re-exports for backwards compatibility
+"""
+Response Guards - middleware that intercepts Req_ProvideAgentResponse.
 
-from .base import (
-    ResponseGuard,
-    get_task_text,
-    is_public_user,
-    has_project_reference,
-)
+Guards are organized by domain:
+- outcome_guards.py: Validates outcome type (denied, not_found, clarification)
+- project_guards.py: Project-related validation (search, modifications)
+- time_guards.py: Time logging validation
+- security_guards.py: Public user and security-related checks
+- response_guards.py: General response validation
+"""
 
-# Import from guards submodule (refactored from response_guards.py)
-from .guards import (
-    # Outcome Guards
+from .outcome_guards import (
     AmbiguityGuardMiddleware,
     OutcomeValidationMiddleware,
     SingleCandidateOkHint,
     SubjectiveQueryGuard,
-    # Project Guards
+)
+
+from .project_guards import (
     ProjectSearchReminderMiddleware,
     ProjectModificationClarificationGuard,
-    # Time Guards
+)
+
+from .time_guards import (
     TimeLoggingClarificationGuard,
-    # Security Guards
+)
+
+from .security_guards import (
     BasicLookupDenialGuard,
     PublicUserSemanticGuard,
-    # Response Guards
+)
+
+from .response_guards import (
     ResponseValidationMiddleware,
 )
 
-from .membership import ProjectMembershipMiddleware
-
 __all__ = [
-    # Base
-    'ResponseGuard',
-    'get_task_text',
-    'is_public_user',
-    'has_project_reference',
     # Outcome Guards
     'AmbiguityGuardMiddleware',
     'OutcomeValidationMiddleware',
@@ -50,6 +50,4 @@ __all__ = [
     'PublicUserSemanticGuard',
     # Response Guards
     'ResponseValidationMiddleware',
-    # Membership
-    'ProjectMembershipMiddleware',
 ]

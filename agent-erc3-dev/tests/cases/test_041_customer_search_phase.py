@@ -40,9 +40,9 @@ SCENARIO = TestScenario(
     expected=ExpectedResult(
         outcome="ok_answer",
         links=[
-            # Exploring customers from mock data:
+            # Agent should only return customers where user is Account Manager
+            # helene_stutz is AM for scandi_foods, but NOT for nordic_logistics
             AgentLink.customer("cust_scandi_foods_ab"),
-            AgentLink.customer("cust_nordic_logistics_group"),
         ],
         # Response should list exploring customers
         message_contains=["exploring"],

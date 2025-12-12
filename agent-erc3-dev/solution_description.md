@@ -14,24 +14,42 @@ This solution reimplements the SGR (Schema-Guided Reasoning) agent using **LangC
   - `OpenRouterChatModel`: OpenAI-compatible client for OpenRouter API.
 - `tools/`: Tool parsing module:
   - `registry.py`: ToolParser registry with automatic dispatch.
-  - `parser.py`: parse_action() and individual tool parsers.
+  - `parser.py`: parse_action() dispatcher (delegates to parsers/).
   - `links.py`: LinkExtractor for auto-detecting entity links.
   - `patches.py`: SDK runtime patches (SafeReq_UpdateEmployeeInfo).
   - `normalizers.py`: Argument normalization utilities.
+  - `parsers/`: Domain-organized tool parsers:
+    - `identity.py`: who_am_i parser.
+    - `employees.py`: employees_list, employees_search, employees_get, employees_update.
+    - `wiki.py`: wiki_list, wiki_load, wiki_search, wiki_update.
+    - `customers.py`: customers_list, customers_get, customers_search.
+    - `projects.py`: projects_list, projects_get, projects_search, projects_team_update, projects_status_update.
+    - `time.py`: time_log, time_get, time_search, time_update, time_summary_employee, time_summary_project.
+    - `response.py`: respond parser.
 - `prompts.py`: The SGR system prompt enforcing the thinking process, adapted for the Employee Assistant domain.
 - `pricing.py`: Dynamic cost calculator fetching model prices from OpenRouter API.
 - `handlers/`:
   - `core.py`: DefaultActionHandler and ActionExecutor with middleware support, partial update handling (fetch-merge-dispatch), API quirk patches, and failure logging.
+  - `intent.py`: IntentDetector and TaskIntent dataclass for centralized task intent detection (salary-only, time logging, destructive operations).
   - `action_handlers/`: Specialized action handlers using Strategy pattern:
     - `base.py`: ActionHandler ABC and CompositeActionHandler for handler orchestration.
     - `wiki.py`: WikiSearchHandler (local RAG search), WikiLoadHandler (local page loading).
-  - `enrichers/`: API response enrichment classes:
+  - `enrichers/`: API response enrichment classes (see Enricher Architecture below):
+    - `project_search.py`: **ProjectSearchEnricher** (composite) — combines all project search hints.
     - `project_ranking.py`: ProjectRankingEnricher for search result disambiguation.
     - `project_overlap.py`: ProjectOverlapAnalyzer for authorization-aware project hints.
     - `wiki_hints.py`: WikiHintEnricher for task-relevant wiki file suggestions.
+  - `middleware/`: Response guards and middleware:
+    - `base.py`: ResponseGuard ABC and utility functions.
+    - `membership.py`: ProjectMembershipMiddleware for API-verified membership checks.
+    - `guards/`: Domain-organized guard classes:
+      - `outcome_guards.py`: AmbiguityGuard, OutcomeValidation, SingleCandidateOkHint, SubjectiveQueryGuard.
+      - `project_guards.py`: ProjectSearchReminder, ProjectModificationClarificationGuard.
+      - `time_guards.py`: TimeLoggingClarificationGuard.
+      - `security_guards.py`: BasicLookupDenialGuard, PublicUserSemanticGuard.
+      - `response_guards.py`: ResponseValidationMiddleware.
   - `wiki.py`: WikiManager for automatic Company Wiki synchronization with versioned local storage. Implements hybrid RAG search.
-  - `safety.py`: Lightweight middleware guards (AmbiguityGuard, ProjectSearchReminder) providing runtime hints.
-  - `base.py`: Protocols for handlers and middleware (ToolContext, ActionHandler, Middleware).
+  - `base.py`: Protocols for handlers and middleware (ToolContext, ActionHandlerProtocol, Middleware).
 - `config.py`: Central configuration for benchmark type, workspace, models, threads, and logging paths.
 - `wiki_dump/`: Local storage for wiki versions (keyed by SHA1 hash).
 - `logs/`: Directory containing detailed execution logs and failure reports.
@@ -468,6 +486,63 @@ if security_manager.is_public and wiki_manager.has_page("merger.md"):
 ```
 
 This ensures public-facing chatbots **always** mention the acquiring company name (e.g., "AI Excellence Group INTERNATIONAL") in every response when a merger/acquisition has occurred, regardless of the question topic.
+
+### 12. Enricher Architecture (`handlers/enrichers/`)
+
+Enrichers provide context-aware hints by analyzing API responses and injecting guidance into the agent's context. They follow the **Composite pattern** for domain-specific grouping.
+
+#### Design Principles
+
+1. **Single Responsibility**: Each enricher focuses on one aspect (ranking, authorization, archived hints)
+2. **Composability**: Composite enrichers combine related sub-enrichers
+3. **Non-Blocking**: Enrichers return hints (strings), never block execution
+4. **Stateless per-turn**: Caches cleared between turns to avoid stale data
+
+#### Enricher Types
+
+| Type | Interface | Purpose |
+|------|-----------|---------|
+| **Simple** | `enrich(data, context) -> Optional[str]` | Single-aspect hints |
+| **Composite** | `enrich(ctx, result, task_text) -> List[str]` | Combines multiple enrichers |
+
+#### Current Enrichers
+
+```
+enrichers/
+├── project_search.py    # Composite: combines all project search hints
+│   ├── ProjectOverlapAnalyzer   # Authorization based on shared projects
+│   ├── ProjectRankingEnricher   # Match quality ranking
+│   ├── Archived hints           # Search tips for archived projects
+│   ├── Authorization reminder   # Role verification prompts
+│   └── Membership confirmation  # When searching own projects
+├── project_ranking.py   # Ranks results by query match quality
+├── project_overlap.py   # Detects shared projects for authorization
+└── wiki_hints.py        # Task-relevant wiki file suggestions
+```
+
+#### Adding New Enrichers
+
+**For a new aspect of existing domain** (e.g., new project search hint):
+```python
+# Add method to ProjectSearchEnricher
+def _get_new_hint(self, ctx, projects, ...) -> Optional[str]:
+    # Analysis logic
+    return "💡 Hint text" if condition else None
+
+# Call in enrich()
+if new_hint := self._get_new_hint(ctx, projects, ...):
+    hints.append(new_hint)
+```
+
+**For a new domain** (e.g., customer search):
+```python
+# Create handlers/enrichers/customer_search.py
+class CustomerSearchEnricher:
+    def enrich(self, ctx, result, task_text) -> List[str]:
+        hints = []
+        # Add domain-specific hints
+        return hints
+```
 
 ## Handling Ambiguity & Data Conflicts
 

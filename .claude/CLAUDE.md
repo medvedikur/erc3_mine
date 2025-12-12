@@ -18,26 +18,35 @@
   - `runner.py` — Main agent loop (`run_agent()`)
 - **handlers/ folder purpose**: Contains middleware, action handlers, and managers:
   - `core.py` — DefaultActionHandler, ActionExecutor for tool execution
+  - `intent.py` — IntentDetector, TaskIntent for task intent detection
   - `action_handlers/` — Specialized handlers (Strategy pattern):
     - `base.py` — ActionHandler ABC, CompositeActionHandler
     - `wiki.py` — WikiSearchHandler, WikiLoadHandler
-  - `enrichers/` — API response enrichment:
+  - `enrichers/` — API response enrichment (Composite pattern):
+    - `project_search.py` — **ProjectSearchEnricher** (composite) combines all project hints
     - `project_ranking.py` — ProjectRankingEnricher for search disambiguation
     - `project_overlap.py` — ProjectOverlapAnalyzer for authorization hints
     - `wiki_hints.py` — WikiHintEnricher for task-relevant wiki suggestions
-  - `middleware/` — Middleware guards (refactored):
+  - `middleware/` — Middleware guards:
     - `base.py` — ResponseGuard base class, utility functions
-    - `response_guards.py` — 10 response guard classes
     - `membership.py` — ProjectMembershipMiddleware
+    - `guards/` — Domain-organized guard classes:
+      - `outcome_guards.py` — AmbiguityGuard, OutcomeValidation, SubjectiveQueryGuard
+      - `project_guards.py` — ProjectSearchReminder, ProjectModificationClarificationGuard
+      - `time_guards.py` — TimeLoggingClarificationGuard
+      - `security_guards.py` — BasicLookupDenialGuard, PublicUserSemanticGuard
+      - `response_guards.py` — ResponseValidationMiddleware
   - `wiki.py` — WikiManager for knowledge base access
   - `security.py` — SecurityManager for authorization
-  - `safety.py` — Re-exports from middleware/ (backwards compat)
+  - `base.py` — ToolContext, ActionHandlerProtocol, Middleware protocols
 - **tools/ folder purpose**: Tool parsing module:
   - `registry.py` — ToolParser, ParseContext, ParseError
-  - `parser.py` — parse_action() and tool parsers
+  - `parser.py` — parse_action() dispatcher
   - `links.py` — LinkExtractor for auto-linking
   - `patches.py` — SDK runtime patches
   - `normalizers.py` — Argument normalization
+  - `parsers/` — Domain-organized tool parsers:
+    - `identity.py`, `employees.py`, `wiki.py`, `customers.py`, `projects.py`, `time.py`, `response.py`
 
 ## Thread Safety & Parallelism
 - **Embedding model**: Global singleton with thread-safe initialization (`get_embedding_model()`)
@@ -80,12 +89,20 @@
   - `BasicLookupDenialGuard`: Soft hint for denied_security on org-chart lookups
   - `ProjectModificationClarificationGuard`: Soft hint for clarification without project link
 
-## API Response Enrichment
-- **Hints in responses**: API handlers can inject helpful hints into responses (not just raw data), e.g.:
-  - Project overlap analysis: "felix_baum works on 3 'cv' projects, you are Lead of 1 of them"
-  - Authorization context: "jonas_weiss is Lead of proj_acme_line3_cv_poc"
-  - Disambiguation suggestions when multiple matches found
-- **Purpose**: Guide agent without bloating system prompt — context-specific help at runtime
+## Enricher Pattern (handlers/enrichers/)
+Enrichers analyze API responses and inject context-aware hints. Use **Composite pattern** for domain grouping.
+
+- **Simple enricher**: `enrich(data, context) -> Optional[str]` — single-aspect hint
+- **Composite enricher**: `enrich(ctx, result, task_text) -> List[str]` — combines sub-enrichers
+- **Design principles**:
+  - Single responsibility — one aspect per enricher
+  - Non-blocking — return hints, never block execution
+  - Stateless per-turn — clear caches between turns
+- **Adding new hints**:
+  - New aspect of existing domain → add method to composite (e.g., `ProjectSearchEnricher._get_new_hint()`)
+  - New domain → create new composite enricher (e.g., `CustomerSearchEnricher`)
+- **Current composites**:
+  - `ProjectSearchEnricher`: overlap, ranking, archived hints, auth reminder, membership confirmation
 
 ## ERC3 Benchmark Context
 - **Benchmark types**: `erc3-test` (24 tasks, testing), `erc3-dev` (development tasks), `erc3` (production)

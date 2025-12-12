@@ -309,7 +309,7 @@ class ProjectOverlapAnalyzer:
             return self._project_cache[employee_id]
 
         # Import here to avoid circular imports
-        from erc3 import client, dtos
+        from erc3.erc3 import client, dtos
 
         projects: List[Any] = []
         limit = 5  # server hard-limit

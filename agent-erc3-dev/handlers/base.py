@@ -11,8 +11,8 @@ class ToolContext:
         # Optional: shared state for middleware (e.g. current user info)
         self.shared: Dict[str, Any] = {}
 
-class ActionHandler(Protocol):
-    """Protocol for action handlers"""
+class ActionHandlerProtocol(Protocol):
+    """Protocol for action handlers (legacy, use action_handlers.base.ActionHandler ABC instead)"""
     def handle(self, ctx: ToolContext) -> None:
         ...
 

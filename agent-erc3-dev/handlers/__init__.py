@@ -1,7 +1,7 @@
 from .core import ActionExecutor
 from .wiki import WikiManager, WikiMiddleware
 from .security import SecurityManager, SecurityMiddleware
-from .safety import (
+from .middleware import (
     ProjectMembershipMiddleware,
     ProjectSearchReminderMiddleware,
     ResponseValidationMiddleware,

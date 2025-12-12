@@ -2,12 +2,13 @@ import re
 from typing import List, Any, Dict, Optional, Iterable
 from erc3 import ApiException
 from erc3.erc3 import client, dtos
-from .base import ToolContext, Middleware, ActionHandler
+from .base import ToolContext, Middleware
 from .action_handlers import (
     WikiSearchHandler, WikiLoadHandler, CompositeActionHandler,
     ProjectSearchHandler, EmployeeSearchHandler
 )
-from .enrichers import ProjectRankingEnricher, ProjectOverlapAnalyzer, WikiHintEnricher
+from .enrichers import ProjectSearchEnricher, WikiHintEnricher
+from .intent import detect_intent
 from utils import CLI_RED, CLI_GREEN, CLI_BLUE, CLI_YELLOW, CLI_CLR
 
 
@@ -42,8 +43,7 @@ class DefaultActionHandler:
     """
     def __init__(self):
         # Enrichers (with their own caches)
-        self._project_ranking = ProjectRankingEnricher()
-        self._project_overlap = ProjectOverlapAnalyzer()
+        self._project_search = ProjectSearchEnricher()
         self._wiki_hints = WikiHintEnricher()
 
     def can_handle(self, ctx: ToolContext) -> bool:
@@ -123,10 +123,8 @@ class DefaultActionHandler:
             # to prevent accidental wiping or event triggering.
             if isinstance(ctx.model, client.Req_UpdateEmployeeInfo):
                 task_text = getattr(ctx.shared.get("task"), "task_text", "") or ""
-                intent_lower = task_text.lower()
-                salary_only = ("salary" in intent_lower or "compensation" in intent_lower) and (
-                    "raise" in intent_lower or "increase" in intent_lower
-                ) and all(keyword not in intent_lower for keyword in ["skill", "note", "location", "department"])
+                intent = detect_intent(task_text)
+                salary_only = intent.is_salary_only
 
                 # Ensure salary is always an integer (API requirement)
                 # We trust the agent's calculation - don't override with bonus policy
@@ -504,58 +502,8 @@ class DefaultActionHandler:
             if isinstance(ctx.model, client.Req_SearchProjects):
                 task = ctx.shared.get("task")
                 task_text = getattr(task, "task_text", "") if task else ""
-                overlap_hint = self._project_overlap.analyze(ctx, result, task_text)
-                if overlap_hint:
-                    ctx.results.append(overlap_hint)
-
-                # ARCHIVED PROJECT HINT: If searching with member filter and looking for archived,
-                # suggest searching without member filter
-                team_filter = getattr(ctx.model, "team", None)
-                query = getattr(ctx.model, "query", None) or ""
-                projects = getattr(result, "projects", []) or []
-
-                # Check if query suggests looking for archived project
-                archive_keywords = ["archived", "wrapped", "completed", "finished", "closed"]
-                looking_for_archived = any(kw in query.lower() for kw in archive_keywords)
-
-                # Check if we found any archived projects in results
-                found_archived = any(getattr(p, "status", "") == "archived" for p in projects)
-
-                if team_filter and looking_for_archived and not found_archived:
-                    ctx.results.append(
-                        f"\n💡 TIP: You're searching for archived projects with a member filter. "
-                        f"Team members may have been removed from archived projects. "
-                        f"Try: projects_search(status=['archived'], query='...') WITHOUT member filter."
-                    )
-
-                # MATCH RANKING: Rank search results by match quality to help agent decide
-                ranking_hint = self._project_ranking.enrich(projects, query)
-                if ranking_hint:
-                    ctx.results.append(ranking_hint)
-
-                # MUTATION AUTHORIZATION HINT: Remind agent to verify role before status changes
-                # This prevents the agent from returning ok_not_found when they should check auth
-                ctx.results.append(
-                    f"\n⚠️ AUTHORIZATION REMINDER: If you need to MODIFY this project (change status, update fields), "
-                    f"you MUST first verify your role using `projects_get(id='proj_...')`. "
-                    f"Only Lead, Owner, or Direct Manager of Lead can modify project status. "
-                    f"If not authorized → respond `denied_security`, NOT `ok_not_found`!"
-                )
-
-                # MEMBER FILTER HINT: When searching with member=current_user, remind agent they ARE a member
-                security_manager = ctx.shared.get("security_manager")
-                current_user = getattr(security_manager, "current_user", None) if security_manager else None
-                if team_filter and current_user:
-                    filter_employee = getattr(team_filter, "employee_id", None)
-                    if filter_employee == current_user and projects:
-                        proj_ids = [getattr(p, 'id', 'unknown') for p in projects[:3]]
-                        ctx.results.append(
-                            f"\n💡 MEMBERSHIP CONFIRMED: You searched with member='{current_user}'. "
-                            f"This means YOU ARE A MEMBER of ALL {len(projects)} project(s) found! "
-                            f"Projects: {', '.join(proj_ids)}{'...' if len(projects) > 3 else ''}. "
-                            f"To check your exact ROLE (Lead/Engineer/etc), use `projects_get(id='...')` - "
-                            f"the team list will show your role. If you're Lead, you have full authorization."
-                        )
+                for hint in self._project_search.enrich(ctx, result, task_text):
+                    ctx.results.append(hint)
 
         except ApiException as e:
             error_msg = e.api_error.error if e.api_error else str(e)
@@ -752,17 +700,6 @@ class DefaultActionHandler:
             if parsed:
                 return parsed
         return None
-
-    def _search_wiki_for_bonus(self, wiki_manager: Any, terms: Iterable[str]) -> List[str]:
-        snippets = []
-        for term in terms:
-            try:
-                response = wiki_manager.search(term, top_k=3)
-                if response:
-                    snippets.append(response)
-            except Exception as e:
-                print(f"  {CLI_YELLOW}⚠️ Wiki bonus search failed for '{term}': {e}{CLI_CLR}")
-        return snippets
 
     def _apply_bonus_policy(self, current_salary: float, policy: Dict[str, Any]) -> Optional[float]:
         amount = policy.get("amount")
