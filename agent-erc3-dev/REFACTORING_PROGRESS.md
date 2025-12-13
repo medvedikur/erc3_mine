@@ -4,7 +4,7 @@
 Рефакторинг архитектуры ERC3 Agent для устранения "god-объектов" и улучшения модульности.
 
 **Начато**: 2025-12-12
-**Статус**: Фазы 1-2 завершены
+**Статус**: Все фазы завершены ✓
 
 ---
 
@@ -66,29 +66,56 @@ handlers/core.py             # Рефакторенный (290 строк вме
 
 ---
 
-## Фаза 3: main.py → разделение инфраструктуры [PENDING]
+## Фаза 3: main.py → разделение инфраструктуры [DONE]
 
 **Цель**: Разбить 631-строчный entry point
 
-### Задачи:
-- [ ] Выделить `ThreadLogCapture`, `ThreadLocalStdout` → `parallel/output.py`
-- [ ] Выделить executor логику → `parallel/executor.py`
-- [ ] Выделить benchmark loop → `session/benchmark_runner.py`
-- [ ] Упростить `main.py` до ~100 строк
-- [ ] Проверить работоспособность
+### Результат:
+```
+parallel/                    # Новый пакет
+├── __init__.py
+├── output.py               # ThreadLogCapture, ThreadLocalStdout (~150 строк)
+├── executor.py             # run_parallel, run_task_worker (~180 строк)
+└── resources.py            # get_thread_wiki_manager, get_thread_session (~50 строк)
+
+session/                     # Новый пакет
+├── __init__.py
+└── benchmark_runner.py     # BenchmarkRunner, run_sequential, run_local_tests (~200 строк)
+
+main.py                      # Рефакторенный (~200 строк вместо 631)
+```
+
+**Итого**: 631 строка → ~200 строк в main.py
+- ThreadLogCapture, ThreadLocalStdout → `parallel/output.py`
+- run_task_worker, run_parallel → `parallel/executor.py`
+- Thread-local resources → `parallel/resources.py`
+- BenchmarkRunner, run_sequential → `session/benchmark_runner.py`
+- main.py стал тонким entry point
 
 ---
 
-## Фаза 4: agent/runner.py → декомпозиция [PENDING]
+## Фаза 4: agent/runner.py → декомпозиция [DONE]
 
 **Цель**: Разбить 511-строчный файл
 
-### Задачи:
-- [ ] Выделить `_process_action_results()` → `ActionProcessor`
-- [ ] Выделить построение сообщений → `MessageBuilder`
-- [ ] Выделить LLM invocation → `llm_invoker.py`
-- [ ] Упростить `run_agent()` до оркестратора
-- [ ] Проверить работоспособность
+### Результат:
+```
+agent/
+├── __init__.py              # Обновлён с новыми экспортами
+├── runner.py                # Рефакторенный (~180 строк вместо 511)
+├── llm_invoker.py           # LLMInvoker (~110 строк)
+├── message_builder.py       # MessageBuilder (~120 строк)
+├── action_processor.py      # ActionProcessor (~280 строк)
+├── state.py                 # AgentTurnState (без изменений)
+├── parsing.py               # extract_json, OpenAIUsage (без изменений)
+└── loop_detection.py        # LoopDetector (без изменений)
+```
+
+**Итого**: 511 строк → ~180 строк в runner.py
+- `_invoke_llm()` → `LLMInvoker` class
+- Message templates → `MessageBuilder` class
+- `_execute_actions()` + tracking → `ActionProcessor` class
+- `run_agent()` стал чистым оркестратором
 
 ---
 
@@ -112,3 +139,40 @@ handlers/core.py             # Рефакторенный (290 строк вме
 - core.py сокращён с 753 до ~290 строк
 - Все импорты работают корректно
 
+### 2025-12-13
+
+**[DONE] Фаза 3 - Main.py refactoring**
+- Создан `parallel/` пакет:
+  - `output.py`: ThreadLogCapture, ThreadLocalStdout, thread_status
+  - `executor.py`: run_parallel, run_task_worker
+  - `resources.py`: get_thread_wiki_manager, get_thread_session
+- Создан `session/` пакет:
+  - `benchmark_runner.py`: BenchmarkRunner, run_sequential, run_local_tests
+- main.py сокращён с 631 до ~200 строк
+- Все импорты работают корректно
+
+**[DONE] Фаза 4 - Runner refactoring**
+- Создан `agent/llm_invoker.py`: LLMInvoker class
+- Создан `agent/message_builder.py`: MessageBuilder class
+- Создан `agent/action_processor.py`: ActionProcessor, ActionResult
+- runner.py сокращён с 511 до ~180 строк
+- run_agent() стал чистым оркестратором
+- Все импорты работают корректно
+
+---
+
+## Итоговая статистика
+
+| Файл | До | После | Изменение |
+|------|-----|-------|-----------|
+| handlers/wiki.py | 732 | ~180 (manager.py) | -75% |
+| handlers/core.py | 753 | ~290 | -61% |
+| main.py | 631 | ~200 | -68% |
+| agent/runner.py | 511 | ~180 | -65% |
+| **Всего** | **2627** | **~850** | **-68%** |
+
+Новые модули добавили ~1400 строк, но с:
+- Чётким разделением ответственности
+- Документацией (docstrings)
+- Тестируемостью отдельных компонентов
+- Возможностью повторного использования
