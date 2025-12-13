@@ -185,7 +185,10 @@ def run_single_test(
     """
     from agent.runner import run_agent
     from stats import SessionStats, FailureLogger
-    from handlers.wiki import WikiManager
+    from handlers.wiki import WikiManager, WikiVersionStore
+
+    # Clear wiki cache to ensure fresh data from disk
+    WikiVersionStore.clear_cache()
 
     # Create mock API client
     mock_client = MockErc3Client(scenario)

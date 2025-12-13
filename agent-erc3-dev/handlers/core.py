@@ -222,6 +222,10 @@ class DefaultActionHandler:
         if security_manager and isinstance(result, client.Resp_WhoAmI):
             self._maybe_inject_merger_policy(ctx, security_manager, wiki_manager)
 
+        # Inject bonus policy hint for salary-related tasks (even without wiki change)
+        if wiki_manager and isinstance(result, client.Resp_WhoAmI):
+            self._maybe_inject_bonus_hint(ctx, wiki_manager)
+
         # Apply security redaction
         if security_manager:
             result = security_manager.redact_result(result)
@@ -267,6 +271,34 @@ class DefaultActionHandler:
                 f"YOU MUST include the acquiring company name (exactly as written in merger.md) "
                 f"in EVERY response you give, regardless of the question topic."
             )
+
+    def _maybe_inject_bonus_hint(self, ctx: ToolContext, wiki_manager) -> None:
+        """Inject bonus policy hint when task mentions bonus/salary."""
+        task = ctx.shared.get('task')
+        task_text = getattr(task, 'task_text', '') if task else ''
+        if not task_text:
+            return
+
+        task_lower = task_text.lower()
+        bonus_keywords = ['bonus', 'ny bonus', 'new year', 'eoy', 'raise salary', 'salary by']
+
+        if not any(kw in task_lower for kw in bonus_keywords):
+            return
+
+        # Check if culture.md exists and has bonus info
+        if not wiki_manager.has_page('culture.md'):
+            return
+
+        culture_content = wiki_manager.get_page('culture.md') or ''
+        if 'bonus' not in culture_content.lower():
+            return
+
+        print(f"  {CLI_YELLOW}📝 Bonus task detected - injecting culture.md hint{CLI_CLR}")
+        ctx.results.append(
+            f"\n💡 BONUS POLICY HINT: This task mentions bonus/salary. "
+            f"Check `culture.md` for company bonus traditions (e.g., 'NY bonus' = small token amount like 5-15 EUR). "
+            f"Use `wiki_load('culture.md')` or `wiki_search('bonus')` to find the exact policy before making changes."
+        )
 
     # =========================================================================
     # Enrichments

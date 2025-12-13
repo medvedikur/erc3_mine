@@ -68,9 +68,14 @@ class ProjectSearchEnricher:
         if archived_hint := self._get_archived_hint(ctx, projects, query, task_text, team_filter):
             hints.append(archived_hint)
 
-        # 3. Match ranking (disambiguation)
-        if ranking_hint := self._ranking.enrich(projects, query):
-            hints.append(ranking_hint)
+        # 3. Match ranking (disambiguation) - SKIP if overlap found definitive match
+        # When overlap analyzer finds a definitive authorization match, ranking hints
+        # can be misleading (e.g., ranking says "Packaging Line CV" is STRONG match
+        # but overlap says "Line 3" is the only authorized project)
+        has_definitive = bool(ctx.shared.get('_overlap_definitive_hints'))
+        if not has_definitive:
+            if ranking_hint := self._ranking.enrich(projects, query):
+                hints.append(ranking_hint)
 
         # 4. Authorization reminder (always for project searches)
         hints.append(self._get_authorization_reminder())

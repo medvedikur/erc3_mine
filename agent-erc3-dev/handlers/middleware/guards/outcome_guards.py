@@ -15,13 +15,28 @@ from utils import CLI_GREEN, CLI_CLR
 
 class AmbiguityGuardMiddleware(ResponseGuard):
     """
-    Lightweight guard for ok_not_found responses.
+    Guard for ok_not_found responses without database search.
 
     Problem: Agent searches wiki but not DB, responds ok_not_found.
-    Adds a gentle reminder to search the database - no blocking.
+    - Soft block if task mentions projects/employees but no DB search
+    - Soft hint otherwise
     """
 
     target_outcomes = {"ok_not_found"}
+
+    # Keywords indicating task is about database entities
+    PROJECT_KEYWORDS = [
+        r'\bproject\b', r'\bpoc\b', r'\bpilot\b', r'\barchived?\b',
+        r'\bwrapped\b', r'\bclosed\b', r'\bfinished\b',
+    ]
+    EMPLOYEE_KEYWORDS = [
+        r'\bemployee\b', r'\bperson\b', r'\bwho\s+(?:is|works|did)\b',
+        r'\b(?:ana|jonas|elena|marko|sofia|felix|mira|helene)\b',
+    ]
+
+    def __init__(self):
+        self._project_re = re.compile('|'.join(self.PROJECT_KEYWORDS), re.IGNORECASE)
+        self._employee_re = re.compile('|'.join(self.EMPLOYEE_KEYWORDS), re.IGNORECASE)
 
     def _check(self, ctx: ToolContext, outcome: str) -> None:
         task_text = get_task_text(ctx)
@@ -30,11 +45,46 @@ class AmbiguityGuardMiddleware(ResponseGuard):
 
         # Check what tools were used
         action_types_executed = ctx.shared.get('action_types_executed', set())
-        searched_db = any(t in action_types_executed for t in [
+        searched_projects = 'projects_search' in action_types_executed
+        searched_employees = 'employees_search' in action_types_executed
+        searched_any_db = any(t in action_types_executed for t in [
             'projects_search', 'employees_search', 'customers_search', 'time_search'
         ])
 
-        if not searched_db:
+        # Detect what the task is about
+        mentions_project = bool(self._project_re.search(task_text))
+        mentions_employee = bool(self._employee_re.search(task_text))
+
+        # Soft BLOCK if task is about projects but no projects_search
+        if mentions_project and not searched_projects:
+            self._soft_block(
+                ctx,
+                warning_key='ambiguity_project_warned',
+                log_msg="AmbiguityGuard: Project-related task without projects_search",
+                block_msg=(
+                    "💡 HINT: You responded 'ok_not_found' but didn't use `projects_search`. "
+                    "Wiki doesn't contain project status - consider searching the database.\n\n"
+                    "**REQUIRED**: Use `projects_search(query='...', status=['archived'])` to find archived projects.\n"
+                    "The wiki contains policies, not project records!"
+                )
+            )
+            return
+
+        # Soft BLOCK if task mentions specific employee but no employees_search
+        if mentions_employee and not searched_employees and not searched_projects:
+            self._soft_block(
+                ctx,
+                warning_key='ambiguity_employee_warned',
+                log_msg="AmbiguityGuard: Employee-related task without employees_search",
+                block_msg=(
+                    "💡 HINT: You responded 'ok_not_found' but didn't search the database. "
+                    "Use `employees_search` or `projects_search(member='...')` to find employee-related data."
+                )
+            )
+            return
+
+        # Generic hint for other cases
+        if not searched_any_db:
             ctx.results.append(
                 "\n💡 HINT: You responded 'ok_not_found' but didn't search the database. "
                 "Consider using projects_search/employees_search before concluding something doesn't exist."

@@ -98,6 +98,12 @@ class WikiManager:
             self.summaries = WikiSummarizer.generate_all_summaries(self.pages)
             self.store.save_summaries(sha1, self.summaries)
 
+        # Generate chunks if not cached (needed for search)
+        if not self.chunks and self.pages:
+            print(f"Generating chunks (not in cache)...")
+            self._reindex()
+            self.store.save_chunks(sha1, self.chunks, self.corpus_embeddings)
+
         print(f"Wiki loaded from cache: {len(self.pages)} pages, {len(self.chunks)} chunks, {len(self.summaries)} summaries")
 
     def _download_and_save(self, sha1: str):

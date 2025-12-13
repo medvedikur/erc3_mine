@@ -36,6 +36,14 @@ class WikiVersionStore:
     _summaries_cache: Dict[str, Dict[str, str]] = {}
     _cache_lock = threading.Lock()
 
+    @classmethod
+    def clear_cache(cls):
+        """Clear all class-level caches. Use between test runs to ensure fresh data."""
+        with cls._cache_lock:
+            cls._pages_cache.clear()
+            cls._chunks_cache.clear()
+            cls._summaries_cache.clear()
+
     def __init__(self, base_dir: str = WIKI_DUMP_DIR):
         self.base_dir = base_dir
         self.versions_index = os.path.join(base_dir, "versions.json")

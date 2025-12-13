@@ -20,6 +20,16 @@ _TASK_STOPWORDS: Set[str] = {
     'requirements', 'time', 'tracking'
 }
 
+# Keyword to file mapping for concepts that don't match filename directly
+# Maps task keywords to specific wiki files
+_KEYWORD_FILE_MAPPING: Dict[str, str] = {
+    'bonus': 'culture.md',
+    'ny': 'culture.md',  # NY bonus = New Year bonus
+    'eoy': 'culture.md',  # End of Year
+    'tradition': 'culture.md',
+    'salary': 'rulebook.md',  # Salary rules are in rulebook
+}
+
 # Patterns that indicate self-mutation tasks (don't need wiki hints)
 _SELF_MUTATION_PATTERNS = [
     r'\b(add|update|change|set)\b.{0,20}\bmy\s+(skills?|location|department|notes?)\b',
@@ -114,8 +124,22 @@ class WikiHintEnricher:
             List of (path, matching_words) tuples, sorted by match count desc
         """
         matching_files = []
+        added_paths = set()
 
+        # First, check keyword-to-file mapping for conceptual matches
+        for word in task_words:
+            if word in _KEYWORD_FILE_MAPPING:
+                mapped_file = _KEYWORD_FILE_MAPPING[word]
+                if mapped_file in wiki_paths and mapped_file not in added_paths:
+                    if not (skip_critical and mapped_file in _CRITICAL_PATHS):
+                        matching_files.append((mapped_file, {word}))
+                        added_paths.add(mapped_file)
+
+        # Then check filename matches
         for wiki_path in wiki_paths:
+            if wiki_path in added_paths:
+                continue
+
             # Skip critical docs if requested
             if skip_critical and wiki_path in _CRITICAL_PATHS:
                 continue
@@ -128,6 +152,7 @@ class WikiHintEnricher:
             overlap = task_words & filename_words
             if overlap and len(overlap) >= 1:
                 matching_files.append((wiki_path, overlap))
+                added_paths.add(wiki_path)
 
         # Sort by overlap count (descending)
         matching_files.sort(key=lambda x: len(x[1]), reverse=True)
