@@ -29,8 +29,15 @@ def _parse_respond(ctx: ParseContext) -> Any:
                args.get("content") or args.get("Content") or
                args.get("details") or args.get("Details") or
                args.get("body") or args.get("Body"))
+
+    # FALLBACK: If agent mistakenly put message content in query_specificity, use it
     if not message:
-        message = "No message provided."
+        qs_value = args.get("query_specificity") or args.get("querySpecificity")
+        if qs_value and isinstance(qs_value, str) and len(qs_value) > 50:
+            # Likely a message mistakenly put in query_specificity
+            message = qs_value
+        else:
+            message = "No message provided."
 
     # Extract/infer outcome
     outcome = args.get("outcome") or args.get("Outcome")
@@ -66,7 +73,8 @@ def _parse_respond(ctx: ParseContext) -> Any:
 
         if had_mutations:
             links = link_extractor.add_mutation_entities(links, mutation_entities, ctx.current_user)
-        else:
+        elif search_entities:
+            # Always add search entities if available - ensures links are present even with empty message
             links = link_extractor.add_search_entities(links, search_entities)
 
     # Deduplicate

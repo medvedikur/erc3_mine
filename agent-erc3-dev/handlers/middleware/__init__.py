@@ -18,6 +18,7 @@ from .guards import (
     # Project Guards
     ProjectSearchReminderMiddleware,
     ProjectModificationClarificationGuard,
+    ProjectTeamModAuthorizationGuard,
     # Time Guards
     TimeLoggingClarificationGuard,
     # Security Guards
@@ -25,6 +26,9 @@ from .guards import (
     PublicUserSemanticGuard,
     # Response Guards
     ResponseValidationMiddleware,
+    # M&A Compliance Guards
+    CCCodeValidationGuard,
+    JiraTicketRequirementGuard,
 )
 
 from .membership import ProjectMembershipMiddleware
@@ -43,6 +47,7 @@ __all__ = [
     # Project Guards
     'ProjectSearchReminderMiddleware',
     'ProjectModificationClarificationGuard',
+    'ProjectTeamModAuthorizationGuard',
     # Time Guards
     'TimeLoggingClarificationGuard',
     # Security Guards
@@ -50,6 +55,9 @@ __all__ = [
     'PublicUserSemanticGuard',
     # Response Guards
     'ResponseValidationMiddleware',
+    # M&A Compliance Guards
+    'CCCodeValidationGuard',
+    'JiraTicketRequirementGuard',
     # Membership
     'ProjectMembershipMiddleware',
 ]

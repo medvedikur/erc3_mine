@@ -25,9 +25,11 @@ class ProjectOverlapAnalyzer:
         self._hint_cache: Set[Tuple[str, str]] = set()
         self._project_cache: Dict[str, List[Any]] = {}
         self._project_detail_cache: Dict[str, Any] = {}
+        # NOTE: _definitive_match_hints is now stored in ctx.shared to persist across turns
+        # Key: '_overlap_definitive_hints' -> Dict[employee_id, hint_text]
 
     def clear_caches(self) -> None:
-        """Clear all caches. Call at start of each turn."""
+        """Clear per-turn caches. Definitive hints are in ctx.shared and persist."""
         self._hint_cache.clear()
         self._project_cache.clear()
         self._project_detail_cache.clear()
@@ -65,11 +67,22 @@ class ProjectOverlapAnalyzer:
         if not target_employee or target_employee == current_user:
             return None
 
+        # Get definitive hints from shared state (persists across turns)
+        definitive_hints = ctx.shared.setdefault('_overlap_definitive_hints', {})
+
         target_projects = getattr(search_result, "projects", None) or []
         if not target_projects:
+            # Even if no projects in this page, check for stored definitive match
+            if target_employee in definitive_hints:
+                return f"⚠️ REMINDER (from earlier search): {definitive_hints[target_employee]}"
             return None
 
-        # Avoid spamming the same hint multiple times per target/turn
+        # Check if we already have a definitive match for this employee
+        # This is crucial for pagination - agent must use the definitive match!
+        if target_employee in definitive_hints:
+            return f"⚠️ REMINDER (from earlier search): {definitive_hints[target_employee]}"
+
+        # Avoid spamming the same hint multiple times per target/turn (but definitive matches always shown)
         hint_key = (target_employee, ctx.model.__class__.__name__)
         if hint_key in self._hint_cache:
             return None
@@ -161,13 +174,22 @@ class ProjectOverlapAnalyzer:
             )
         elif len(lead_keyword_projects) == 1:
             # Exactly 1 Lead project - clear choice!
-            return (
-                f"💡 AUTHORIZATION MATCH: You ({current_user}) are the Lead of exactly 1 "
-                f"'{filter_keywords[0]}' project where {target_employee} works: "
-                f"{self._format_project_label(lead_keyword_projects[0])}. "
-                f"This is the correct project to log time to. "
-                f"IMPORTANT: Include BOTH {target_employee} AND {current_user} (yourself as authorizer) in response links!"
+            proj = lead_keyword_projects[0]
+            proj_id = getattr(proj, "id", "unknown")
+            hint = (
+                f"🎯 DEFINITIVE MATCH: You ({current_user}) are the Lead of EXACTLY ONE "
+                f"'{filter_keywords[0]}' project where {target_employee} works:\n"
+                f"   ➤ {self._format_project_label(proj)}\n"
+                f"   ➤ Project ID: {proj_id}\n\n"
+                f"⚠️ USE THIS PROJECT ID ({proj_id}) for time logging. "
+                f"Do NOT select any other project - this is the ONLY '{filter_keywords[0]}' project "
+                f"where you have Lead authorization to log time for {target_employee}.\n"
+                f"REQUIRED: Include BOTH {target_employee} AND {current_user} (authorizer) in response links!"
             )
+            # Store in shared state for pagination reminders (persists across turns)
+            definitive_hints = ctx.shared.setdefault('_overlap_definitive_hints', {})
+            definitive_hints[target_employee] = hint
+            return hint
 
         return None
 
@@ -204,14 +226,20 @@ class ProjectOverlapAnalyzer:
         is_lead = self._check_is_lead(ctx, project_id, current_user)
 
         if is_lead:
-            return (
-                f"💡 AUTHORIZATION MATCH: {self._format_project_label(project)} is the ONLY project "
+            hint = (
+                f"🎯 DEFINITIVE MATCH: {self._format_project_label(project)} is the ONLY project "
                 f"where both you ({current_user}) and {target_employee} are members, "
-                f"AND you are the Lead (authorized to log time for others). "
+                f"AND you are the Lead (authorized to log time for others).\n"
+                f"   ➤ Project ID: {project_id}\n\n"
+                f"⚠️ USE THIS PROJECT ID ({project_id}) for time logging. "
                 f"Even though search returned {total_results} total projects for {target_employee}, "
-                f"this is the logical choice because it's the only one where you have authorization. "
-                f"IMPORTANT: Include BOTH {target_employee} AND {current_user} (yourself as authorizer) in response links!"
+                f"this is the ONLY one where you have Lead authorization.\n"
+                f"REQUIRED: Include BOTH {target_employee} AND {current_user} (authorizer) in response links!"
             )
+            # Store in shared state for pagination reminders (persists across turns)
+            definitive_hints = ctx.shared.setdefault('_overlap_definitive_hints', {})
+            definitive_hints[target_employee] = hint
+            return hint
         else:
             return (
                 f"💡 CONTEXT: Search returned {total_results} projects for {target_employee}. "
@@ -230,12 +258,19 @@ class ProjectOverlapAnalyzer:
         lead_projects = self._find_lead_projects(ctx, overlap, current_user)
 
         if len(lead_projects) == 1:
-            return (
-                f"💡 AUTHORIZATION MATCH: Found {len(overlap)} shared projects, "
-                f"but you are the Lead of only 1: {self._format_project_label(lead_projects[0])}. "
-                f"This is the logical choice for logging time. "
+            proj = lead_projects[0]
+            proj_id = getattr(proj, "id", "unknown")
+            hint = (
+                f"🎯 DEFINITIVE MATCH: Found {len(overlap)} shared projects, "
+                f"but you are the Lead of only 1: {self._format_project_label(proj)}.\n"
+                f"   ➤ Project ID: {proj_id}\n\n"
+                f"⚠️ USE THIS PROJECT ID ({proj_id}) for time logging. "
                 f"IMPORTANT: Include BOTH {target_employee} AND {current_user} (yourself as authorizer) in response links!"
             )
+            # Store in shared state for pagination reminders (persists across turns)
+            definitive_hints = ctx.shared.setdefault('_overlap_definitive_hints', {})
+            definitive_hints[target_employee] = hint
+            return hint
         elif len(lead_projects) > 1:
             lead_labels = [self._format_project_label(p) for p in lead_projects]
             return (

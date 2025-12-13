@@ -82,6 +82,29 @@
   - ❌ Word presence in task text (can match unrelated contexts)
   - ❌ Outcome + keyword combination (too many edge cases)
 
+## ⚠️ ANTI-PATTERNS - DO NOT IMPLEMENT
+These approaches seem logical but create brittle, non-adaptable code:
+
+1. **Hardcoded policy file names** (e.g., `if wiki.has_page("merger.md")`):
+   - ❌ BAD: Code that checks for specific file like `merger.md`, `changes.md`, `policy_v2.md`
+   - ✅ GOOD: Agent searches wiki for relevant terms, adapts to any policy structure
+
+2. **Hardcoded format patterns** (e.g., `CC-XX-XX-NNN` regex in middleware):
+   - ❌ BAD: Guard that validates `CC-[A-Z]{2}-[A-Z]{2}-\d{3}` format in code
+   - ✅ GOOD: Agent reads format requirements from wiki, validates dynamically
+   - Why: New formats (JIRA tickets `PROJ-123`, cost codes `KOD-456`) would require code changes
+
+3. **Domain-specific guards** (e.g., `JiraTicketRequirementGuard`, `CCCodeValidationGuard`):
+   - ❌ BAD: Middleware that hardcodes business rules like "project changes need JIRA"
+   - ✅ GOOD: Agent reads policies from wiki, applies them contextually
+   - Why: Business rules change, new policies emerge - code shouldn't need updates
+
+4. **Keyword-based blocking** (e.g., block if "pause" in task_text):
+   - ❌ BAD: `if 'pause' in task_text and 'project' in task_text: require_jira()`
+   - ✅ GOOD: Agent understands context through reasoning, not keyword matching
+
+**Core Principle**: The agent should be **adaptable** - capable of handling ANY company situation by reading wiki policies, not trained for specific hardcoded cases. If you find yourself writing code that checks for specific file names, format patterns, or business rules - STOP and add it to the prompt instead, teaching the agent to discover these from wiki.
+
 - **State tracking**: Use `ctx.shared` dict to track warnings shown, mutations performed, action_types_executed, etc.
 - **Key middlewares**:
   - `AmbiguityGuardMiddleware`: Soft hint if `ok_not_found` without DB search

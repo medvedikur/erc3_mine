@@ -37,6 +37,9 @@ class AgentTurnState:
     # Loop detection
     action_history: List[Any] = field(default_factory=list)
 
+    # Enricher hints (persist across turns)
+    overlap_definitive_hints: Dict[str, str] = field(default_factory=dict)
+
     # References (set per-action)
     task: Optional[Any] = None
     api: Optional[Any] = None
@@ -55,6 +58,7 @@ class AgentTurnState:
             'action_types_executed': self.action_types_executed,
             'outcome_validation_warned': self.outcome_validation_warned,
             'task': self.task,
+            '_overlap_definitive_hints': self.overlap_definitive_hints,
         }
 
     def create_context(self):
@@ -76,5 +80,11 @@ class AgentTurnState:
         """
         if ctx.shared.get('outcome_validation_warned'):
             self.outcome_validation_warned = True
+
+        # Sync overlap definitive hints (persist across turns)
+        hints = ctx.shared.get('_overlap_definitive_hints')
+        if hints:
+            self.overlap_definitive_hints.update(hints)
+
         # Note: had_mutations, mutation_entities, search_entities are
         # updated directly in the main loop after successful actions

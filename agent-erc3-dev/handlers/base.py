@@ -1,5 +1,6 @@
 from typing import Any, Dict, Protocol, List
 
+
 class ToolContext:
     """Context object passed to handlers and middleware"""
     def __init__(self, api, action_dict: Dict[str, Any], action_model: Any):

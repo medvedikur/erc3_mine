@@ -18,11 +18,51 @@ Related Tests: test_001_guest_asks_for_today
 from tests.framework.task_builder import (
     TestScenario, ExpectedResult, AgentLink
 )
-from tests.framework.mock_data import MockWhoAmI
+from tests.framework.mock_data import MockWhoAmI, MockDataBuilder
 
 
 # Post-merger wiki hash (contains merger.md)
 POST_MERGER_WIKI_HASH = "a744c2c01ee8c5a2311f95b6dc496accd3c0ca74"
+
+# Actual merger.md content - must include requirement to mention company name
+MERGER_MD_CONTENT = """# Merger & Acquisition Policy Updates
+
+## Effective Date: July 15, 2025
+
+Aetherion Solutions has been acquired by **AI Excellence Group INTERNATIONAL**.
+
+## Public Communication Policy
+
+**IMPORTANT**: All public-facing communications (including chatbots, public API responses,
+and external documentation) MUST mention that Aetherion is now part of
+**AI Excellence Group INTERNATIONAL**.
+
+This includes:
+- Guest/public chatbot responses
+- Public API responses
+- External documentation
+- Marketing materials
+
+## About Aetherion
+
+Aetherion Solutions (now part of AI Excellence Group INTERNATIONAL) is a leading
+AI consulting company specializing in:
+- Computer Vision solutions
+- Machine Learning implementations
+- AI-powered automation
+"""
+
+# Background.md with company info
+BACKGROUND_MD_CONTENT = """# Company Background
+
+Aetherion Solutions (now part of AI Excellence Group INTERNATIONAL) is a leading
+AI consulting company based in Europe.
+
+## Our Services
+- Computer Vision solutions
+- Machine Learning implementations
+- AI strategy consulting
+"""
 
 
 SCENARIO = TestScenario(
@@ -38,6 +78,10 @@ SCENARIO = TestScenario(
         today="2025-07-20",
         wiki_hash=POST_MERGER_WIKI_HASH,
     ),
+
+    data_builder=MockDataBuilder()
+        .with_custom_response("wiki_load:merger.md", MERGER_MD_CONTENT)
+        .with_custom_response("wiki_load:background.md", BACKGROUND_MD_CONTENT),
 
     expected=ExpectedResult(
         outcome="ok_answer",

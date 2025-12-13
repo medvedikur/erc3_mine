@@ -150,8 +150,8 @@ class ProjectSearchEnricher:
         return (
             "\n⚠️ AUTHORIZATION REMINDER: If you need to MODIFY this project (change status, update fields), "
             "you MUST first verify your role using `projects_get(id='proj_...')`. "
-            "Only Lead, Owner, or Direct Manager of Lead can modify project status. "
-            "If not authorized → respond `denied_security`, NOT `ok_not_found`!"
+            "If you are the **PROJECT Lead** (role='Lead' in team array), you ARE authorized to change status! "
+            "This is 'specifically allowed' per rulebook. If not authorized → `denied_security`."
         )
 
     def _get_member_filter_hint(

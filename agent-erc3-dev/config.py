@@ -44,7 +44,7 @@ DEFAULT_PRICING_MODEL = "qwen/qwen3-30b-a3b"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Max turns per task before giving up
-MAX_TURNS_PER_TASK = 70
+MAX_TURNS_PER_TASK = 20
 
 # Default number of threads for parallel mode
 DEFAULT_THREADS = 1

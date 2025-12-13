@@ -319,6 +319,18 @@ class FailureLogger:
                     "error": error
                 })
 
+    def log_context_results(self, task_id: str, action_type: str, results: list):
+        """Log context results (hints, guards, enrichments) for an action"""
+        with self._lock:
+            if task_id in self.conversation_logs:
+                # Initialize context_results list if not exists
+                if "context_results" not in self.conversation_logs[task_id]:
+                    self.conversation_logs[task_id]["context_results"] = []
+                self.conversation_logs[task_id]["context_results"].append({
+                    "action": action_type,
+                    "results": list(results)  # Copy the list
+                })
+
     def save_failure(self, task_id: str, score: float, eval_logs: str):
         """Save failure log"""
         with self._lock:
@@ -367,6 +379,15 @@ class FailureLogger:
                         f.write(f"  ERROR: {call['error']}\n")
                     else:
                         f.write(f"  Response: {str(call['response'])[:500]}\n")
+
+                # Log context results (hints, guards, enrichments)
+                context_results = task_data.get('context_results', [])
+                if context_results:
+                    f.write(f"\n═══ CONTEXT RESULTS (hints/guards/enrichments) ═══\n")
+                    for ctx_result in context_results:
+                        f.write(f"\n[{ctx_result['action']}]\n")
+                        for result in ctx_result.get('results', []):
+                            f.write(f"  {result}\n")
 
     def print_summary(self):
         """Print summary of failures"""

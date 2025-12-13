@@ -18,11 +18,41 @@ Related Tests: wiki_cleanup
 from tests.framework.task_builder import (
     TestScenario, ExpectedResult, AgentLink
 )
-from tests.framework.mock_data import MockWhoAmI
+from tests.framework.mock_data import MockWhoAmI, MockDataBuilder
 
 
 # Post-merger wiki hash (contains merger.md)
 POST_MERGER_WIKI_HASH = "a744c2c01ee8c5a2311f95b6dc496accd3c0ca74"
+
+# Actual merger.md content that agent should find
+MERGER_MD_CONTENT = """# Merger & Acquisition Policy Updates
+
+## Effective Date: July 15, 2025
+
+Aetherion Solutions has been acquired by **AI Excellence Group INTERNATIONAL**.
+
+## New Security Restrictions
+
+Following the acquisition, the following security measures are now in effect:
+
+### 1. Project Change Requirements
+- All project status changes (pause, archive, activate) now require a **JIRA ticket** reference
+- JIRA ticket must be included in the change notes (format: JIRA-XXX)
+- Project Lead approval is still required for status changes
+
+### 2. Access Control
+- VPN is now mandatory for remote access
+- Two-factor authentication required for all systems
+- Guest access has been restricted
+
+### 3. Data Handling
+- Customer data must be encrypted at rest
+- Cross-border data transfers require Legal approval
+- Data retention policy: 7 years for financial records
+
+## Cost Centre Codes
+All time tracking must use the new CC code format: CC-XX-XX-NNN
+"""
 
 
 SCENARIO = TestScenario(
@@ -42,6 +72,9 @@ SCENARIO = TestScenario(
         today="2025-07-20",
         wiki_hash=POST_MERGER_WIKI_HASH,
     ),
+
+    data_builder=MockDataBuilder()
+        .with_custom_response("wiki_load:merger.md", MERGER_MD_CONTENT),
 
     expected=ExpectedResult(
         outcome="ok_answer",

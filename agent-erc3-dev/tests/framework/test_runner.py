@@ -165,7 +165,7 @@ def run_single_test(
     wiki_dump_dir: str,
     backend: str = "openrouter",
     pricing_model: str = None,
-    max_turns: int = 70,
+    max_turns: int = None,
     verbose: bool = False,
 ) -> TestResult:
     """
@@ -202,6 +202,7 @@ def run_single_test(
     # Create stats (not used for scoring, just for tracking)
     stats = SessionStats()
     failure_logger = FailureLogger()
+    failure_logger.start_task(task.task_id, task.task_text, task.spec_id)
 
     # Create WikiManager pointing to test wiki
     wiki_manager = WikiManager(base_dir=wiki_dump_dir)
@@ -247,6 +248,10 @@ def run_single_test(
         error=error,
     )
 
+    # Attach context_results from failure_logger to result for debugging
+    task_data = failure_logger.conversation_logs.get(task.task_id, {})
+    result.context_results = task_data.get('context_results', [])
+
     if verbose:
         status_color = CLI_GREEN if result.passed else CLI_RED
         print(f"  {status_color}Score: {result.score:.1f}{CLI_CLR}")
@@ -264,7 +269,7 @@ def run_tests(
     wiki_dump_dir: str = "wiki_dump_tests",
     logs_dir: str = "logs_tests",
     verbose: bool = False,
-    max_turns: int = 70,
+    max_turns: int = None,
 ) -> TestSuiteResult:
     """
     Run all discovered tests.

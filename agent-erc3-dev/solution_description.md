@@ -616,6 +616,62 @@ NEVER use hard block based on regex word matching in task text — too many fals
 
 **Key Principle**: Track `action_types_executed` in `ctx.shared` to verify what agent actually did, rather than guessing from task text.
 
+#### ⚠️ ANTI-PATTERNS - DO NOT IMPLEMENT
+
+These approaches seem logical but create brittle, non-adaptable code:
+
+**1. Hardcoded Policy File Names**
+```python
+# ❌ BAD: Code checks for specific file
+if wiki.has_page("merger.md"):
+    inject_merger_policy()
+
+# ✅ GOOD: Agent searches wiki for relevant terms, adapts to any policy structure
+# Agent uses wiki_search("acquisition policy") or wiki_search("company merger")
+```
+**Why bad**: New policies will be named `changes.md`, `policy_v2.md`, `restructuring.md` - code would need updates.
+
+**2. Hardcoded Format Patterns**
+```python
+# ❌ BAD: Middleware validates specific format in code
+class CCCodeValidationGuard:
+    CC_PATTERN = re.compile(r'CC-[A-Z]{2}-[A-Z]{2}-\d{3}')
+    def check(self, ctx):
+        if not self.CC_PATTERN.match(code):
+            return "Invalid CC code format"
+
+# ✅ GOOD: Agent reads format requirements from wiki dynamically
+# Agent uses wiki_search("cost centre format") and validates based on wiki content
+```
+**Why bad**: New formats (JIRA tickets `PROJ-123`, cost codes `KOD-456`) would require code changes.
+
+**3. Domain-Specific Guards**
+```python
+# ❌ BAD: Middleware hardcodes business rules
+class JiraTicketRequirementGuard:
+    def check(self, ctx):
+        if "pause" in task_text and "project" in task_text:
+            if not has_jira_ticket(notes):
+                return "JIRA ticket required for project modifications"
+
+# ✅ GOOD: Agent reads policies from wiki, applies contextually
+# Prompt instruction: "Search wiki for unknown terms before asking clarification"
+```
+**Why bad**: Business rules change constantly - new policies emerge, old ones are deprecated.
+
+**4. Keyword-Based Blocking**
+```python
+# ❌ BAD: Block based on word presence in task text
+if 'pause' in task_text and 'project' in task_text:
+    require_jira()
+
+# ✅ GOOD: Agent understands context through reasoning
+# "let me pause to think" ≠ "pause the project"
+```
+**Why bad**: Keywords match unrelated contexts. `\bpause\b` matches "let me pause to think".
+
+**Core Principle**: The agent should be **adaptable** - capable of handling ANY company situation by reading wiki policies, not trained for specific hardcoded cases. If you find yourself writing code that checks for specific file names, format patterns, or business rules - **STOP** and add it to the prompt instead, teaching the agent to discover these from wiki.
+
 ### 3. Local RAG & Caching
 Instead of re-fetching wiki content or searching via the API repeatedly, the agent maintains a local vector/token index of the wiki. This allows for fast, free, and repeated searches within a task session without hitting API rate limits or costs.
 

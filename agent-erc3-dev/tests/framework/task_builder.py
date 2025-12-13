@@ -189,13 +189,13 @@ def identity_ceo(today: str = "2025-07-15") -> MockWhoAmI:
 
 
 def identity_coo(today: str = "2025-07-15") -> MockWhoAmI:
-    """COO (sofia_rinaldi) identity - Level 1."""
+    """COO (sofia_rinaldi) identity - Level 1 Executive."""
     return MockWhoAmI(
         is_public=False,
         user="sofia_rinaldi",
         name="Sofia Rinaldi",
         email="sofia_rinaldi@aetherion.com",
-        department="Operations",
+        department="Executive Leadership",  # COO = Level 1 Executive
         location="Munich",
         today=today,
     )

@@ -25,6 +25,7 @@ class TestResult:
     error: Optional[str] = None
     turns_used: int = 0
     api_calls: List[str] = field(default_factory=list)
+    context_results: List[Dict] = field(default_factory=list)  # All ctx.results from execution
 
     def __str__(self) -> str:
         status = "PASS" if self.passed else "FAIL"
@@ -33,6 +34,24 @@ class TestResult:
             lines.append(f"  {log}")
         if self.error:
             lines.append(f"  ERROR: {self.error}")
+
+        # Include context_results (hints, guards, enrichments) for all tests (useful for analysis)
+        if self.context_results:
+            lines.append("")
+            lines.append("=" * 50)
+            lines.append("CONTEXT RESULTS (hints/guards/enrichments):")
+            lines.append("=" * 50)
+            for ctx_result in self.context_results:
+                action = ctx_result.get('action', 'unknown')
+                lines.append(f"\n[{action}]")
+                for result in ctx_result.get('results', []):
+                    # Format multi-line results nicely
+                    result_str = str(result)
+                    if '\n' in result_str:
+                        lines.append("  " + result_str.replace('\n', '\n  '))
+                    else:
+                        lines.append(f"  {result_str}")
+
         return "\n".join(lines)
 
 

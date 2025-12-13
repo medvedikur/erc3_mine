@@ -21,6 +21,7 @@ def normalize_args(args: dict) -> dict:
     normalized = args.copy()
 
     # Common mappings (hallucination -> correct key)
+    # NOTE: These are general mappings. Tool-specific mappings should be in parsers.
     mappings = {
         # Wiki
         "query_semantic": "query_regex",
@@ -28,19 +29,13 @@ def normalize_args(args: dict) -> dict:
         "page_filter": "page",
         "page_includes": "page",
 
-        # Employees/Time
+        # Employees/Time - keep employee_id -> employee
         "employee_id": "employee",
-        "id": "employee",  # Context dependent
         "user_id": "employee",
         "username": "employee",
 
-        # Projects
-        "project_id": "id",
-        "project": "id",  # For get_project
-        "name": "query",  # Common hallucination for search
-
-        # Time Log
-        "project_id": "project",  # For time_log
+        # NOTE: "project" -> "id" mapping REMOVED - it breaks time_get fallback!
+        # Each parser should handle its own field names.
     }
 
     for bad_key, good_key in mappings.items():

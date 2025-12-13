@@ -26,6 +26,8 @@ from .state import AgentTurnState
 from .parsing import extract_json, OpenAIUsage
 from .loop_detection import LoopDetector
 
+import config
+
 
 # Mutation operation types - these modify state and require current_user in links
 MUTATION_TYPES = (
@@ -58,7 +60,7 @@ def run_agent(
     task: TaskInfo,
     stats: SessionStats = None,
     pricing_model: str = None,
-    max_turns: int = 70,
+    max_turns: int = None,
     failure_logger: FailureLogger = None,
     wiki_manager: WikiManager = None,
     backend: str = "gonka"
@@ -77,6 +79,10 @@ def run_agent(
         wiki_manager: Wiki manager instance (creates new if None)
         backend: LLM backend ("gonka", "openrouter", etc.)
     """
+    # Set default max_turns from config
+    if max_turns is None:
+        max_turns = config.MAX_TURNS_PER_TASK
+
     # Initialize LLM and client
     llm = get_llm(model_name, backend=backend)
     erc_client = api.get_erc_dev_client(task)
@@ -347,6 +353,11 @@ def _execute_actions(action_queue, state, erc_client, wiki_manager, security_man
         ctx = executor.execute(action_dict, action_model, initial_shared=initial_shared)
         results.extend(ctx.results)
         state.sync_from_context(ctx)
+
+        # Log context results to failure_logger
+        if failure_logger and ctx.results:
+            action_name = action_dict.get('tool', action_model.__class__.__name__)
+            failure_logger.log_context_results(task.task_id, action_name, ctx.results)
 
         # Track errors
         if any("FAILED" in r or "ERROR" in r for r in ctx.results):

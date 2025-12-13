@@ -19,7 +19,7 @@ def _parse_projects_list(ctx: ParseContext) -> Any:
 @ToolParser.register("projects_get", "projectsget", "getproject")
 def _parse_projects_get(ctx: ParseContext) -> Any:
     """Get project by ID."""
-    proj_id = ctx.args.get("id") or ctx.args.get("project_id")
+    proj_id = ctx.args.get("id") or ctx.args.get("project_id") or ctx.args.get("project")
     if not proj_id:
         return None
     return client.Req_GetProject(id=proj_id)
@@ -81,10 +81,39 @@ def _parse_projects_search(ctx: ParseContext) -> Any:
                      "projectsupdateteam", "teamupdate")
 def _parse_projects_team_update(ctx: ParseContext) -> Any:
     """Update project team members."""
-    team_data = ctx.args.get("team") or []
+    # Accept both "team" and "members" as parameter names
+    team_data = ctx.args.get("team") or ctx.args.get("members") or []
+    project_id = ctx.args.get("id") or ctx.args.get("project_id") or ctx.args.get("project")
+
+    # If agent only provides new members to ADD (not full team), merge with current team
+    if team_data and ctx.context and hasattr(ctx.context, 'api'):
+        try:
+            resp = ctx.context.api.get_project(project_id)
+            if hasattr(resp, 'project') and resp.project and hasattr(resp.project, 'team'):
+                current_team = []
+                existing_ids = set()
+                for member in resp.project.team:
+                    emp_id = getattr(member, 'employee', None)
+                    if emp_id:
+                        existing_ids.add(emp_id)
+                        current_team.append({
+                            "employee": emp_id,
+                            "role": getattr(member, 'role', 'Other'),
+                            "time_slice": getattr(member, 'time_slice', 0.0)
+                        })
+                # Add new members that aren't already on team
+                for new_member in team_data:
+                    new_id = new_member.get('employee') if isinstance(new_member, dict) else getattr(new_member, 'employee', None)
+                    if new_id and new_id not in existing_ids:
+                        current_team.append(new_member)
+                        existing_ids.add(new_id)
+                team_data = current_team
+        except Exception:
+            pass  # Fall back to original team_data
+
     normalized_team = normalize_team_roles(team_data)
     return client.Req_UpdateProjectTeam(
-        id=ctx.args.get("id") or ctx.args.get("project_id"),
+        id=project_id,
         team=normalized_team,
         changed_by=ctx.args.get("changed_by")
     )
@@ -101,8 +130,14 @@ def _parse_projects_status_update(ctx: ParseContext) -> Any:
             "Valid values: 'idea', 'exploring', 'active', 'paused', 'archived'",
             tool="projects_status_update"
         )
+    project_id = ctx.args.get("id") or ctx.args.get("project_id") or ctx.args.get("project")
+    if not project_id:
+        return ParseError(
+            "projects_status_update requires project ID. Use 'id' or 'project' parameter.",
+            tool="projects_status_update"
+        )
     return client.Req_UpdateProjectStatus(
-        id=ctx.args.get("id") or ctx.args.get("project_id"),
+        id=project_id,
         status=status,
         changed_by=ctx.args.get("changed_by")
     )

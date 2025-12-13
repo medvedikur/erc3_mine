@@ -14,10 +14,24 @@ from .project_ranking import ProjectRankingEnricher
 from .project_overlap import ProjectOverlapAnalyzer
 from .project_search import ProjectSearchEnricher
 from .wiki_hints import WikiHintEnricher
+from .bonus_policy import BonusPolicyEnricher
+from .response_enrichers import (
+    RoleEnricher,
+    ArchiveHintEnricher,
+    TimeEntryHintEnricher,
+    CustomerSearchHintEnricher,
+    PaginationHintEnricher,
+)
 
 __all__ = [
     'ProjectRankingEnricher',
     'ProjectOverlapAnalyzer',
     'ProjectSearchEnricher',
     'WikiHintEnricher',
+    'BonusPolicyEnricher',
+    'RoleEnricher',
+    'ArchiveHintEnricher',
+    'TimeEntryHintEnricher',
+    'CustomerSearchHintEnricher',
+    'PaginationHintEnricher',
 ]

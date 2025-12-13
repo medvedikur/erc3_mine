@@ -4,10 +4,89 @@ Project Guards - validate project-related responses.
 Guards:
 - ProjectSearchReminderMiddleware: Reminds to use projects_search
 - ProjectModificationClarificationGuard: Ensures project links in clarifications
+- ProjectTeamModAuthorizationGuard: Requires authorization check before team modification
 """
 import re
 from ..base import ResponseGuard, get_task_text, has_project_reference
 from ...base import ToolContext
+
+
+class ProjectTeamModAuthorizationGuard(ResponseGuard):
+    """
+    Requires authorization check (projects_get) before answering team modification queries.
+
+    Problem: Agent sees multiple projects, asks for clarification instead of:
+    1. Choosing the best match
+    2. Checking authorization via projects_get
+    3. Denying if not authorized (denied_security)
+
+    This guard catches responses where agent tries to clarify or answer
+    about team modifications without first checking authorization.
+    """
+
+    target_outcomes = {"none_clarification_needed", "ok_answer"}
+
+    # Patterns for team modification requests
+    TEAM_MOD_PATTERNS = [
+        r'\badd\s+(?:me|myself)\s+to\b.{0,50}\bteam\b',
+        r'\badd\s+(?:me|myself)\s+to\b.{0,50}\bproject\b',
+        r'\bjoin\b.{0,30}\bproject\b',
+        r'\bjoin\b.{0,30}\bteam\b',
+        r'\badd\b.{0,30}\bto\s+(?:the\s+)?team\b',
+        r'\bremove\b.{0,30}\bfrom\s+(?:the\s+)?team\b',
+        r'\bchange\s+(?:my\s+)?role\b',
+        r'\bmodify\s+team\b',
+        r'\bupdate\s+team\b',
+    ]
+
+    def __init__(self):
+        self._team_mod_re = re.compile('|'.join(self.TEAM_MOD_PATTERNS), re.IGNORECASE)
+
+    def _check(self, ctx: ToolContext, outcome: str) -> None:
+        task_text = get_task_text(ctx)
+        if not task_text:
+            return
+
+        # Check if this is a team modification task
+        if not self._team_mod_re.search(task_text):
+            return
+
+        # Check if projects_get was called (authorization check)
+        action_types_executed = ctx.shared.get('action_types_executed', set())
+        has_auth_check = 'projects_get' in action_types_executed
+
+        if has_auth_check:
+            return  # Agent properly checked authorization
+
+        # Agent is responding about team modification without authorization check
+        if outcome == "none_clarification_needed":
+            self._soft_block(
+                ctx,
+                warning_key='team_mod_auth_clarification_warned',
+                log_msg="Team Mod Auth Guard: Clarification without projects_get - blocking",
+                block_msg=(
+                    "🛑 TEAM MODIFICATION WITHOUT AUTHORIZATION CHECK:\n\n"
+                    "You're asking for clarification about a PROJECT TEAM modification, but you HAVEN'T "
+                    "checked if you're AUTHORIZED to make this change!\n\n"
+                    "**REQUIRED STEPS before clarifying:**\n"
+                    "1. Use `projects_search` to find the project (you already did this)\n"
+                    "2. Choose the BEST MATCH from search results (use RANKING hints)\n"
+                    "3. Use `projects_get(id='proj_xxx')` to get the project team\n"
+                    "4. Check if you are **Lead** in the team array\n"
+                    "5. If NOT Lead → respond with `denied_security`\n"
+                    "6. If Lead but need clarification → THEN ask for clarification\n\n"
+                    "**DO NOT** ask for clarification first - check authorization first!"
+                )
+            )
+        elif outcome == "ok_answer":
+            # Agent claiming success without auth check - very suspicious
+            self._soft_hint(
+                ctx,
+                "Team Mod Auth Guard: ok_answer without projects_get",
+                "⚠️ WARNING: You responded 'ok_answer' for a team modification but didn't "
+                "verify authorization via `projects_get`. Make sure you checked the team array "
+                "to confirm you are **Lead** before claiming success."
+            )
 
 
 class ProjectSearchReminderMiddleware(ResponseGuard):

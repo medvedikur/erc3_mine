@@ -7,6 +7,38 @@ from erc3.erc3 import client
 from ..registry import ToolParser, ParseContext
 
 
+def _get_default_date_range(ctx: ParseContext) -> tuple:
+    """
+    Get default date range for time summary queries.
+
+    Uses a wide range (full year) when dates not specified,
+    because the agent typically wants "all time" when asking
+    about total hours on a project.
+    """
+    # Try to get today from security manager
+    today = None
+    if ctx.context and hasattr(ctx.context, 'shared'):
+        sm = ctx.context.shared.get('security_manager')
+        if sm and hasattr(sm, 'today') and sm.today:
+            today = sm.today
+
+    if not today:
+        today = datetime.date.today().isoformat()
+
+    # Parse today to get year
+    try:
+        today_dt = datetime.date.fromisoformat(today)
+        year = today_dt.year
+    except (ValueError, TypeError):
+        year = 2025
+
+    # Default: from Jan 1 of current year to today
+    date_from = f"{year}-01-01"
+    date_to = today
+
+    return date_from, date_to
+
+
 @ToolParser.register("time_log", "timelog", "logtime")
 def _parse_time_log(ctx: ParseContext) -> Any:
     """Log time entry for an employee on a project."""
@@ -39,11 +71,34 @@ def _parse_time_log(ctx: ParseContext) -> Any:
 
 @ToolParser.register("time_get", "timeget", "gettime")
 def _parse_time_get(ctx: ParseContext) -> Any:
-    """Get time entry by ID."""
+    """Get time entry by ID, or fallback to search if search params provided."""
     entry_id = ctx.args.get("id")
-    if not entry_id:
-        return None
-    return client.Req_GetTimeEntry(id=entry_id)
+    if entry_id:
+        return client.Req_GetTimeEntry(id=entry_id)
+
+    # FALLBACK: If agent uses time_get with search params, convert to time_search
+    employee = ctx.args.get("employee") or ctx.args.get("employee_id")
+    date_from = ctx.args.get("date_from") or ctx.args.get("from_date") or ctx.args.get("from")
+    date_to = ctx.args.get("date_to") or ctx.args.get("to_date") or ctx.args.get("to")
+    date_single = ctx.args.get("date")
+    project = ctx.args.get("project") or ctx.args.get("project_id")
+
+    if employee or date_from or date_to or date_single or project:
+        # Agent used time_get as time_search - convert
+        if date_single and not date_from:
+            date_from = date_single
+            date_to = date_single
+        return client.Req_SearchTimeEntries(
+            employee=employee or ctx.current_user,
+            project=project,
+            date_from=date_from,
+            date_to=date_to,
+            billable="",
+            offset=0,
+            limit=10
+        )
+
+    return None
 
 
 @ToolParser.register("time_search", "timesearch", "searchtime")
@@ -99,9 +154,19 @@ def _parse_time_summary_by_employee(ctx: ParseContext) -> Any:
     if customers and isinstance(customers, str):
         customers = [customers]
 
+    # Get date range - these are required fields
+    date_from = ctx.args.get("date_from")
+    date_to = ctx.args.get("date_to")
+
+    # If dates not provided, use sensible defaults
+    if not date_from or not date_to:
+        default_from, default_to = _get_default_date_range(ctx)
+        date_from = date_from or default_from
+        date_to = date_to or default_to
+
     return client.Req_TimeSummaryByEmployee(
-        date_from=ctx.args.get("date_from"),
-        date_to=ctx.args.get("date_to"),
+        date_from=date_from,
+        date_to=date_to,
         employees=employees or [],
         projects=projects or [],
         customers=customers or [],
@@ -125,9 +190,19 @@ def _parse_time_summary_by_project(ctx: ParseContext) -> Any:
     if customers and isinstance(customers, str):
         customers = [customers]
 
+    # Get date range - these are required fields
+    date_from = ctx.args.get("date_from")
+    date_to = ctx.args.get("date_to")
+
+    # If dates not provided, use sensible defaults
+    if not date_from or not date_to:
+        default_from, default_to = _get_default_date_range(ctx)
+        date_from = date_from or default_from
+        date_to = date_to or default_to
+
     return client.Req_TimeSummaryByProject(
-        date_from=ctx.args.get("date_from"),
-        date_to=ctx.args.get("date_to"),
+        date_from=date_from,
+        date_to=date_to,
         employees=employees or [],
         projects=projects or [],
         customers=customers or [],

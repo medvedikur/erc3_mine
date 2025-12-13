@@ -1,5 +1,5 @@
 from .core import ActionExecutor
-from .wiki import WikiManager, WikiMiddleware
+from .wiki import WikiManager, WikiMiddleware, get_embedding_model
 from .security import SecurityManager, SecurityMiddleware
 from .middleware import (
     ProjectMembershipMiddleware,
@@ -12,7 +12,11 @@ from .middleware import (
     PublicUserSemanticGuard,
     BasicLookupDenialGuard,
     ProjectModificationClarificationGuard,
+    ProjectTeamModAuthorizationGuard,
     SubjectiveQueryGuard,
+    # M&A Compliance
+    CCCodeValidationGuard,
+    JiraTicketRequirementGuard,
 )
 
 def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManager, task=None):
@@ -20,6 +24,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         WikiMiddleware(wiki_manager),
         ProjectMembershipMiddleware(),
         ProjectSearchReminderMiddleware(),            # Reminds to use projects_search for project queries
+        ProjectTeamModAuthorizationGuard(),           # Requires projects_get before team modification response
         AmbiguityGuardMiddleware(),                   # Catches ambiguous queries with wrong outcome
         TimeLoggingClarificationGuard(),              # Ensures time log clarifications include project
         SingleCandidateOkHint(),                      # Nudges ok_answer when single candidate found
@@ -28,6 +33,9 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         SubjectiveQueryGuard(),                       # Blocks ok_answer on subjective queries (cool, best, that)
         OutcomeValidationMiddleware(),                # Validates denied outcomes (unsupported vs security)
         PublicUserSemanticGuard(),                    # Ensures guests use denied_security for internal data
+        # M&A Compliance Guards
+        CCCodeValidationGuard(),                      # Validates CC code format after M&A
+        JiraTicketRequirementGuard(),                 # Requires JIRA ticket for project changes after M&A
         ResponseValidationMiddleware(),               # Validates respond has proper message/links
     ]
     if security_manager:
