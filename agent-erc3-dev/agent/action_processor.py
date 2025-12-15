@@ -35,6 +35,10 @@ MUTATION_TYPES = (
 )
 
 # Search types for auto-linking
+# AICODE-NOTE: Only time-related searches should auto-add to links because they
+# filter by specific entity IDs. GET/Search operations should NOT auto-add —
+# the agent must explicitly mention entity IDs in the response message for them
+# to be linked (via extract_from_message in response.py).
 SEARCH_TYPES = (
     client.Req_SearchTimeEntries,
     client.Req_TimeSummaryByEmployee,
@@ -360,6 +364,7 @@ class ActionProcessor:
         if any("FAILED" in r or "ERROR" in r for r in ctx.results):
             return
 
+        # Time-related searches
         if isinstance(action_model, client.Req_SearchTimeEntries):
             if action_model.employee:
                 state.search_entities.append({"id": action_model.employee, "kind": "employee"})

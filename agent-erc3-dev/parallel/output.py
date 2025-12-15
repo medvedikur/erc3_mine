@@ -46,7 +46,9 @@ class ThreadLogCapture:
         spec_id: str,
         thread_id: int,
         log_dir: Path,
-        verbose: bool = False
+        verbose: bool = False,
+        task_id: str = None,
+        task_text: str = None,
     ):
         """
         Initialize log capture for a task.
@@ -56,10 +58,14 @@ class ThreadLogCapture:
             thread_id: Thread index for color coding
             log_dir: Directory to write log files
             verbose: If True, also print to console with prefix
+            task_id: Task ID from benchmark
+            task_text: Original task question/request
         """
         self.spec_id = spec_id
         self.thread_id = thread_id
         self.verbose = verbose
+        self.task_id = task_id
+        self.task_text = task_text
         self.color = THREAD_COLORS[thread_id % len(THREAD_COLORS)]
         self.prefix = f"{self.color}[T{thread_id}:{spec_id[:20]}]{CLI_CLR}"
         self._closed = False
@@ -68,6 +74,23 @@ class ThreadLogCapture:
         log_dir.mkdir(parents=True, exist_ok=True)
         self.log_path = log_dir / f"{spec_id}.log"
         self.log_file = open(self.log_path, 'w', encoding='utf-8')
+
+        # Write header with task context
+        self._write_header()
+
+    def _write_header(self):
+        """Write task context header at the start of the log file."""
+        header = "═" * 60 + "\n"
+        header += "TASK CONTEXT\n"
+        header += "═" * 60 + "\n"
+        if self.task_id:
+            header += f"Task ID:  {self.task_id}\n"
+        header += f"Spec ID:  {self.spec_id}\n"
+        if self.task_text:
+            header += f"Question: {self.task_text}\n"
+        header += "═" * 60 + "\n\n"
+        self.log_file.write(header)
+        self.log_file.flush()
 
     def write(self, text: str):
         """Write to log file, optionally to console."""

@@ -26,6 +26,52 @@ from .output import (
 from .resources import get_thread_wiki_manager, get_thread_session
 
 
+def _write_context_results(log_capture: ThreadLogCapture, task_id: str, failure_logger):
+    """
+    Write context results (hints, guards, enrichments) to the log file.
+
+    Similar to the failure report format but included in all parallel logs
+    for easier debugging and analysis.
+    """
+    if task_id not in failure_logger.conversation_logs:
+        return
+
+    task_data = failure_logger.conversation_logs[task_id]
+    context_results = task_data.get('context_results', [])
+    api_responses = task_data.get('api_responses', [])
+
+    # Write API calls section
+    if api_responses:
+        log_capture.write(f"\n{'═'*60}\n")
+        log_capture.write(f"API CALLS ({len(api_responses)} calls)\n")
+        log_capture.write(f"{'═'*60}\n")
+        for call in api_responses:
+            log_capture.write(f"\n[{call['action']}]\n")
+            if call.get('error'):
+                log_capture.write(f"  ERROR: {call['error']}\n")
+            else:
+                # For ProvideAgentResponse, show request with links
+                if call['action'] == 'Req_ProvideAgentResponse':
+                    request_data = call.get('request', {})
+                    links = request_data.get('links', [])
+                    log_capture.write(f"  Links sent: {links}\n")
+                response_str = str(call.get('response', {}))
+                # Truncate long responses
+                if len(response_str) > 500:
+                    response_str = response_str[:500] + "..."
+                log_capture.write(f"  Response: {response_str}\n")
+
+    # Write context results section (hints, guards, enrichments)
+    if context_results:
+        log_capture.write(f"\n{'═'*60}\n")
+        log_capture.write("CONTEXT RESULTS (hints/guards/enrichments)\n")
+        log_capture.write(f"{'═'*60}\n")
+        for ctx_result in context_results:
+            log_capture.write(f"\n[{ctx_result['action']}]\n")
+            for result in ctx_result.get('results', []):
+                log_capture.write(f"  {result}\n")
+
+
 def run_task_worker(
     task: TaskInfo,
     stats: SessionStats,
@@ -72,8 +118,15 @@ def run_task_worker(
         'thread_id': thread_id
     }
 
-    # Setup log capture
-    log_capture = ThreadLogCapture(spec_id, thread_id, logs_dir, verbose=verbose)
+    # Setup log capture with task context
+    log_capture = ThreadLogCapture(
+        spec_id=spec_id,
+        thread_id=thread_id,
+        log_dir=logs_dir,
+        verbose=verbose,
+        task_id=task.task_id,
+        task_text=task.task_text,
+    )
     _thread_stdout = get_thread_stdout()
     _thread_stderr = get_thread_stderr()
 
@@ -132,6 +185,9 @@ def run_task_worker(
             thread_status(thread_id, spec_id, f"{score_icon} Done! Score: {task_result.eval.score}")
         else:
             thread_status(thread_id, spec_id, "Done (no eval)")
+
+        # Write context results (hints/guards/enrichments) to log
+        _write_context_results(log_capture, task.task_id, failure_logger)
 
         stats.finish_task(task.task_id, result['score'])
 

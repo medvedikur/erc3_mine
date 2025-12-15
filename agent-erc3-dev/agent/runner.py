@@ -91,6 +91,10 @@ def run_agent(
     task_done = False
     who_am_i_called = False
 
+    # Log task info at start
+    print(f"{CLI_BLUE}=== Task: {task.task_id} ==={CLI_CLR}")
+    print(f"{CLI_CYAN}[Question]:{CLI_CLR} {task.task_text}")
+
     # Main agent loop
     for turn in range(max_turns):
         if task_done:

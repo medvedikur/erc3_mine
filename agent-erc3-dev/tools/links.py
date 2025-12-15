@@ -52,7 +52,8 @@ class LinkExtractor:
                 links.append({"id": found_id, "kind": self.TYPE_MAP[prefix]})
 
         # Find bare employee usernames (name_surname pattern)
-        potential_users = re.findall(r'\b([a-z]+(?:_[a-z]+)+)\b', str(message))
+        # AICODE-NOTE: Updated regex to support alphanumeric IDs like iv5n_030, 6KR2_044
+        potential_users = re.findall(r'\b([a-zA-Z0-9]+(?:_[a-zA-Z0-9]+)+)\b', str(message))
         for pu in potential_users:
             if not pu.startswith(('proj_', 'emp_', 'cust_')):
                 if pu not in self.NON_EMPLOYEE_PATTERNS:

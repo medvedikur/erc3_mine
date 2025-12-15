@@ -378,6 +378,11 @@ class FailureLogger:
                     if call.get('error'):
                         f.write(f"  ERROR: {call['error']}\n")
                     else:
+                        # For ProvideAgentResponse, show request with links
+                        if call['action'] == 'Req_ProvideAgentResponse':
+                            request_data = call.get('request', {})
+                            links = request_data.get('links', [])
+                            f.write(f"  Links sent: {links}\n")
                         f.write(f"  Response: {str(call['response'])[:500]}\n")
 
                 # Log context results (hints, guards, enrichments)

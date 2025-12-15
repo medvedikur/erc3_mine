@@ -59,13 +59,21 @@ class LoopDetector:
         Includes tool names AND argument values so that iterating through
         different entities doesn't look like a loop.
         """
-        return tuple(
-            (a.get('tool'), tuple(sorted(
-                (k, self._make_hashable(v))
-                for k, v in a.get('args', {}).items()
-            )))
-            for a in action_queue
-        )
+        result = []
+        for a in action_queue:
+            tool = a.get('tool')
+            args = a.get('args', {})
+            # Handle malformed args (e.g., string instead of dict)
+            if isinstance(args, dict):
+                args_tuple = tuple(sorted(
+                    (k, self._make_hashable(v))
+                    for k, v in args.items()
+                ))
+            else:
+                # Convert non-dict args to hashable form
+                args_tuple = (self._make_hashable(args),)
+            result.append((tool, args_tuple))
+        return tuple(result)
 
     def _make_hashable(self, value: Any) -> Any:
         """Convert value to hashable form for pattern comparison."""
