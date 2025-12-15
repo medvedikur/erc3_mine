@@ -1,12 +1,15 @@
-from .core import ActionExecutor
+from .core import ActionExecutor, DefaultActionHandler
 from .wiki import WikiManager, WikiMiddleware, get_embedding_model
 from .security import SecurityManager, SecurityMiddleware
+from .context import SharedState, SharedStateProxy
+from .pipeline import ActionPipeline
 from .middleware import (
     ProjectMembershipMiddleware,
     ProjectSearchReminderMiddleware,
     ResponseValidationMiddleware,
     AmbiguityGuardMiddleware,
     TimeLoggingClarificationGuard,
+    TimeLoggingAuthorizationGuard,
     SingleCandidateOkHint,
     OutcomeValidationMiddleware,
     PublicUserSemanticGuard,
@@ -27,6 +30,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         ProjectTeamModAuthorizationGuard(),           # Requires projects_get before team modification response
         AmbiguityGuardMiddleware(),                   # Catches ambiguous queries with wrong outcome
         TimeLoggingClarificationGuard(),              # Ensures time log clarifications include project
+        TimeLoggingAuthorizationGuard(),              # Requires projects_get before denying time log
         SingleCandidateOkHint(),                      # Nudges ok_answer when single candidate found
         ProjectModificationClarificationGuard(),      # Ensures project mod clarifications include project link
         BasicLookupDenialGuard(),                     # Catches denied_security for basic org-chart lookups

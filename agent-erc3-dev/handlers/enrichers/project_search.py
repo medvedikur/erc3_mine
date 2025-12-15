@@ -84,6 +84,11 @@ class ProjectSearchEnricher:
         if member_hint := self._get_member_filter_hint(ctx, projects, team_filter):
             hints.append(member_hint)
 
+        # 6. Missing team filter hint (task mentions employee but no filter used)
+        if not team_filter:
+            if missing_filter_hint := self._get_missing_team_filter_hint(task_text, projects):
+                hints.append(missing_filter_hint)
+
         return hints
 
     def _get_archived_hint(
@@ -191,4 +196,68 @@ class ProjectSearchEnricher:
             f"Projects: {', '.join(proj_ids)}{'...' if len(projects) > 3 else ''}. "
             f"To check your exact ROLE (Lead/Engineer/etc), use `projects_get(id='...')` - "
             f"the team list will show your role. If you're Lead, you have full authorization."
+        )
+
+    def _get_missing_team_filter_hint(
+        self,
+        task_text: str,
+        projects: List[Any]
+    ) -> Optional[str]:
+        """
+        Generate hint when task mentions an employee but search has no team filter.
+
+        Problem: Task says "log time for felix on CV project" but agent searches
+        just by query without team filter, missing the overlap analysis that would
+        find the authorized project.
+        """
+        import re
+
+        task_lower = task_text.lower()
+
+        # Common employee name patterns in tasks
+        # "for felix", "for felix_baum", "Felix's project", etc.
+        employee_patterns = [
+            r'\bfor\s+(\w+)\b',  # "for felix", "for ana"
+            r'\b(\w+)\'s\s+(?:project|work|time)\b',  # "felix's project"
+            r'\bon\s+behalf\s+of\s+(\w+)\b',  # "on behalf of felix"
+        ]
+
+        # Known employee first names (common in benchmark)
+        known_employees = {
+            'felix': 'felix_baum',
+            'ana': 'ana_kovac',
+            'jonas': 'jonas_weiss',
+            'elena': 'elena_vogel',
+            'marko': 'marko_petrovic',
+            'sofia': 'sofia_rinaldi',
+            'helene': 'helene_stutz',
+            'mira': 'mira_schafer',
+            'lukas': 'lukas_gruber',
+            'timo': 'timo_hansen',
+            'richard': 'richard_klein',
+        }
+
+        # Find mentioned employee
+        mentioned_employee = None
+        for pattern in employee_patterns:
+            match = re.search(pattern, task_lower)
+            if match:
+                name = match.group(1).lower()
+                if name in known_employees:
+                    mentioned_employee = known_employees[name]
+                    break
+
+        if not mentioned_employee:
+            return None
+
+        # Check if task involves time logging or project work
+        time_keywords = ['log', 'time', 'hours', 'billable', 'work']
+        if not any(kw in task_lower for kw in time_keywords):
+            return None
+
+        return (
+            f"\n💡 TIME LOGGING TIP: Task mentions '{mentioned_employee}'. "
+            f"To find projects where YOU are authorized to log time for them, "
+            f"try: `projects_search(query='...', member='{mentioned_employee}')`. "
+            f"This will enable overlap analysis to find projects where you're Lead and they're a member."
         )

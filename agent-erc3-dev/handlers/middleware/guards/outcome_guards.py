@@ -253,6 +253,9 @@ class SingleCandidateOkHint(ResponseGuard):
 
     Solution: If message indicates single candidate found with high confidence,
     hint that ok_answer is appropriate for single-match results.
+
+    EXCEPTION: If the task contains subjective/vague patterns ("cool project",
+    "best employee"), the clarification is CORRECT and we should NOT nudge.
     """
 
     target_outcomes = {"none_clarification_needed"}
@@ -280,13 +283,31 @@ class SingleCandidateOkHint(ResponseGuard):
         r'[Dd]o\s+you\s+(?:mean|want)',
     ]
 
+    # Subjective/vague patterns in TASK - if present, clarification is CORRECT
+    # AICODE-NOTE: Reuses patterns from SubjectiveQueryGuard
+    SUBJECTIVE_TASK_PATTERNS = [
+        r'\b(that|the)\s+(cool|nice|best|great|good|interesting|important)\s+\w+',
+        r'\bcool\s+(project|person|employee|customer)\b',
+        r'\bbest\s+(project|person|employee|customer)\b',
+        r'\bthat\s+(one|project|thing)\b',
+        r'\bfavorite\s+\w+',
+        r'\bmost\s+(interesting|important|cool)\b',
+    ]
+
     def __init__(self):
         self._single_re = re.compile('|'.join(self.SINGLE_CANDIDATE_PATTERNS), re.IGNORECASE)
         self._multiple_re = re.compile('|'.join(self.MULTIPLE_PATTERNS), re.IGNORECASE)
         self._confirm_re = re.compile('|'.join(self.CONFIRMATION_PATTERNS), re.IGNORECASE)
+        self._subjective_re = re.compile('|'.join(self.SUBJECTIVE_TASK_PATTERNS), re.IGNORECASE)
 
     def _check(self, ctx: ToolContext, outcome: str) -> None:
         message = ctx.model.message or ""
+
+        # Skip if task contains subjective/vague patterns - clarification is CORRECT
+        task_text = get_task_text(ctx) or ""
+        if self._subjective_re.search(task_text):
+            print(f"  {CLI_GREEN}✓ SingleCandidateOkHint: Skipped - task is subjective/vague{CLI_CLR}")
+            return
 
         # Skip if message indicates multiple candidates
         if self._multiple_re.search(message):

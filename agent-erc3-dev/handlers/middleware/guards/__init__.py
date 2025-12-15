@@ -25,6 +25,7 @@ from .project_guards import (
 
 from .time_guards import (
     TimeLoggingClarificationGuard,
+    TimeLoggingAuthorizationGuard,
 )
 
 from .security_guards import (
@@ -53,6 +54,7 @@ __all__ = [
     'ProjectTeamModAuthorizationGuard',
     # Time Guards
     'TimeLoggingClarificationGuard',
+    'TimeLoggingAuthorizationGuard',
     # Security Guards
     'BasicLookupDenialGuard',
     'PublicUserSemanticGuard',
