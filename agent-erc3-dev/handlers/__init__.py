@@ -20,6 +20,8 @@ from .middleware import (
     # M&A Compliance
     CCCodeValidationGuard,
     JiraTicketRequirementGuard,
+    # Criteria Guards
+    AddedCriteriaGuard,
 )
 
 def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManager, task=None):
@@ -40,6 +42,8 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         # M&A Compliance Guards
         CCCodeValidationGuard(),                      # Validates CC code format after M&A
         JiraTicketRequirementGuard(),                 # Requires JIRA ticket for project changes after M&A
+        # Criteria Guards
+        AddedCriteriaGuard(),                         # Warns when agent adds criteria not in task
         ResponseValidationMiddleware(),               # Validates respond has proper message/links
     ]
     if security_manager:

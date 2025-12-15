@@ -85,6 +85,7 @@ def run_agent(
         security_manager=security_manager,
         task=task,
         api=erc_client,
+        max_turns=max_turns,
     )
 
     task_done = False
@@ -95,6 +96,9 @@ def run_agent(
         if task_done:
             print(f"{CLI_GREEN}Task marked done. Ending agent loop.{CLI_CLR}")
             break
+
+        # Update turn in state for budget awareness
+        state.current_turn = turn
 
         print(f"\n{CLI_BLUE}=== Turn {turn + 1}/{max_turns} ==={CLI_CLR}")
 
@@ -121,6 +125,9 @@ def run_agent(
         plan = parsed.get("plan", [])
         action_queue = parsed.get("action_queue", [])
         is_final = parsed.get("is_final", False)
+
+        # Save thoughts for criteria guards
+        state.last_thoughts = thoughts
 
         _print_turn_info(thoughts, plan, action_queue, is_final)
 
@@ -159,8 +166,12 @@ def run_agent(
         task_done = result.task_done
         who_am_i_called = result.who_am_i_called
 
-        # Feed back results
-        messages.append(message_builder.build_results_message(result.results))
+        # Feed back results with turn budget info
+        messages.append(message_builder.build_results_message(
+            result.results,
+            current_turn=turn,
+            max_turns=max_turns
+        ))
 
     print(f"\n{CLI_BLUE}=== Agent finished ==={CLI_CLR}")
 

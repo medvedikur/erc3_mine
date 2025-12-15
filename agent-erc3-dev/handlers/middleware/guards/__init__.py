@@ -8,6 +8,7 @@ Guards are organized by domain:
 - security_guards.py: Public user and security-related checks
 - response_guards.py: General response validation
 - ma_compliance_guards.py: M&A compliance (CC codes, JIRA tickets)
+- criteria_guards.py: Detect when agent adds criteria not in task
 """
 
 from .outcome_guards import (
@@ -42,6 +43,10 @@ from .ma_compliance_guards import (
     JiraTicketRequirementGuard,
 )
 
+from .criteria_guards import (
+    AddedCriteriaGuard,
+)
+
 __all__ = [
     # Outcome Guards
     'AmbiguityGuardMiddleware',
@@ -63,4 +68,6 @@ __all__ = [
     # M&A Compliance Guards
     'CCCodeValidationGuard',
     'JiraTicketRequirementGuard',
+    # Criteria Guards
+    'AddedCriteriaGuard',
 ]

@@ -235,6 +235,8 @@ class ActionProcessor:
                 tool_name = action_dict.get('tool', '')
                 if tool_name:
                     state.action_types_executed.add(tool_name)
+                    # Increment action count for efficiency tracking
+                    state.action_counts[tool_name] = state.action_counts.get(tool_name, 0) + 1
 
             # Track mutations and searches
             self._track_mutation(action_model, state, ctx)

@@ -8,6 +8,7 @@ from typing import List, Optional
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
 
+import config
 from prompts import SGR_SYSTEM_PROMPT
 from handlers import WikiManager
 
@@ -75,8 +76,31 @@ class MessageBuilder:
         Returns:
             List of initial messages (system + human)
         """
+        # Add turn budget info to help agent plan efficiently
+        max_turns = config.MAX_TURNS_PER_TASK
+        turn_budget_hint = (
+            f"\n\n## ⏱️ TURN BUDGET & EFFICIENCY\n"
+            f"You have **{max_turns} turns** to complete this task. Plan efficiently!\n\n"
+            f"### CRITICAL: Parallel Execution\n"
+            f"- **action_queue accepts MULTIPLE actions** — they ALL execute in ONE turn!\n"
+            f"- Put 10-30 `projects_get` or `employees_get` calls in ONE action_queue\n"
+            f"- Example: instead of 20 sequential calls (20 turns), batch them (1 turn)\n\n"
+            f"### CRITICAL: Batch APIs\n"
+            f"- `time_summary_employee(employees=[\"id1\", \"id2\", ...])` — pass ALL IDs in ONE call!\n"
+            f"- Returns aggregated data for ALL employees at once\n\n"
+            f"### For 'busiest/most X' queries:\n"
+            f"1. Get employee list with filter (department=X) — stop after 2-3 pages\n"
+            f"2. Use `time_summary_employee(employees=[all IDs])` to get hours in ONE call\n"
+            f"3. OR batch `projects_get` calls in ONE action_queue to get time_slice\n"
+            f"4. Analyze and respond — DON'T paginate through ALL records!\n\n"
+            f"### Filters\n"
+            f"- Use `department=`, `location=`, `member=`, `owner=` to narrow searches"
+        )
+
+        system_prompt_with_budget = SGR_SYSTEM_PROMPT + turn_budget_hint
+
         return [
-            SystemMessage(content=SGR_SYSTEM_PROMPT),
+            SystemMessage(content=system_prompt_with_budget),
             HumanMessage(content=f"TASK: {task_text}\n\nContext: {self.wiki_manager.get_context_summary()}")
         ]
 
@@ -122,18 +146,41 @@ Each action MUST have: {{"tool": "tool_name", "args": {{...}}}}{mutation_warning
 The malformed actions were NOT executed. Please retry."""
         return HumanMessage(content=content)
 
-    def build_results_message(self, results: List[str]) -> HumanMessage:
+    def build_results_message(
+        self,
+        results: List[str],
+        current_turn: int = None,
+        max_turns: int = None
+    ) -> HumanMessage:
         """
         Build feedback message from action results.
 
         Args:
             results: List of action result strings
+            current_turn: Current turn number (0-indexed)
+            max_turns: Maximum turns allowed
 
         Returns:
             HumanMessage with execution log
         """
-        if results:
-            feedback = "\n---\n".join(results)
-            return HumanMessage(content=f"[EXECUTION LOG]\n{feedback}")
-        else:
+        if not results:
             return self.build_no_actions_message()
+
+        feedback = "\n---\n".join(results)
+
+        # Add turn budget reminder if running low
+        turn_header = ""
+        if current_turn is not None and max_turns is not None:
+            remaining = max_turns - current_turn - 1
+            if remaining <= 3:
+                turn_header = (
+                    f"🛑 [TURN {current_turn + 1}/{max_turns}] "
+                    f"ONLY {remaining} TURNS LEFT - RESPOND SOON!\n\n"
+                )
+            elif remaining <= 5:
+                turn_header = (
+                    f"⚠️ [TURN {current_turn + 1}/{max_turns}] "
+                    f"{remaining} turns remaining - start wrapping up\n\n"
+                )
+
+        return HumanMessage(content=f"{turn_header}[EXECUTION LOG]\n{feedback}")

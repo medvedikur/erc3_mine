@@ -18,8 +18,8 @@ WORKSPACE = "test-workspace-1"
 SESSION_NAME = "@mishka ERC3-Test Agent"
 
 # Competition flags
-COMPETITION_FLAGS = ["compete_accuracy", "compete_budget", "compete_speed", "compete_local"]
-#COMPETITION_FLAGS = ["compete_budget", "compete_speed", "compete_local"]
+#COMPETITION_FLAGS = ["compete_accuracy", "compete_budget", "compete_speed", "compete_local"]
+COMPETITION_FLAGS = ["compete_budget", "compete_speed", "compete_local"]
 
 # API base URL
 API_BASE_URL = "https://erc.timetoact-group.at"

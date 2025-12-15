@@ -52,6 +52,7 @@ class SharedState:
     # === Validation State ===
     missing_tools: List[str] = field(default_factory=list)
     action_types_executed: Set[str] = field(default_factory=set)
+    action_counts: Dict[str, int] = field(default_factory=dict)  # Track call counts per action type
     outcome_validation_warned: bool = False
 
     # === Pending Mutations ===
@@ -92,6 +93,7 @@ class SharedState:
             'search_entities': self.search_entities,
             'missing_tools': self.missing_tools,
             'action_types_executed': self.action_types_executed,
+            'action_counts': self.action_counts,
             'outcome_validation_warned': self.outcome_validation_warned,
             'pending_mutation_tools': self.pending_mutation_tools,
             '_overlap_definitive_hints': self.overlap_definitive_hints,
@@ -134,6 +136,8 @@ class SharedState:
             state.missing_tools = data['missing_tools']
         if 'action_types_executed' in data:
             state.action_types_executed = data['action_types_executed']
+        if 'action_counts' in data:
+            state.action_counts = data['action_counts']
         if 'outcome_validation_warned' in data:
             state.outcome_validation_warned = data['outcome_validation_warned']
         if 'pending_mutation_tools' in data:
@@ -171,7 +175,7 @@ class SharedStateProxy(dict):
         'security_manager', 'wiki_manager', 'task', 'task_id', 'api',
         'failure_logger', 'had_mutations', 'mutation_entities',
         'search_entities', 'missing_tools', 'action_types_executed',
-        'outcome_validation_warned', 'pending_mutation_tools',
+        'action_counts', 'outcome_validation_warned', 'pending_mutation_tools',
         '_overlap_definitive_hints', 'query_specificity',
         '_search_error', '_project_search_result', '_employee_search_result',
         'time_update_entities',

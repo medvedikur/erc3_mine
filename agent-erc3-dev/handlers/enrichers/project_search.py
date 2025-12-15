@@ -209,6 +209,9 @@ class ProjectSearchEnricher:
         Problem: Task says "log time for felix on CV project" but agent searches
         just by query without team filter, missing the overlap analysis that would
         find the authorized project.
+
+        AICODE-NOTE: This is critical for t010 add_time_entry_lead - agent must
+        use member filter to trigger overlap analysis that finds the correct project.
         """
         import re
 
@@ -239,12 +242,14 @@ class ProjectSearchEnricher:
 
         # Find mentioned employee
         mentioned_employee = None
+        mentioned_name = None
         for pattern in employee_patterns:
             match = re.search(pattern, task_lower)
             if match:
                 name = match.group(1).lower()
                 if name in known_employees:
                     mentioned_employee = known_employees[name]
+                    mentioned_name = name
                     break
 
         if not mentioned_employee:
@@ -255,9 +260,28 @@ class ProjectSearchEnricher:
         if not any(kw in task_lower for kw in time_keywords):
             return None
 
+        # Make hint more aggressive if multiple projects found
+        # This is the key scenario: "CV project" matches multiple projects
+        if len(projects) > 1:
+            proj_list = "\n".join([
+                f"   - {getattr(p, 'name', 'unknown')} ({getattr(p, 'id', 'unknown')})"
+                for p in projects[:5]
+            ])
+            return (
+                f"\n🛑 CRITICAL: Found {len(projects)} matching projects but you searched WITHOUT member filter!\n"
+                f"Projects found:\n{proj_list}\n\n"
+                f"⚠️ PROBLEM: You can only log time for '{mentioned_name}' on projects where YOU are the Lead!\n"
+                f"The project you're authorized to use may NOT be the first result.\n\n"
+                f"🔧 REQUIRED ACTION:\n"
+                f"   `projects_search(member='{mentioned_employee}')` — finds projects where {mentioned_name} works\n"
+                f"   Then use `projects_get` to check which one YOU are the Lead of.\n"
+                f"   Only the project where YOU are Lead is valid for logging {mentioned_name}'s time!"
+            )
+
         return (
             f"\n💡 TIME LOGGING TIP: Task mentions '{mentioned_employee}'. "
             f"To find projects where YOU are authorized to log time for them, "
-            f"try: `projects_search(query='...', member='{mentioned_employee}')`. "
-            f"This will enable overlap analysis to find projects where you're Lead and they're a member."
+            f"try: `projects_search(member='{mentioned_employee}')`. "
+            f"This will show all projects where {mentioned_name} is a member, "
+            f"then check which one YOU are the Lead of."
         )

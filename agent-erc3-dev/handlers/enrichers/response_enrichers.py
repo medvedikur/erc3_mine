@@ -243,6 +243,51 @@ class CustomerSearchHintEnricher:
         )
 
 
+class EmployeeSearchHintEnricher:
+    """
+    Provides hints for empty employee search results with location filter.
+
+    When searching by location returns 0 results, hints that location matching
+    is exact and suggests alternative approaches.
+    """
+
+    def maybe_hint_empty_employees(
+        self,
+        model: Any,
+        result: Any
+    ) -> Optional[str]:
+        """
+        Generate hint for empty employee search with location filter.
+
+        Args:
+            model: The request model
+            result: API response
+
+        Returns:
+            Hint string or None
+        """
+        if not isinstance(model, client.Req_SearchEmployees):
+            return None
+
+        employees = getattr(result, 'employees', None) or []
+        if employees:
+            return None
+
+        # Check if location filter was used
+        location = getattr(model, 'location', None)
+        if not location:
+            return None
+
+        return (
+            f"EMPTY RESULTS with location='{location}'. "
+            f"Location matching requires EXACT match (e.g., 'Barcelona Office – Spain', not 'Barcelona' or 'Spain'). "
+            f"TRY:\n"
+            f"  1. Use `employees_search()` without location filter, then paginate through ALL employees to find matching locations\n"
+            f"  2. Check `wiki_search('locations')` for exact location format used in this company\n"
+            f"  3. Common formats: 'City Office – Country', 'HQ – Country', 'Country'"
+        )
+
+
 class PaginationHintEnricher:
     """
     Provides hints for paginated results.
@@ -267,3 +312,177 @@ class PaginationHintEnricher:
             f"Use offset={next_offset} in your next search to get the remaining items. "
             f"Do NOT assume you found everything!"
         )
+
+
+class CustomerProjectsHintEnricher:
+    """
+    Provides hints for correct API usage when searching customer projects.
+
+    Addresses the common confusion between `owner` and `customer` filter.
+    """
+
+    def __init__(self):
+        self._hint_shown = False
+
+    def maybe_hint_customer_filter(
+        self,
+        model: Any,
+        task_text: str
+    ) -> Optional[str]:
+        """
+        Generate hint when searching projects with owner filter but task mentions customer.
+
+        Args:
+            model: The request model
+            task_text: Task instructions
+
+        Returns:
+            Hint string or None
+        """
+        if not isinstance(model, client.Req_SearchProjects):
+            return None
+
+        # Only show once
+        if self._hint_shown:
+            return None
+
+        task_lower = task_text.lower()
+        owner_filter = getattr(model, 'owner', None)
+
+        # Detect if task is about customer projects but agent used owner filter
+        customer_keywords = ['customer', 'client', 'account']
+        is_customer_query = any(kw in task_lower for kw in customer_keywords)
+
+        if is_customer_query and owner_filter:
+            # Check if owner looks like a customer ID
+            if owner_filter.startswith('cust_'):
+                self._hint_shown = True
+                return (
+                    f"API FILTER WARNING: You used `owner={owner_filter}` but `owner` is for employee IDs (project lead). "
+                    f"To find projects for a CUSTOMER, use `customer={owner_filter}` instead!\n"
+                    f"  - `owner=employee_id` — projects where employee is Lead\n"
+                    f"  - `customer=customer_id` — projects for specific customer"
+                )
+
+        return None
+
+    def clear_cache(self):
+        """Reset hint shown flag for new task."""
+        self._hint_shown = False
+
+
+class SearchResultExtractionHintEnricher:
+    """
+    Provides hints when agent might be generating IDs instead of extracting them.
+
+    Addresses the pattern where agents guess entity IDs like 'cust_carpathia_mw'
+    instead of extracting the actual ID from search results.
+    """
+
+    def maybe_hint_id_extraction(
+        self,
+        model: Any,
+        result: Any,
+        action_name: str
+    ) -> Optional[str]:
+        """
+        Generate hint if a get request fails and ID looks auto-generated.
+
+        Args:
+            model: The request model
+            result: API response
+            action_name: Name of the action
+
+        Returns:
+            Hint string or None
+        """
+        # Only for get operations that failed
+        if 'get' not in action_name.lower():
+            return None
+
+        # Check for error in result
+        error = getattr(result, 'error', None)
+        if not error:
+            return None
+
+        # Get the ID that was used
+        entity_id = getattr(model, 'id', None)
+        if not entity_id:
+            return None
+
+        # Patterns that suggest auto-generated IDs
+        # Real IDs: cust_adriatic_marine_services, proj_acme_line3_cv_poc
+        # Guessed IDs: cust_carpathia_mw (abbreviation), cust_centralsteel_eng (truncated)
+        guessed_patterns = [
+            '_mw', '_eng', '_sys', '_corp', '_inc', '_ltd',  # Common abbreviations
+        ]
+
+        looks_guessed = any(pat in entity_id.lower() for pat in guessed_patterns)
+        if not looks_guessed:
+            # Also check if ID is suspiciously short
+            parts = entity_id.split('_')
+            if len(parts) >= 2 and len(parts[-1]) <= 3:
+                looks_guessed = True
+
+        if looks_guessed:
+            return (
+                f"ID EXTRACTION WARNING: '{entity_id}' returned an error. "
+                f"Did you EXTRACT this ID from search results or GENERATE it yourself?\n"
+                f"ALWAYS use the exact ID from the search response, e.g.:\n"
+                f'  Search result: {{"id": "cust_adriatic_marine_services", ...}}\n'
+                f'  Correct: customers_get(id="cust_adriatic_marine_services")\n'
+                f"  WRONG: customers_get(id=\"cust_adriatic_ms\")  // guessed abbreviation"
+            )
+
+        return None
+
+
+class ProjectNameNormalizationHintEnricher:
+    """
+    Provides hints for project name search normalization.
+
+    Addresses issues where project search fails due to format differences
+    like dashes vs spaces: "HV-anti-corrosion" vs "HV anti corrosion"
+    """
+
+    def maybe_hint_name_normalization(
+        self,
+        model: Any,
+        result: Any
+    ) -> Optional[str]:
+        """
+        Generate hint if project search returns empty with special characters in query.
+
+        Args:
+            model: The request model
+            result: API response
+
+        Returns:
+            Hint string or None
+        """
+        if not isinstance(model, client.Req_SearchProjects):
+            return None
+
+        projects = getattr(result, 'projects', None) or []
+        if projects:
+            return None
+
+        query = getattr(model, 'query', None)
+        if not query:
+            return None
+
+        # Check for special characters that might cause matching issues
+        has_dashes = '-' in query
+        has_underscores = '_' in query
+
+        if has_dashes or has_underscores:
+            normalized_query = query.replace('-', ' ').replace('_', ' ')
+            return (
+                f"EMPTY SEARCH: No projects found for '{query}'. "
+                f"Project names might use different formats:\n"
+                f"  - Try with spaces: `projects_search(query=\"{normalized_query}\")`\n"
+                f"  - Try partial match: `projects_search(query=\"{query.split('-')[0]}\")`\n"
+                f"  - Try without special chars: search for key words separately"
+            )
+
+        return None

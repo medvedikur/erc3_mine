@@ -15,12 +15,17 @@ from .project_overlap import ProjectOverlapAnalyzer
 from .project_search import ProjectSearchEnricher
 from .wiki_hints import WikiHintEnricher
 from .bonus_policy import BonusPolicyEnricher
+from .efficiency_hints import EfficiencyHintEnricher
 from .response_enrichers import (
     RoleEnricher,
     ArchiveHintEnricher,
     TimeEntryHintEnricher,
     CustomerSearchHintEnricher,
+    EmployeeSearchHintEnricher,
     PaginationHintEnricher,
+    CustomerProjectsHintEnricher,
+    SearchResultExtractionHintEnricher,
+    ProjectNameNormalizationHintEnricher,
 )
 
 __all__ = [
@@ -29,9 +34,14 @@ __all__ = [
     'ProjectSearchEnricher',
     'WikiHintEnricher',
     'BonusPolicyEnricher',
+    'EfficiencyHintEnricher',
     'RoleEnricher',
     'ArchiveHintEnricher',
     'TimeEntryHintEnricher',
     'CustomerSearchHintEnricher',
+    'EmployeeSearchHintEnricher',
     'PaginationHintEnricher',
+    'CustomerProjectsHintEnricher',
+    'SearchResultExtractionHintEnricher',
+    'ProjectNameNormalizationHintEnricher',
 ]

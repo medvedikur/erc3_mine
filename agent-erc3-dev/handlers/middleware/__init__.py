@@ -30,6 +30,8 @@ from .guards import (
     # M&A Compliance Guards
     CCCodeValidationGuard,
     JiraTicketRequirementGuard,
+    # Criteria Guards
+    AddedCriteriaGuard,
 )
 
 from .membership import ProjectMembershipMiddleware
@@ -60,6 +62,8 @@ __all__ = [
     # M&A Compliance Guards
     'CCCodeValidationGuard',
     'JiraTicketRequirementGuard',
+    # Criteria Guards
+    'AddedCriteriaGuard',
     # Membership
     'ProjectMembershipMiddleware',
 ]

@@ -19,6 +19,10 @@ class AgentTurnState:
     # Required - set at initialization
     security_manager: Any  # SecurityManager instance
 
+    # Turn tracking for budget awareness
+    current_turn: int = 0  # 0-indexed turn number
+    max_turns: int = 20  # Maximum turns allowed
+
     # Mutation tracking (persists across turns)
     had_mutations: bool = False
     mutation_entities: List[Dict] = field(default_factory=list)
@@ -29,6 +33,7 @@ class AgentTurnState:
     # Validation tracking
     missing_tools: List[str] = field(default_factory=list)
     action_types_executed: Set[str] = field(default_factory=set)
+    action_counts: Dict[str, int] = field(default_factory=dict)  # Track call counts per action type
     outcome_validation_warned: bool = False
 
     # Pending mutations (mutation tools planned but not yet executed)
@@ -39,6 +44,9 @@ class AgentTurnState:
 
     # Enricher hints (persist across turns)
     overlap_definitive_hints: Dict[str, str] = field(default_factory=dict)
+
+    # LLM response tracking (for criteria guards)
+    last_thoughts: str = ""
 
     # References (set per-action)
     task: Optional[Any] = None
@@ -56,9 +64,13 @@ class AgentTurnState:
             'search_entities': self.search_entities,
             'missing_tools': self.missing_tools,
             'action_types_executed': self.action_types_executed,
+            'action_counts': self.action_counts,
             'outcome_validation_warned': self.outcome_validation_warned,
             'task': self.task,
             '_overlap_definitive_hints': self.overlap_definitive_hints,
+            'current_turn': self.current_turn,
+            'max_turns': self.max_turns,
+            'last_thoughts': self.last_thoughts,
         }
 
     def create_context(self):

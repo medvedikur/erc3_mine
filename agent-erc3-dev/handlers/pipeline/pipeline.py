@@ -20,9 +20,11 @@ from .postprocessors import (
 from .executor import PipelineExecutor
 from .error_handler import ErrorHandler, SuccessLogger
 from ..enrichers import (
-    ProjectSearchEnricher, WikiHintEnricher,
+    ProjectSearchEnricher, WikiHintEnricher, EfficiencyHintEnricher,
     RoleEnricher, ArchiveHintEnricher, TimeEntryHintEnricher,
-    CustomerSearchHintEnricher, PaginationHintEnricher,
+    CustomerSearchHintEnricher, EmployeeSearchHintEnricher, PaginationHintEnricher,
+    CustomerProjectsHintEnricher, SearchResultExtractionHintEnricher,
+    ProjectNameNormalizationHintEnricher,
 )
 from utils import CLI_BLUE, CLI_GREEN, CLI_YELLOW, CLI_CLR
 
@@ -68,7 +70,12 @@ class ActionPipeline:
         self._archive_hints = ArchiveHintEnricher()
         self._time_entry_hints = TimeEntryHintEnricher()
         self._customer_hints = CustomerSearchHintEnricher()
+        self._employee_hints = EmployeeSearchHintEnricher()
         self._pagination_hints = PaginationHintEnricher()
+        self._efficiency_hints = EfficiencyHintEnricher()
+        self._customer_projects_hints = CustomerProjectsHintEnricher()
+        self._id_extraction_hints = SearchResultExtractionHintEnricher()
+        self._project_name_hints = ProjectNameNormalizationHintEnricher()
 
         # Error/Success handling
         self._error_handler = ErrorHandler()
@@ -163,6 +170,11 @@ class ActionPipeline:
         if hint:
             ctx.results.append(hint)
 
+        # Employee search hints
+        hint = self._employee_hints.maybe_hint_empty_employees(ctx.model, result)
+        if hint:
+            ctx.results.append(hint)
+
         # Time entry update hints
         if isinstance(ctx.model, client.Req_SearchTimeEntries):
             hint = self._time_entry_hints.maybe_hint_time_update(result, task_text)
@@ -181,5 +193,63 @@ class ActionPipeline:
                 wiki_manager, task_text, is_public_user=False,
                 skip_critical=False, context="wiki_list"
             )
+            if hint:
+                ctx.results.append(hint)
+
+        # Efficiency hints for sequential lookups and excessive pagination
+        action_name = ctx.model.__class__.__name__
+        # Map class names to tool names
+        action_name_map = {
+            'Req_GetProject': 'projects_get',
+            'Req_GetEmployee': 'employees_get',
+            'Req_GetCustomer': 'customers_get',
+            'Req_SearchProjects': 'projects_search',
+            'Req_SearchEmployees': 'employees_search',
+            'Req_SearchCustomers': 'customers_search',
+        }
+        tool_name = action_name_map.get(action_name, '')
+
+        if tool_name:
+            # Parallel call hints
+            hint = self._efficiency_hints.maybe_hint_parallel_calls(ctx, tool_name)
+            if hint:
+                ctx.results.append(hint)
+
+            # Pagination limit hints
+            hint = self._efficiency_hints.maybe_hint_pagination_limit(ctx, tool_name, task_text)
+            if hint:
+                ctx.results.append(hint)
+
+            # Filter usage hints
+            hint = self._efficiency_hints.maybe_hint_filter_usage(ctx, tool_name, result)
+            if hint:
+                ctx.results.append(hint)
+
+            # Total pagination budget warning (across all search types)
+            hint = self._efficiency_hints.get_total_pagination_warning(ctx)
+            if hint:
+                ctx.results.append(hint)
+
+            # Turn budget warning
+            current_turn = ctx.shared.get('current_turn', 0)
+            max_turns = ctx.shared.get('max_turns', 20)
+            hint = self._efficiency_hints.get_turn_warning(current_turn, max_turns)
+            if hint:
+                ctx.results.append(hint)
+
+        # Customer projects filter confusion hint (owner vs customer)
+        if isinstance(ctx.model, client.Req_SearchProjects):
+            hint = self._customer_projects_hints.maybe_hint_customer_filter(ctx.model, task_text)
+            if hint:
+                ctx.results.append(hint)
+
+            # Project name normalization hint
+            hint = self._project_name_hints.maybe_hint_name_normalization(ctx.model, result)
+            if hint:
+                ctx.results.append(hint)
+
+        # ID extraction warning for failed gets
+        if action_name in ('Req_GetProject', 'Req_GetEmployee', 'Req_GetCustomer'):
+            hint = self._id_extraction_hints.maybe_hint_id_extraction(ctx.model, result, action_name)
             if hint:
                 ctx.results.append(hint)
