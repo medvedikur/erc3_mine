@@ -185,8 +185,13 @@ class EmployeeSearchHandler(ActionHandler):
             'french': 'skill_french',
             'spanish language': 'skill_spanish',
             'spanish': 'skill_spanish',
-            # Technical / Domain
+            # Technical / Domain - CRITICAL for t017, t074
             'crm': 'skill_crm',
+            'customer relationship management': 'skill_crm',
+            'customer_relationship_management': 'skill_crm',
+            'skill_customer_relationship': 'skill_crm',
+            'skill_customer_relationship_management': 'skill_crm',
+            'customer relationship': 'skill_crm',
             'project management': 'skill_project_mgmt',
             'project_management': 'skill_project_mgmt',
             'skill_project_management': 'skill_project_mgmt',
@@ -210,11 +215,17 @@ class EmployeeSearchHandler(ActionHandler):
             # QMS
             'quality management': 'skill_qms',
             'qms': 'skill_qms',
-            # Coatings
+            # Coatings - CRITICAL for t056
             'technical coatings': 'skill_technical_coatings',
+            'technical coatings knowledge': 'skill_technical_coatings',
             'solventborne': 'skill_solventborne',
+            'solventborne formulation': 'skill_solventborne',
+            'solventborne_formulation': 'skill_solventborne',
+            'skill_solventborne_formulation': 'skill_solventborne',
             'waterborne': 'skill_waterborne',
+            'waterborne formulation': 'skill_waterborne',
             'corrosion': 'skill_corrosion',
+            'corrosion protection': 'skill_corrosion',
         }
 
         original_skills = ctx.model.skills
@@ -347,9 +358,14 @@ class EmployeeSearchHandler(ActionHandler):
             'cross-site collaboration': 'will_cross_site',
             'cross site': 'will_cross_site',
             'will_cross_site_collaboration': 'will_cross_site',
-            # Process improvement
+            # Process improvement - CRITICAL for t056
             'process improvement': 'will_process_improvement',
             'continuous improvement': 'will_process_improvement',
+            'interest in process improvement': 'will_process_improvement',
+            'interest in process / quality improvement': 'will_process_improvement',
+            'process / quality improvement': 'will_process_improvement',
+            'quality improvement': 'will_process_improvement',
+            'interest in quality improvement': 'will_process_improvement',
         }
 
         original_wills = ctx.model.wills

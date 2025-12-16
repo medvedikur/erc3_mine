@@ -185,9 +185,12 @@ def _parse_employees_update(ctx: ParseContext) -> Any:
     skills = _normalize_skills(skills_raw) if skills_raw else None
     wills = _normalize_skills(wills_raw) if wills_raw else None
 
+    # AICODE-NOTE: Agent may use "note" (singular) instead of "notes" (t047, t049)
+    notes_value = ctx.args.get("notes") or ctx.args.get("note")
+
     update_args = {
         "employee": ctx.args.get("employee") or ctx.args.get("id") or ctx.args.get("employee_id") or ctx.current_user,
-        "notes": ctx.args.get("notes"),
+        "notes": notes_value,
         "salary": ctx.args.get("salary"),
         "location": ctx.args.get("location"),
         "department": ctx.args.get("department"),

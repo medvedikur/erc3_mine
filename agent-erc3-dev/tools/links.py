@@ -62,6 +62,16 @@ class LinkExtractor:
                 # Also extract the username part after emp_ prefix
                 links.append({"id": pu[4:], "kind": "employee"})
 
+        # AICODE-NOTE: Extract wiki file paths (t062, t064)
+        # Patterns: "systems/time_tracking.md", "hr/example.md", etc.
+        wiki_paths = re.findall(
+            r'\b([a-z_]+/[a-z0-9_]+\.md)\b',
+            str(message),
+            re.IGNORECASE
+        )
+        for wiki_path in wiki_paths:
+            links.append({"id": wiki_path, "kind": "wiki"})
+
         return links
 
     def normalize_links(self, links: List[Any]) -> List[Dict[str, str]]:
