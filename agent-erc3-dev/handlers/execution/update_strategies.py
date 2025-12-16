@@ -68,8 +68,11 @@ class EmployeeUpdateStrategy(UpdateStrategy):
             emp = current_data.employee
 
             # Step 2: Build complete payload - start with current data
+            # AICODE-NOTE: salary MUST be preserved from current data if not explicitly changed!
+            # Bug fix: previously salary was not included in payload, causing it to be cleared to 0.
             payload = {
                 'employee': employee_id,
+                'salary': emp.salary if emp.salary is not None else 0,
                 'notes': emp.notes if emp.notes else "",
                 'location': emp.location if emp.location else "",
                 'department': emp.department if emp.department else "",

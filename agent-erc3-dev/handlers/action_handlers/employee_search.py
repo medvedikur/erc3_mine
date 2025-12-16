@@ -4,12 +4,14 @@ Employee search handler with smart keyword fallback.
 This handler implements intelligent employee search that:
 1. Executes exact match query with page limit retry
 2. If query has multiple words and few results: tries keyword fallback
-3. Merges all results and returns unique employees
+3. If wills filter yields 0 results: tries fuzzy will name matching
+4. Merges all results and returns unique employees
 """
 import re
 import copy
-from typing import Any
+from typing import Any, List, Optional
 from erc3.erc3 import client
+from erc3.erc3.dtos import SkillFilter
 from .base import ActionHandler
 from ..base import ToolContext
 from utils import CLI_BLUE, CLI_YELLOW, CLI_GREEN, CLI_CLR
@@ -22,6 +24,9 @@ class EmployeeSearchHandler(ActionHandler):
     When searching with multi-word queries (e.g., "Mira Schaefer"), the API
     may not find results for the full query. This handler tries individual
     keywords to improve recall.
+
+    Also supports fuzzy matching for wills filter names (e.g., "will_mentor_junior_staff"
+    may match "will_mentor_juniors").
     """
 
     def can_handle(self, ctx: ToolContext) -> bool:
@@ -60,6 +65,14 @@ class EmployeeSearchHandler(ActionHandler):
                 print(f"  {CLI_YELLOW}⚠ Exact search failed with system error: {e}{CLI_CLR}")
             else:
                 print(f"  {CLI_YELLOW}⚠ Exact search failed: {e}{CLI_CLR}")
+
+        # 1.5. Wills Fuzzy Matching (if wills filter yielded 0 results)
+        # AICODE-NOTE: Agent may use verbose will names like "will_mentor_junior_staff"
+        # but actual DB has "will_mentor_juniors". Try fuzzy variations.
+        if len(employees_map) == 0 and ctx.model.wills:
+            fuzzy_results = self._try_wills_fuzzy_match(ctx, employees_map)
+            if fuzzy_results:
+                res_exact = fuzzy_results
 
         # 2. Keyword Fallback (if query has multiple words and exact match yielded no/few results)
         query = ctx.model.query
@@ -134,3 +147,104 @@ class EmployeeSearchHandler(ActionHandler):
         else:
             print(f"  {CLI_YELLOW}⚠ Exact search failed with system error: {error}{CLI_CLR}")
             return None
+
+    def _try_wills_fuzzy_match(self, ctx: ToolContext, employees_map: dict) -> Optional[Any]:
+        """
+        Try fuzzy matching for will names when exact match returns 0 results.
+
+        Generates variations by:
+        1. Removing trailing words (mentor_junior_staff -> mentor_junior -> mentor)
+        2. Trying common suffixes (juniors vs junior_staff)
+
+        Returns:
+            Response object if any variation found results, None otherwise
+        """
+        print(f"  {CLI_BLUE}🔍 Smart Search: Trying wills fuzzy matching{CLI_CLR}")
+
+        original_wills = ctx.model.wills
+        tried_names = set()
+
+        for will_filter in original_wills:
+            original_name = will_filter.name
+            tried_names.add(original_name)
+
+            # Generate variations
+            variations = self._generate_will_name_variations(original_name)
+
+            for var_name in variations:
+                if var_name in tried_names:
+                    continue
+                tried_names.add(var_name)
+
+                print(f"  {CLI_BLUE}  → Trying will variation: '{var_name}'{CLI_CLR}")
+
+                # Create new filter with varied name
+                model_var = copy.deepcopy(ctx.model)
+                model_var.wills = [
+                    SkillFilter(
+                        name=var_name,
+                        min_level=will_filter.min_level,
+                        max_level=will_filter.max_level
+                    )
+                ]
+
+                try:
+                    res_var = ctx.api.dispatch(model_var)
+                    if hasattr(res_var, 'employees') and res_var.employees:
+                        print(f"  {CLI_GREEN}✓ Found {len(res_var.employees)} employees with '{var_name}'{CLI_CLR}")
+                        for emp in res_var.employees:
+                            employees_map[emp.id] = emp
+                        return res_var
+                except Exception as e:
+                    pass  # Silently try next variation
+
+        return None
+
+    def _generate_will_name_variations(self, will_name: str) -> List[str]:
+        """
+        Generate fuzzy variations of a will name.
+
+        Examples:
+        - will_mentor_junior_staff -> [will_mentor_juniors, will_mentor_junior, will_mentor]
+        - will_travel -> [will_travelling, will_travels]
+        """
+        variations = []
+
+        # Remove will_ prefix for processing
+        if will_name.startswith('will_'):
+            base = will_name[5:]
+            prefix = 'will_'
+        else:
+            base = will_name
+            prefix = ''
+
+        parts = base.split('_')
+
+        # Try removing last part iteratively (mentor_junior_staff -> mentor_junior -> mentor)
+        for i in range(len(parts) - 1, 0, -1):
+            short_name = prefix + '_'.join(parts[:i])
+            if short_name != will_name:
+                variations.append(short_name)
+
+        # Try common suffix transformations
+        suffix_transforms = [
+            ('_staff', 's'),  # mentor_junior_staff -> mentor_juniors
+            ('_staff', ''),   # mentor_junior_staff -> mentor_junior
+            ('s', ''),        # mentors -> mentor
+            ('', 's'),        # mentor -> mentors
+            ('ing', ''),      # travelling -> travel
+            ('', 'ing'),      # travel -> travelling
+        ]
+
+        for old_suffix, new_suffix in suffix_transforms:
+            if old_suffix and base.endswith(old_suffix):
+                new_base = base[:-len(old_suffix)] + new_suffix
+                new_name = prefix + new_base
+                if new_name != will_name and new_name not in variations:
+                    variations.append(new_name)
+            elif not old_suffix and new_suffix:
+                new_name = prefix + base + new_suffix
+                if new_name != will_name and new_name not in variations:
+                    variations.append(new_name)
+
+        return variations

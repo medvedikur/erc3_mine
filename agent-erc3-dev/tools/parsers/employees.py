@@ -3,8 +3,63 @@ Employee tool parsers.
 """
 from typing import Any, List, Dict, Union
 from erc3.erc3 import client
-from erc3.erc3.dtos import SkillLevel
+from erc3.erc3.dtos import SkillLevel, SkillFilter
 from ..registry import ToolParser, ParseContext
+
+
+def _normalize_skill_filters(filters_input: Any) -> List[SkillFilter]:
+    """
+    Normalize skill/will filters for employees_search.
+
+    Handles various input formats:
+    - [{"name": "skill_project_mgmt", "min_level": 7}]
+    - [{"name": "project_mgmt", "min_level": 7, "max_level": 10}]
+    - {"skill_project_mgmt": 7} -> min_level=7
+
+    Returns List[SkillFilter] for API filtering.
+    """
+    if not filters_input:
+        return []
+
+    result = []
+
+    # Single dict with name -> treat as one filter
+    if isinstance(filters_input, dict) and "name" in filters_input:
+        filters_input = [filters_input]
+
+    # Dict format: {"skill_project_mgmt": 7} -> min_level shorthand
+    if isinstance(filters_input, dict):
+        for skill_name, min_level in filters_input.items():
+            normalized_name = skill_name.lower().replace(" ", "_")
+            # Ensure skill_ or will_ prefix
+            if not normalized_name.startswith(("skill_", "will_")):
+                normalized_name = f"skill_{normalized_name}"
+            result.append(SkillFilter(
+                name=normalized_name,
+                min_level=int(min_level) if min_level else 1,
+                max_level=0  # 0 means no max
+            ))
+        return result
+
+    # List format
+    if isinstance(filters_input, list):
+        for item in filters_input:
+            if isinstance(item, dict):
+                skill_name = item.get("name") or item.get("skill") or item.get("id")
+                if skill_name:
+                    normalized_name = skill_name.lower().replace(" ", "_")
+                    # Ensure skill_ or will_ prefix for skills filters
+                    if not normalized_name.startswith(("skill_", "will_")):
+                        normalized_name = f"skill_{normalized_name}"
+                    result.append(SkillFilter(
+                        name=normalized_name,
+                        min_level=int(item.get("min_level", item.get("minLevel", 1))),
+                        max_level=int(item.get("max_level", item.get("maxLevel", 0)))
+                    ))
+            elif isinstance(item, SkillFilter):
+                result.append(item)
+
+    return result
 
 
 def _normalize_skills(skills_input: Any) -> List[SkillLevel]:
@@ -71,12 +126,25 @@ def _parse_employees_list(ctx: ParseContext) -> Any:
 
 @ToolParser.register("employees_search", "employeessearch", "searchemployees")
 def _parse_employees_search(ctx: ParseContext) -> Any:
-    """Search employees by query, location, department, or manager."""
+    """Search employees by query, location, department, manager, skills, or wills."""
+    # Parse skill/will filters if provided
+    skills_filter = _normalize_skill_filters(ctx.args.get("skills"))
+    wills_filter = _normalize_skill_filters(ctx.args.get("wills"))
+
+    # For wills, ensure will_ prefix instead of skill_
+    for wf in wills_filter:
+        if wf.name.startswith("skill_"):
+            wf.name = "will_" + wf.name[6:]
+        elif not wf.name.startswith("will_"):
+            wf.name = "will_" + wf.name
+
     return client.Req_SearchEmployees(
         query=ctx.args.get("query") or ctx.args.get("name") or ctx.args.get("query_regex"),
         location=ctx.args.get("location"),
         department=ctx.args.get("department"),
         manager=ctx.args.get("manager"),
+        skills=skills_filter,
+        wills=wills_filter,
         offset=int(ctx.args.get("offset", 0)),
         limit=int(ctx.args.get("limit", 5))
     )

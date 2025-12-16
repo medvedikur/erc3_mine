@@ -83,6 +83,11 @@ class PipelineExecutor:
             result = ctx.shared.pop('_employee_search_result')
             return ExecutionResult.ok(result)
 
+        # Customer search result
+        if '_customer_search_result' in ctx.shared:
+            result = ctx.shared.pop('_customer_search_result')
+            return ExecutionResult.ok(result)
+
         return None
 
     def _dispatch_with_retry(self, ctx: 'ToolContext') -> Any:

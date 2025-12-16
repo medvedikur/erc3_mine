@@ -15,7 +15,7 @@ from typing import List, Any
 from .base import ToolContext, Middleware
 from .action_handlers import (
     WikiSearchHandler, WikiLoadHandler, CompositeActionHandler,
-    ProjectSearchHandler, EmployeeSearchHandler
+    ProjectSearchHandler, EmployeeSearchHandler, CustomerSearchHandler
 )
 from .pipeline import ActionPipeline
 
@@ -63,6 +63,7 @@ class ActionExecutor:
                 WikiLoadHandler(),
                 ProjectSearchHandler(),
                 EmployeeSearchHandler(),
+                CustomerSearchHandler(),
             ],
             default_handler=ActionPipeline()
         )

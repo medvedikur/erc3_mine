@@ -175,8 +175,8 @@ start_session → session_status → [start_task → agent loop → complete_tas
 | `ok_answer` | Success |
 | `ok_not_found` | Data not in system |
 | `none_clarification_needed` | Ambiguous request |
-| `denied_security` | Guest access restriction |
-| `denied_authorization` | Insufficient permissions |
+| `none_unsupported` | Action not supported by system |
+| `denied_security` | Access denied (guest or insufficient permissions) |
 
 **Always include entity links** — benchmark checks them.
 

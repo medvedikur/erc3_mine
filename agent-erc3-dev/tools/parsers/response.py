@@ -57,30 +57,65 @@ def _parse_respond(ctx: ParseContext) -> Any:
     raw_links = args.get("links") or args.get("Links") or []
     links = link_extractor.normalize_links(raw_links)
 
-    # Auto-detect links from message
-    if not links:
-        links = link_extractor.extract_from_message(str(message))
+    # Auto-detect links from message - but ONLY for positive outcomes
+    # AICODE-NOTE: Critical fix! Auto-extraction from message causes false positives
+    # when agent mentions entities in NEGATIVE context ("X is NOT in project Y").
+    # We should only auto-extract when:
+    # 1. Agent didn't provide explicit links
+    # 2. Outcome is positive (ok_answer)
+    # 3. Message doesn't contain negative patterns about the entities
+    if not links and outcome == 'ok_answer':
+        message_lower = str(message).lower()
+        # Skip auto-extraction if message indicates negative result
+        negative_patterns = [
+            'not involved', 'not found', 'not a member', 'not in',
+            'no projects', 'none of', 'is not', 'are not', 'wasn\'t', 'weren\'t',
+            'does not', 'do not', 'doesn\'t', 'don\'t', 'cannot find',
+            'no matching', 'no results', 'missing', 'lacks', 'without'
+        ]
+        is_negative_context = any(neg in message_lower for neg in negative_patterns)
+        if not is_negative_context:
+            links = link_extractor.extract_from_message(str(message))
 
     # Validate employee links
     if links and ctx.context:
         links = link_extractor.validate_employee_links(links, ctx.context.api)
 
-    # Add mutation/search entities
+    # Add mutation/search entities - with smart filtering based on outcome
+    # AICODE-NOTE: Critical fix for link accuracy. Problems fixed:
+    # 1. Don't add current_user unless they are the TARGET of the action (not just authorizer)
+    # 2. Don't add search_entities for ok_not_found - those entities are NOT the answer
+    # 3. For ok_not_found, only keep entities explicitly mentioned as "found" in message
     if ctx.context:
         had_mutations = ctx.context.shared.get('had_mutations', False)
         mutation_entities = ctx.context.shared.get('mutation_entities', [])
         search_entities = ctx.context.shared.get('search_entities', [])
 
         if had_mutations:
-            links = link_extractor.add_mutation_entities(links, mutation_entities, ctx.current_user)
-        elif search_entities:
-            # Always add search entities if available - ensures links are present even with empty message
-            links = link_extractor.add_search_entities(links, search_entities)
+            # For mutations, add ONLY the mutated entities, NOT current_user
+            # current_user should only be added if THEY were modified (e.g., updating own profile)
+            # The benchmark checks for links that are the ANSWER, not the authorizer
+            for entity in mutation_entities:
+                if not link_extractor._link_exists(links, entity.get("id"), entity.get("kind")):
+                    links.append(entity)
+        elif outcome == 'ok_answer' and search_entities:
+            # For ok_answer, add search entities that represent THE answer
+            # But limit to entities that appear in the message to avoid over-linking
+            message_lower = str(message).lower()
+            for entity in search_entities:
+                entity_id = entity.get("id", "")
+                # Only add if entity ID appears in message (it's part of the answer)
+                if entity_id and entity_id.lower() in message_lower:
+                    if not link_extractor._link_exists(links, entity_id, entity.get("kind")):
+                        links.append(entity)
+        # For ok_not_found: do NOT add search_entities - they are NOT the answer!
 
     # Deduplicate
     links = link_extractor.deduplicate(links)
 
     # Clear links for error/denied outcomes
+    # AICODE-NOTE: For denied_security responses (like salary queries), we should NOT
+    # link entities that were mentioned in the denial - this could leak information
     if outcome in ("error_internal", "denied_security"):
         links = []
 

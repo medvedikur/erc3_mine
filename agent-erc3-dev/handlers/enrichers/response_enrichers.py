@@ -86,7 +86,9 @@ class RoleEnricher:
             if len(projects) == 1:
                 hints.append(
                     f"YOUR_ROLE: You ({current_user}) are NOT a member of this project. "
-                    f"Check if you have Account Manager or Direct Manager authorization."
+                    f"For time logging authorization, check:\n"
+                    f"  - Account Manager: `customers_get(id='cust_xxx')` to see if you manage the customer\n"
+                    f"  - Direct Manager: `employees_search(manager='{current_user}')` to see if the employee reports to you"
                 )
 
         return "\n".join(hints) if hints else None
@@ -293,12 +295,13 @@ class PaginationHintEnricher:
     Provides hints for paginated results.
     """
 
-    def maybe_hint_pagination(self, result: Any) -> Optional[str]:
+    def maybe_hint_pagination(self, result: Any, model: Any = None) -> Optional[str]:
         """
         Generate hint if there are more pages of results.
 
         Args:
             result: API response
+            model: Request model (optional, for context-specific hints)
 
         Returns:
             Hint string or None
@@ -307,11 +310,42 @@ class PaginationHintEnricher:
         if next_offset is None or next_offset <= 0:
             return None
 
-        return (
+        base_hint = (
             f"PAGINATION: next_offset={next_offset} means there are MORE results! "
             f"Use offset={next_offset} in your next search to get the remaining items. "
             f"Do NOT assume you found everything!"
         )
+
+        # Add filter-specific hint for employees_search
+        if model and isinstance(model, client.Req_SearchEmployees):
+            # Check for manager filter - CRITICAL for time logging authorization
+            has_manager_filter = getattr(model, 'manager', None)
+            if has_manager_filter:
+                base_hint += (
+                    f"\n  🛑 CRITICAL: You're checking direct reports (manager='{has_manager_filter}'). "
+                    f"The employee you need may be on the NEXT PAGE! "
+                    f"You MUST paginate with offset={next_offset} to check ALL direct reports before concluding!"
+                )
+            else:
+                # Check for skills or wills filter
+                has_skill_filter = getattr(model, 'skills', None)
+                has_will_filter = getattr(model, 'wills', None)
+                has_department_filter = getattr(model, 'department', None)
+
+                if (has_skill_filter or has_will_filter) and has_department_filter:
+                    base_hint += (
+                        f"\n  FILTER TIP: You searched with department='{has_department_filter}'. "
+                        f"For COMPANY-WIDE skill/will ranking (e.g., 'find least skilled in X'), "
+                        f"search WITHOUT department filter and paginate through ALL results!"
+                    )
+                elif has_skill_filter or has_will_filter:
+                    base_hint += (
+                        f"\n  FILTER TIP: Large result set with more pages. Available filters for "
+                        f"`employees_search`: department=, location=, skill=, manager=. "
+                        f"Using filters is faster than paginating through all results."
+                    )
+
+        return base_hint
 
 
 class CustomerProjectsHintEnricher:

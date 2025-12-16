@@ -160,8 +160,8 @@ class ActionPipeline:
         if hint:
             ctx.results.append(hint)
 
-        # Pagination hints
-        hint = self._pagination_hints.maybe_hint_pagination(result)
+        # Pagination hints (pass model for context-specific hints)
+        hint = self._pagination_hints.maybe_hint_pagination(result, ctx.model)
         if hint:
             ctx.results.append(hint)
 

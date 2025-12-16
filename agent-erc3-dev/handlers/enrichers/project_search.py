@@ -270,18 +270,26 @@ class ProjectSearchEnricher:
             return (
                 f"\n🛑 CRITICAL: Found {len(projects)} matching projects but you searched WITHOUT member filter!\n"
                 f"Projects found:\n{proj_list}\n\n"
-                f"⚠️ PROBLEM: You can only log time for '{mentioned_name}' on projects where YOU are the Lead!\n"
-                f"The project you're authorized to use may NOT be the first result.\n\n"
-                f"🔧 REQUIRED ACTION:\n"
+                f"⚠️ PROBLEM: You can only log time for '{mentioned_name}' if you are:\n"
+                f"   1. Project Lead (check team array in projects_get)\n"
+                f"   2. Their Direct Manager (check via `employees_search(manager='YOUR_ID')`)\n\n"
+                f"🔧 REQUIRED ACTIONS:\n"
                 f"   `projects_search(member='{mentioned_employee}')` — finds projects where {mentioned_name} works\n"
-                f"   Then use `projects_get` to check which one YOU are the Lead of.\n"
-                f"   Only the project where YOU are Lead is valid for logging {mentioned_name}'s time!"
+                f"   Then use `projects_get` to check if YOU are the Lead.\n"
+                f"   If NOT Lead: check if {mentioned_name} reports to you via `employees_search(manager='YOUR_ID')`"
             )
 
+        # AICODE-NOTE: Even with 1 project found, agent MUST use member filter
+        # because the query may not return all matching projects. In t010_add_time_entry_lead,
+        # "CV" matches proj_scandifoods_packaging_cv_poc but agent needs proj_acme_line3_cv_poc
+        # where jonas_weiss is Lead. Only member filter + overlap analysis finds the correct project.
         return (
-            f"\n💡 TIME LOGGING TIP: Task mentions '{mentioned_employee}'. "
-            f"To find projects where YOU are authorized to log time for them, "
-            f"try: `projects_search(member='{mentioned_employee}')`. "
-            f"This will show all projects where {mentioned_name} is a member, "
-            f"then check which one YOU are the Lead of."
+            f"\n🛑 CRITICAL: You searched by query but task involves logging time for '{mentioned_name}'.\n"
+            f"⚠️ PROBLEM: Query-based search may NOT return all relevant projects!\n"
+            f"   The employee may work on multiple projects matching your query.\n\n"
+            f"🔧 REQUIRED ACTION (do this BEFORE time_log):\n"
+            f"   `projects_search(member='{mentioned_employee}')` — finds ALL projects where {mentioned_name} works\n\n"
+            f"Then check authorization for EACH matching project:\n"
+            f"   - If YOU are the Lead → authorized to log time\n"
+            f"   - If NOT Lead → check `employees_search(manager='YOUR_ID')` for direct reports"
         )

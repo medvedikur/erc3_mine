@@ -244,7 +244,8 @@ class ProjectOverlapAnalyzer:
             return (
                 f"💡 CONTEXT: Search returned {total_results} projects for {target_employee}. "
                 f"You share 1 project with them: {self._format_project_label(project)}, "
-                f"but you are NOT the Lead. Check authorization via other means (Account Manager, Direct Manager)."
+                f"but you are NOT the Lead.\n"
+                f"   Check authorization: `employees_search(manager='YOUR_ID')` to verify if {target_employee} reports to you."
             )
 
     def _analyze_multiple_overlap(
@@ -282,8 +283,8 @@ class ProjectOverlapAnalyzer:
             overlap_labels = [self._format_project_label(p) for p in overlap]
             return (
                 f"💡 CONTEXT: Found {len(overlap)} shared projects but you are NOT the Lead of any: "
-                f"{', '.join(overlap_labels)}. "
-                f"Check authorization via Account Manager or Direct Manager roles."
+                f"{', '.join(overlap_labels)}.\n"
+                f"   Check if you're their Direct Manager: `employees_search(manager='YOUR_ID')` to see your direct reports."
             )
 
     def _filter_by_keywords(self, projects: List[Any], keywords: List[str]) -> List[Any]:
