@@ -57,25 +57,13 @@ def _parse_respond(ctx: ParseContext) -> Any:
     raw_links = args.get("links") or args.get("Links") or []
     links = link_extractor.normalize_links(raw_links)
 
-    # Auto-detect links from message - but ONLY for positive outcomes
-    # AICODE-NOTE: Critical fix! Auto-extraction from message causes false positives
-    # when agent mentions entities in NEGATIVE context ("X is NOT in project Y").
-    # We should only auto-extract when:
-    # 1. Agent didn't provide explicit links
-    # 2. Outcome is positive (ok_answer)
-    # 3. Message doesn't contain negative patterns about the entities
+    # Auto-detect links from message for ok_answer outcomes only
+    # AICODE-NOTE: We only auto-extract for ok_answer because:
+    # - ok_not_found: entities mentioned are NOT the answer
+    # - denied_security: we clear links anyway (line 103)
+    # - none_*: clarification requests shouldn't auto-link
     if not links and outcome == 'ok_answer':
-        message_lower = str(message).lower()
-        # Skip auto-extraction if message indicates negative result
-        negative_patterns = [
-            'not involved', 'not found', 'not a member', 'not in',
-            'no projects', 'none of', 'is not', 'are not', 'wasn\'t', 'weren\'t',
-            'does not', 'do not', 'doesn\'t', 'don\'t', 'cannot find',
-            'no matching', 'no results', 'missing', 'lacks', 'without'
-        ]
-        is_negative_context = any(neg in message_lower for neg in negative_patterns)
-        if not is_negative_context:
-            links = link_extractor.extract_from_message(str(message))
+        links = link_extractor.extract_from_message(str(message))
 
     # Validate employee links
     if links and ctx.context:
