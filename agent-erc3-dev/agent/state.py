@@ -36,6 +36,10 @@ class AgentTurnState:
     action_counts: Dict[str, int] = field(default_factory=dict)  # Track call counts per action type
     outcome_validation_warned: bool = False
 
+    # AICODE-NOTE: Track employees_search queries for name resolution guard (t007, t008)
+    # Allows NameResolutionGuard to verify if agent searched for person's name
+    employees_search_queries: List[str] = field(default_factory=list)
+
     # Pending mutations (mutation tools planned but not yet executed)
     pending_mutation_tools: Set[str] = field(default_factory=set)
 
@@ -44,6 +48,19 @@ class AgentTurnState:
 
     # Enricher hints (persist across turns)
     overlap_definitive_hints: Dict[str, str] = field(default_factory=dict)
+
+    # AICODE-NOTE: t076 FIX - Global skill/will level tracker for pagination
+    # Persists across batch actions within a turn to accumulate data from all pages
+    global_skill_level_tracker: Dict[str, Dict] = field(default_factory=dict)
+
+    # AICODE-NOTE: t009 FIX - Global workload tracker for pagination
+    global_workload_tracker: Dict[str, tuple] = field(default_factory=dict)
+
+    # AICODE-NOTE: Aggregator for member-based searches within a turn.
+    # When agent does multiple projects_search(member=X) in one batch,
+    # we aggregate results to show a clear mapping at the end.
+    # Format: {employee_id: [project_ids]}
+    member_projects_batch: Dict[str, List[str]] = field(default_factory=dict)
 
     # LLM response tracking (for criteria guards)
     last_thoughts: str = ""
@@ -66,12 +83,22 @@ class AgentTurnState:
             'action_types_executed': self.action_types_executed,
             'action_counts': self.action_counts,
             'outcome_validation_warned': self.outcome_validation_warned,
+            'employees_search_queries': self.employees_search_queries,
             'task': self.task,
             '_overlap_definitive_hints': self.overlap_definitive_hints,
             'current_turn': self.current_turn,
             'max_turns': self.max_turns,
             'last_thoughts': self.last_thoughts,
+            'member_projects_batch': self.member_projects_batch,
+            # AICODE-NOTE: t076 FIX - Pass global tracker for batch pagination
+            '_global_skill_level_tracker': self.global_skill_level_tracker,
+            # AICODE-NOTE: t009 FIX - Pass global workload tracker for batch pagination
+            '_global_workload_tracker': self.global_workload_tracker,
         }
+
+    def clear_turn_aggregators(self) -> None:
+        """Clear per-turn aggregators at the start of each turn."""
+        self.member_projects_batch.clear()
 
     def create_context(self):
         """
@@ -97,6 +124,16 @@ class AgentTurnState:
         hints = ctx.shared.get('_overlap_definitive_hints')
         if hints:
             self.overlap_definitive_hints.update(hints)
+
+        # AICODE-NOTE: t076 FIX - Sync global skill/will tracker for batch pagination
+        tracker = ctx.shared.get('_global_skill_level_tracker')
+        if tracker:
+            self.global_skill_level_tracker.update(tracker)
+
+        # AICODE-NOTE: t009 FIX - Sync global workload tracker for batch pagination
+        workload_tracker = ctx.shared.get('_global_workload_tracker')
+        if workload_tracker:
+            self.global_workload_tracker.update(workload_tracker)
 
         # Note: had_mutations, mutation_entities, search_entities are
         # updated directly in the main loop after successful actions

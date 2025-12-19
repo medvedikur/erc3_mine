@@ -11,6 +11,51 @@ from ...base import ToolContext
 from utils import CLI_GREEN
 
 
+def _is_time_logging_action(task_text: str) -> bool:
+    """
+    Detect if task is a TIME LOGGING ACTION (not just an inquiry about time tracking).
+
+    AICODE-NOTE: t061 fix - distinguish between:
+    - ACTION: "log 3 hours on project X" → requires authorization check
+    - INQUIRY: "where can I read about time tracking" → just an info request
+
+    Returns True only for actual time logging/entry operations.
+    """
+    if not task_text:
+        return False
+
+    task_lower = task_text.lower()
+
+    # EXCLUDE: Informational queries about time tracking documentation
+    # These are NOT time logging actions!
+    info_patterns = [
+        r'\bread\s+about\b.*time',      # "read about time tracking"
+        r'\bwhere\b.*time\s+track',      # "where can I... time tracking"
+        r'\bhow\b.*time\s+track',        # "how does time tracking work"
+        r'\bwhat\b.*time\s+track',       # "what is time tracking"
+        r'\bdocument',                   # documentation queries
+        r'\bpolicy|policies\b',          # policy queries
+    ]
+    for pattern in info_patterns:
+        if re.search(pattern, task_lower):
+            return False
+
+    # INCLUDE: Actual time logging actions
+    action_patterns = [
+        r'\blog\s+\d+\s*hours?\b',       # "log 3 hours"
+        r'\b\d+\s*hours?\s+of\b',        # "3 hours of work"
+        r'\bbillable\s+work\b',          # "billable work"
+        r'\blog\s+time\b',               # "log time" (imperative)
+        r'\btime\s+entry\b',             # "time entry"
+        r'\brecord\s+\d+\s*hours?\b',    # "record 3 hours"
+    ]
+    for pattern in action_patterns:
+        if re.search(pattern, task_lower):
+            return True
+
+    return False
+
+
 class TimeLoggingClarificationGuard(ResponseGuard):
     """
     Ensures time logging clarification requests include project links.
@@ -21,25 +66,13 @@ class TimeLoggingClarificationGuard(ResponseGuard):
 
     target_outcomes = {"none_clarification_needed"}
 
-    TIME_LOG_PATTERNS = [
-        r'\blog\s+\d+\s*hours?\b',
-        r'\b\d+\s*hours?\s+of\b',
-        r'\bbillable\s+work\b',
-        r'\blog\s+time\b',
-        r'\btime\s+entry\b',
-        r'\btrack\s+time\b',
-    ]
-
-    def __init__(self):
-        self._time_log_re = re.compile('|'.join(self.TIME_LOG_PATTERNS), re.IGNORECASE)
-
     def _check(self, ctx: ToolContext, outcome: str) -> None:
         task_text = get_task_text(ctx)
         if not task_text:
             return
 
-        # Check if this is a time logging task
-        if not self._time_log_re.search(task_text):
+        # Check if this is a time logging ACTION (not just inquiry)
+        if not _is_time_logging_action(task_text):
             return
 
         message = ctx.model.message or ""
@@ -80,25 +113,13 @@ class TimeLoggingAuthorizationGuard(ResponseGuard):
 
     target_outcomes = {"denied_security"}
 
-    TIME_LOG_PATTERNS = [
-        r'\blog\s+\d+\s*hours?\b',
-        r'\b\d+\s*hours?\s+of\b',
-        r'\bbillable\s+work\b',
-        r'\blog\s+time\b',
-        r'\btime\s+entry\b',
-        r'\btrack\s+time\b',
-    ]
-
-    def __init__(self):
-        self._time_log_re = re.compile('|'.join(self.TIME_LOG_PATTERNS), re.IGNORECASE)
-
     def _check(self, ctx: ToolContext, outcome: str) -> None:
         task_text = get_task_text(ctx)
         if not task_text:
             return
 
-        # Only apply to time logging tasks
-        if not self._time_log_re.search(task_text):
+        # Only apply to time logging ACTIONS (not inquiries about time tracking)
+        if not _is_time_logging_action(task_text):
             return
 
         # Check if projects_get was called

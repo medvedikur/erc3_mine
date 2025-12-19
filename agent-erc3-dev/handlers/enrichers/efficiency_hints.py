@@ -38,7 +38,7 @@ class EfficiencyHintEnricher:
     # Thresholds for triggering hints
     SEQUENTIAL_GET_THRESHOLD = 2  # After N sequential gets, suggest parallel (lowered)
     PAGINATION_THRESHOLD = 2  # After N pagination calls, suggest alternatives
-    CRITICAL_PAGINATION_THRESHOLD = 4  # After N pagination calls, force stop
+    CRITICAL_PAGINATION_THRESHOLD = 2  # After N pagination calls, show CRITICAL STOP (lowered from 3 for t076)
     SAMPLE_SIZE_HINT = 15  # Suggest this sample size for "find best" queries
 
     # Turn budget thresholds
@@ -102,6 +102,16 @@ class EfficiencyHintEnricher:
 
         return None
 
+    # Keywords indicating ALL results are needed (recommendation, list, AND superlative queries)
+    # AICODE-NOTE: t075 fix - superlative queries also need ALL results to find the minimum/maximum
+    EXHAUSTIVE_QUERY_KEYWORDS = [
+        'recommend', 'suggest', 'candidates', 'who would', 'who can', 'who could',
+        'list all', 'find all', 'all employees', 'everyone who', 'everyone with',
+        # Superlative queries - need ALL to compare
+        'least', 'most', 'lowest', 'highest', 'busiest', 'best', 'worst',
+        'minimum', 'maximum', 'smallest', 'largest', 'fewest'
+    ]
+
     def maybe_hint_pagination_limit(
         self,
         ctx: 'ToolContext',
@@ -136,6 +146,75 @@ class EfficiencyHintEnricher:
             'most', 'least', 'best', 'highest', 'lowest', 'busiest',
             'biggest', 'smallest', 'strongest', 'weakest', 'eager'
         ])
+
+        # Check for list/table queries where sampling is OK
+        is_list_query = any(kw in task_lower for kw in [
+            'table', 'list all', 'give me a list', 'show all', 'all skills'
+        ])
+
+        # AICODE-NOTE: Check if this is a recommendation/exhaustive query that needs ALL results
+        is_exhaustive_query = any(kw in task_lower for kw in self.EXHAUSTIVE_QUERY_KEYWORDS)
+
+        # AICODE-NOTE: t076 FIX - Special handling for "busy/workload" queries
+        # These need time_summary_employee, not just employee list
+        is_workload_query = any(kw in task_lower for kw in [
+            'busy', 'busiest', 'workload', 'availability', 'available',
+            'free time', 'capacity', 'utilization'
+        ])
+
+        # AICODE-NOTE: t076 FIX - For workload queries, suggest BATCH pagination
+        # Workload = sum(time_slice) from projects, NOT time_summary_employee!
+        # Agent needs ALL employees with the will, then enricher calculates workload automatically.
+        if count >= self.CRITICAL_PAGINATION_THRESHOLD and is_workload_query and action_name == 'employees_search':
+            items_fetched = count * 5
+            next_offsets = [items_fetched + i * 5 for i in range(10)]
+            return (
+                f"⚠️ WORKLOAD QUERY: You've fetched {items_fetched} items.\n"
+                f"**NOTE**: Workload is automatically calculated from projects (time_slice).\n"
+                f"To get ALL employees faster, use **⚡ BATCH PAGINATION**:\n"
+                f"```json\n"
+                f'"action_queue": [\n'
+                f'  {{"tool": "{action_name}", "args": {{"...same_filters...", "offset": {next_offsets[0]}}}}},\n'
+                f'  {{"tool": "{action_name}", "args": {{"...same_filters...", "offset": {next_offsets[1]}}}}},\n'
+                f'  {{"tool": "{action_name}", "args": {{"...same_filters...", "offset": {next_offsets[2]}}}}},\n'
+                f'  // ... up to 10-20 calls in ONE turn!\n'
+                f']\n'
+                f'```\n'
+                f"This fetches 50-100 more items in ONE turn!"
+            )
+
+        # For exhaustive queries, hint to use PARALLEL pagination
+        # AICODE-NOTE: t075/t076 FIX - Agent needs ALL results but should batch pagination calls
+        if count >= self.CRITICAL_PAGINATION_THRESHOLD and is_exhaustive_query:
+            items_fetched = count * 5
+            next_offsets = [items_fetched + i * 5 for i in range(10)]  # Next 10 offsets
+            return (
+                f"⚠️ SUPERLATIVE QUERY: You've fetched {items_fetched} items.\n"
+                f"**⚡ BATCH PAGINATION** — Put MULTIPLE search calls in ONE action_queue:\n"
+                f"```json\n"
+                f'"action_queue": [\n'
+                f'  {{"tool": "{action_name}", "args": {{"...same_filters...", "offset": {next_offsets[0]}}}}},\n'
+                f'  {{"tool": "{action_name}", "args": {{"...same_filters...", "offset": {next_offsets[1]}}}}},\n'
+                f'  {{"tool": "{action_name}", "args": {{"...same_filters...", "offset": {next_offsets[2]}}}}},\n'
+                f'  // ... up to 10-20 calls in ONE turn!\n'
+                f']\n'
+                f'```\n'
+                f"This fetches 50-100 more items in ONE turn instead of 10-20 turns!"
+            )
+
+        # CRITICAL STOP for non-exhaustive queries after threshold
+        # AICODE-NOTE: Only show stop for superlative/sampling queries, NOT for recommendation queries
+        if count >= self.CRITICAL_PAGINATION_THRESHOLD and not is_exhaustive_query:
+            items_fetched = count * 5  # Assuming limit=5 per page
+            return (
+                f"🛑 **CRITICAL: STOP PAGINATING NOW!** ({count} pages = {items_fetched}+ items fetched)\n\n"
+                f"You have **{remaining_turns} turns left**. Continuing pagination will exhaust your budget!\n\n"
+                f"**ACTION REQUIRED — Choose ONE:**\n"
+                f"1. **RESPOND NOW** with data you have (state 'based on {items_fetched}+ sampled records')\n"
+                f"2. **Use `time_summary_employee`** with collected IDs for workload analysis\n"
+                f"3. **Use SKILL FILTER** `employees_search(skill='X', min_level=N)` for coaching queries\n\n"
+                f"**DO NOT** call `{action_name}` with offset={count * 5} — you have ENOUGH data!"
+            )
 
         # Standard pagination warning (show once)
         hint_key = f'pagination_{action_name}'

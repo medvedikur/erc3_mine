@@ -326,7 +326,58 @@ wiki_dump/
 
 Results are merged, deduplicated by chunk ID, and ranked by combined score.
 
-### 6. Dynamic Pricing
+### 6. Adaptive Will Discovery (`handlers/action_handlers/employee_search.py`)
+
+When searching employees by `wills` filter (motivation/interests), the agent may use verbose or non-standard will names that don't match the database. Instead of maintaining hardcoded mappings (which don't scale), we use an **adaptive discovery** approach:
+
+#### Problem
+- Agent uses: `will_mentoring_junior_staff` (verbose)
+- Database has: `will_mentor_juniors` (actual)
+- Result: 0 matches, test fails
+
+#### Solution: Adaptive Hint
+
+When a will search returns 0 results:
+
+1. **Fetch available wills** from API by getting a sample employee's will list
+2. **Generate hint** showing the agent all available will names in this workspace
+3. **Let agent retry** with the correct will name (LLM chooses the best match)
+
+```python
+def _try_wills_adaptive_hint(self, ctx: ToolContext, original_will_names: List[str]) -> Optional[str]:
+    """When will search returns 0 results, fetch available wills and return hint."""
+    available_wills = self._get_available_wills_from_api(ctx)
+    if not available_wills:
+        return None
+
+    return (
+        f"⚠️ WILL NAME NOT FOUND: Your search for '{searched_wills}' returned 0 results.\n"
+        f"Available wills in this workspace:\n  {wills_list}\n\n"
+        f"Please retry your search using the EXACT will name from the list above."
+    )
+```
+
+#### Why This is Better
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Hardcoded mappings** | Fast, no extra API calls | Doesn't scale; breaks when new wills added |
+| **Algorithmic normalization** | No mappings needed | Brittle; complex rules for edge cases |
+| **Adaptive discovery** ✅ | Scales automatically; works with any workspace | Extra API call (cached in practice) |
+
+The adaptive approach follows our core principle: **agent should be adaptable**, capable of handling ANY workspace configuration by discovering available options at runtime.
+
+#### When Applied
+
+- **Skills+Wills combined search**: Normalizes skills (stable), then adaptive hint for wills
+- **Wills-only search**: Returns adaptive hint if 0 results
+- **Skills still use mappings**: Skill names are more stable across workspaces
+
+#### Future Improvement
+
+The same adaptive approach could be applied to **skills** by fetching available skill names from a sample employee. This would eliminate the large `skill_mappings` dictionary in `_normalize_skill_name()`.
+
+### 7. Dynamic Pricing
 Prices are fetched from OpenRouter API at startup:
 ```python
 class CostCalculator:
@@ -341,14 +392,14 @@ class CostCalculator:
 - `Qwen/Qwen3-235B-A22B-Instruct-2507-FP8` → finds `qwen/qwen3-235b-a22b-2507`
 - Normalizes suffixes (`-fp8`, `-instruct`, version numbers)
 
-### 7. Gonka Network Resilience
+### 8. Gonka Network Resilience
 The `GonkaChatModel` ensures high availability:
 - **Node Failover**: Automatically switches between available Gonka nodes
 - **Retry Logic**: Exponential backoff for transient errors
 - **Critical Error Detection**: Handles `signature is in the future` (clock sync), `balance` errors
 - **Smart Connection**: Validates initial connection before starting
 
-### 8. Parallel Task Execution
+### 9. Parallel Task Execution
 
 The agent supports parallel task execution via `-threads N` flag, reducing total session time significantly (e.g., 24 tasks in ~12 minutes with 5 threads vs ~45 minutes sequential).
 
@@ -384,7 +435,7 @@ This ensures:
 - Full detailed logs per task in separate files
 - No interleaved output corruption
 
-### 9. Schema-Guided Reasoning (SGR)
+### 10. Schema-Guided Reasoning (SGR)
 The agent follows a strict "Mental Protocol" defined in `prompts.py`:
 - **Outcome Selection**: Strictly enforces `outcome` codes (`denied_security`, `ok_answer`, etc.) based on the result.
 - **Identity Check**: Always verifies current user role (`who_am_i`) to determine permissions.
@@ -393,7 +444,7 @@ The agent follows a strict "Mental Protocol" defined in `prompts.py`:
 - **Self-Logging Exception**: No Lead/AM/Manager authorization required when logging time for yourself — only project membership needed.
 - **Format Validation Hints**: Warns about common data entry traps (e.g., O vs 0 in project codes like `CC-NORD-AI-12O`).
 
-### 9. Mutation Tracking for Links (`agent.py` + `tools.py`)
+### 11. Mutation Tracking for Links (`agent.py` + `tools.py`)
 
 The benchmark expects different behavior for `links` based on operation type:
 - **Read-only queries** (e.g., "Who is the CV lead?"): Only link the found entities
@@ -457,7 +508,7 @@ With mutation tracking:
 - ✅ Read-only: Only the found lead is linked
 - ✅ Mutation: Project, target employee, AND current user are linked automatically
 
-### 11. Dynamic Wiki Injection (`handlers/wiki.py` + `handlers/core.py`)
+### 12. Dynamic Wiki Injection (`handlers/wiki.py` + `handlers/core.py`)
 
 When the Wiki changes mid-task (detected via `wiki_sha1` change), critical policy documents are automatically injected into the agent's context:
 
@@ -487,7 +538,7 @@ if security_manager.is_public and wiki_manager.has_page("merger.md"):
 
 This ensures public-facing chatbots **always** mention the acquiring company name (e.g., "AI Excellence Group INTERNATIONAL") in every response when a merger/acquisition has occurred, regardless of the question topic.
 
-### 12. Enricher Architecture (`handlers/enrichers/`)
+### 13. Enricher Architecture (`handlers/enrichers/`)
 
 Enrichers provide context-aware hints by analyzing API responses and injecting guidance into the agent's context. They follow the **Composite pattern** for domain-specific grouping.
 
@@ -543,6 +594,155 @@ class CustomerSearchEnricher:
         # Add domain-specific hints
         return hints
 ```
+
+### 14. Batch Result Aggregation (`agent/state.py` + `agent/action_processor.py`)
+
+When the agent executes multiple similar API calls in one turn (e.g., 10× `projects_search(member=X)`), the LLM can lose track of which result belongs to which input parameter. This leads to incorrect data attribution (e.g., confusing which employee has which projects).
+
+#### Problem Pattern
+
+```
+Turn 9: Agent executes 10 projects_search(member=X) calls in parallel
+→ LLM sees 10 separate results
+→ LLM incorrectly maps: "BwFV_060: 0 projects" (actually has 2!)
+→ Wrong answer: picks employee with 0.3 workload instead of 0.5
+```
+
+#### Solution: State Aggregator + Summary Generator
+
+**1. Aggregator in `AgentTurnState`:**
+```python
+# Format: {employee_id: [project_ids]}
+member_projects_batch: Dict[str, List[str]] = field(default_factory=dict)
+```
+
+**2. Collection in `pipeline.py`:**
+```python
+# After successful projects_search with member filter
+if member_filter:
+    batch = ctx.shared.get('member_projects_batch', {})
+    project_ids = [p.id for p in result.projects] if result.projects else []
+    batch[member_filter] = project_ids
+```
+
+**3. Summary generation in `action_processor.py`:**
+```python
+# After processing all actions in batch
+if len(state.member_projects_batch) >= 3:
+    summary = "📊 **MEMBER-PROJECTS SUMMARY**:\n"
+    for emp_id, proj_ids in sorted(batch.items()):
+        summary += f"  • {emp_id}: {len(proj_ids)} project(s)\n"
+    results.append(summary)
+```
+
+#### Output Example
+
+```
+📊 **MEMBER-PROJECTS SUMMARY** (from this batch):
+  • BwFV_054: 0 projects
+  • BwFV_055: 0 projects
+  • BwFV_056: 1 project(s) — proj_machina_press_high_temp
+  • BwFV_060: 2 project(s) — proj_alpinerail_depot_refurb, proj_centraleauto_ecoat_interface
+  ...
+
+⚠️ Use this mapping when calculating workloads. Don't confuse employee IDs!
+```
+
+#### Extensibility
+
+This pattern can be applied to other batch operations:
+- `employees_search(department=X)` → department membership summary
+- `time_summary_employee(employees=[...])` → workload comparison table
+- `projects_get` batches → time_slice aggregation per employee
+
+### 15. Workload Calculation via Projects (`handlers/action_handlers/employee_search.py`)
+
+**CRITICAL DISCOVERY (t076 fix)**:
+
+According to wiki (`systems/time_tracking_and_reporting.md`):
+> "when estimating workload (e.g. who is busiest or non-busiest), we rely on workload time slices via Project registry."
+
+**Workload ≠ Logged Hours!**
+
+| Source | Data | Use Case |
+|--------|------|----------|
+| `time_summary_employee` | Past hours logged | Reporting, cost analysis |
+| `projects` + `time_slice` | Planned FTE allocation | **Workload estimation** ("busy", "available") |
+
+#### How Workload is Calculated
+
+1. For each employee, find all their **active** projects via `projects_search(team=employee_id, status=['active'])`
+2. For each project, get details via `projects_get(id=proj_id)` to access `team` array
+3. Find employee's `time_slice` in the team array
+4. **Sum all time_slice values** = employee's total workload (FTE)
+
+```python
+# In _enrich_with_workload():
+for emp_id in emp_ids:
+    total_time_slice = 0.0
+    proj_search = client.Req_SearchProjects(
+        team=ProjectTeamFilter(employee_id=emp_id),
+        status=['active'],
+        limit=50, offset=0
+    )
+    for proj in proj_result.projects:
+        proj_detail = api.dispatch(client.Req_GetProject(id=proj.id))
+        for member in proj_detail.project.team:
+            if member.employee == emp_id:
+                total_time_slice += member.time_slice
+    workload[emp_id] = total_time_slice
+```
+
+#### Why This Matters
+
+- ❌ Old approach: Used `time_summary_employee` → returned 0 hours for everyone → tie-breaker by ID
+- ✅ New approach: Uses projects `time_slice` → actual FTE allocation → correct "least busy" identification
+
+**Example**:
+- CjTb_001: 3 active projects with time_slice 0.3, 0.2, 0.1 = **0.6 FTE**
+- CjTb_004: 1 active project with time_slice 0.1 = **0.1 FTE**
+- "Least busy" = CjTb_004 (correct!)
+
+### 16. Turn-Budget Aware Pagination (`prompts.py` + `handlers/enrichers/`)
+
+The agent has a fixed turn budget (default: 20 turns). Naive pagination through large datasets (200+ employees, 5 per page = 40+ pages) exhausts the budget before completing the task.
+
+#### Strategy Changes
+
+**Old approach (caused infinite loops):**
+> "NEVER respond before exhausting pagination!"
+
+**New approach (turn-budget aware):**
+- **SUPERLATIVE queries** ("most", "least", "busiest"): Use FILTERS first to reduce dataset
+- **LIST queries** ("table of all"): Sample 3-5 pages is SUFFICIENT
+- **COACHING queries** ("who can coach X"): Use skill filter, not full pagination
+
+#### Efficiency Hints
+
+The `EfficiencyHintEnricher` provides escalating guidance:
+
+| Pagination Count | Hint Type | Message |
+|-----------------|-----------|---------|
+| 2 pages | Soft hint (once) | "Use filters: department=, skill=, location=" |
+| 3+ pages | **CRITICAL STOP** (every time) | "🛑 STOP PAGINATING NOW! Respond with sampled data" |
+
+#### Implementation
+
+```python
+# In efficiency_hints.py
+CRITICAL_PAGINATION_THRESHOLD = 3
+
+if count >= CRITICAL_PAGINATION_THRESHOLD:
+    return (
+        f"🛑 **CRITICAL: STOP PAGINATING NOW!** ({count} pages)\n"
+        f"You have **{remaining_turns} turns left**.\n"
+        f"**RESPOND NOW** with data you have!"
+    )
+```
+
+The `PaginationHintEnricher` also changes tone after 3 pages:
+- Before: "Use offset=X to get MORE results!"
+- After: "Consider if you have ENOUGH data to answer"
 
 ## Handling Ambiguity & Data Conflicts
 
@@ -610,7 +810,11 @@ NEVER use hard block based on regex word matching in task text — too many fals
 - `TimeLoggingClarificationGuard`: Soft block for time log clarifications without project link
 - `ProjectModificationClarificationGuard`: Soft hint for project modification clarifications without project link
 - `BasicLookupDenialGuard`: Soft hint for `denied_security` on basic org-chart lookups
-- `OutcomeValidationMiddleware`: Soft block for suspicious denied outcomes (no permission check, wrong outcome type)
+- `OutcomeValidationMiddleware`: Soft block for suspicious denied outcomes. Supports **adaptive `denial_basis`** parameter (t011 fix):
+  - `identity_restriction`: System-level restriction from `who_am_i` (e.g., External dept) → validates `who_am_i` was called
+  - `entity_permission`: No Lead/AM/Manager role on entity → validates `_get` tools were called
+  - `guest_restriction`: Public user restriction → validates `is_public=True`
+  - `policy_violation`: Wiki policy prevents action → validates `wiki_search/load` was called
 - `PublicUserSemanticGuard`: Soft block for guests using `ok_not_found` instead of `denied_security`
 - `ProjectMembershipMiddleware`: Hard block (API-verified) for time logging to wrong project
 

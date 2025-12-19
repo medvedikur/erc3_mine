@@ -67,11 +67,14 @@ def get_model_config(use_openrouter: bool) -> tuple:
         Tuple of (model_id, pricing_model_id, backend)
     """
     from pricing import calculator
+    import config
 
     if use_openrouter:
-        model_id = os.environ.get("MODEL_ID_OPENROUTER", "openai/gpt-4o-mini")
+        # Use config.py defaults, can be overridden by env vars
+        model_id = os.environ.get("MODEL_ID_OPENROUTER", config.DEFAULT_MODEL_OPENROUTER)
         pricing_model = os.environ.get("PRICING_MODEL_ID_OPENROUTER") or \
-                        os.environ.get("PRICING_MODEL_ID") or model_id
+                        os.environ.get("PRICING_MODEL_ID") or \
+                        config.DEFAULT_PRICING_MODEL or model_id
         backend = "openrouter"
 
         if not os.environ.get("OPENAI_API_KEY"):
@@ -79,8 +82,10 @@ def get_model_config(use_openrouter: bool) -> tuple:
             print("   Set it in .env: OPENAI_API_KEY=sk-or-...")
             sys.exit(1)
     else:
-        model_id = os.environ.get("MODEL_ID_GONKA", "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8")
-        pricing_model = os.environ.get("PRICING_MODEL_ID", "qwen/qwen3-235b-a22b-2507")
+        # Use config.py defaults, can be overridden by env vars
+        model_id = os.environ.get("MODEL_ID_GONKA", config.DEFAULT_MODEL_GONKA)
+        pricing_model = os.environ.get("PRICING_MODEL_ID") or \
+                        config.DEFAULT_PRICING_MODEL or "qwen/qwen3-235b-a22b-2507"
         backend = "gonka"
 
         if not os.environ.get("GONKA_PRIVATE_KEY"):

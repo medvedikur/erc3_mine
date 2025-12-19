@@ -9,9 +9,21 @@ from ..registry import ToolParser, ParseContext
 @ToolParser.register("customers_list", "customerslist", "listcustomers")
 def _parse_customers_list(ctx: ParseContext) -> Any:
     """List all customers with pagination."""
+    # AICODE-NOTE: Support both page (1-indexed) and offset (0-indexed) pagination (t009 fix)
+    # AICODE-NOTE: offset takes precedence over page when both are provided (t009 regression)
+    limit = int(ctx.args.get("limit", ctx.args.get("per_page", 5)))
+    explicit_offset = ctx.args.get("offset")
+    page = ctx.args.get("page")
+    if explicit_offset is not None:
+        offset = int(explicit_offset)
+    elif page is not None:
+        offset = (int(page) - 1) * limit
+    else:
+        offset = 0
+
     return client.Req_ListCustomers(
-        offset=int(ctx.args.get("offset", 0)),
-        limit=int(ctx.args.get("limit", 5))
+        offset=offset,
+        limit=limit
     )
 
 
@@ -54,13 +66,25 @@ def _parse_customers_search(ctx: ParseContext) -> Any:
     elif isinstance(account_managers, str):
         account_managers = [account_managers]
 
+    # AICODE-NOTE: Support both page (1-indexed) and offset (0-indexed) pagination (t009 fix)
+    # AICODE-NOTE: offset takes precedence over page when both are provided (t009 regression)
+    limit = int(ctx.args.get("limit", ctx.args.get("per_page", 5)))
+    explicit_offset = ctx.args.get("offset")
+    page = ctx.args.get("page")
+    if explicit_offset is not None:
+        offset = int(explicit_offset)
+    elif page is not None:
+        offset = (int(page) - 1) * limit
+    else:
+        offset = 0
+
     search_args = {
         "query": ctx.args.get("query") or ctx.args.get("query_regex"),
         "deal_phase": deal_phase,
         "locations": locations,
         "account_managers": account_managers,
-        "offset": int(ctx.args.get("offset", 0)),
-        "limit": int(ctx.args.get("limit", 5))
+        "offset": offset,
+        "limit": limit
     }
     valid_args = {k: v for k, v in search_args.items() if v is not None}
     return client.Req_SearchCustomers(**valid_args)

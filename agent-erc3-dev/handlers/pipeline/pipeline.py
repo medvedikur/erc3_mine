@@ -24,7 +24,10 @@ from ..enrichers import (
     RoleEnricher, ArchiveHintEnricher, TimeEntryHintEnricher,
     CustomerSearchHintEnricher, EmployeeSearchHintEnricher, PaginationHintEnricher,
     CustomerProjectsHintEnricher, SearchResultExtractionHintEnricher,
-    ProjectNameNormalizationHintEnricher,
+    ProjectNameNormalizationHintEnricher, WorkloadHintEnricher,
+    SkillSearchStrategyHintEnricher, EmployeeNameResolutionHintEnricher,
+    SkillComparisonHintEnricher, QuerySubjectHintEnricher, TieBreakerHintEnricher,
+    RecommendationQueryHintEnricher, TimeSummaryFallbackHintEnricher,
 )
 from utils import CLI_BLUE, CLI_GREEN, CLI_YELLOW, CLI_CLR
 
@@ -76,6 +79,14 @@ class ActionPipeline:
         self._customer_projects_hints = CustomerProjectsHintEnricher()
         self._id_extraction_hints = SearchResultExtractionHintEnricher()
         self._project_name_hints = ProjectNameNormalizationHintEnricher()
+        self._workload_hints = WorkloadHintEnricher()
+        self._skill_strategy_hints = SkillSearchStrategyHintEnricher()
+        self._name_resolution_hints = EmployeeNameResolutionHintEnricher()
+        self._skill_comparison_hints = SkillComparisonHintEnricher()
+        self._query_subject_hints = QuerySubjectHintEnricher()
+        self._tie_breaker_hints = TieBreakerHintEnricher()
+        self._recommendation_hints = RecommendationQueryHintEnricher()
+        self._time_summary_fallback_hints = TimeSummaryFallbackHintEnricher()
 
         # Error/Success handling
         self._error_handler = ErrorHandler()
@@ -108,6 +119,30 @@ class ActionPipeline:
 
         result = exec_result.result
         print(f"  {CLI_GREEN}OK{CLI_CLR}")
+
+        # AICODE-NOTE: Store last API result for entity extraction in action_processor
+        ctx.shared['_last_api_result'] = result
+
+        # AICODE-NOTE: Track pending pagination for LIST query guard (t016, t086)
+        # If API returns next_offset > 0, agent should continue paginating
+        next_offset = getattr(result, 'next_offset', -1)
+        if next_offset > 0:
+            pending = ctx.shared.get('pending_pagination', {})
+            action_name = type(ctx.model).__name__
+            pending[action_name] = {
+                'next_offset': next_offset,
+                'current_count': len(getattr(result, 'employees', []) or
+                                    getattr(result, 'projects', []) or
+                                    getattr(result, 'customers', []) or [])
+            }
+            ctx.shared['pending_pagination'] = pending
+        elif next_offset == -1:
+            # Pagination complete for this action type - clear it
+            pending = ctx.shared.get('pending_pagination', {})
+            action_name = type(ctx.model).__name__
+            if action_name in pending:
+                del pending[action_name]
+                ctx.shared['pending_pagination'] = pending
 
         # 4. Run postprocessors
         result = self._run_postprocessors(ctx, result)
@@ -155,13 +190,26 @@ class ActionPipeline:
             print(f"  {CLI_YELLOW}PROJECTS API Response:{CLI_CLR}")
             print(f"     {result_json}")
 
+            # AICODE-NOTE: Aggregate member-based project searches for clear mapping.
+            # When agent does batch projects_search(member=X), we track results
+            # to show a summary at the end, preventing LLM confusion about which
+            # employee has which projects.
+            member_filter = getattr(ctx.model, 'member', None)
+            if member_filter:
+                batch = ctx.shared.get('member_projects_batch', {})
+                project_ids = []
+                if hasattr(result, 'projects') and result.projects:
+                    project_ids = [p.id for p in result.projects]
+                batch[member_filter] = project_ids
+                ctx.shared['member_projects_batch'] = batch
+
         # Archived project hints
         hint = self._archive_hints.maybe_hint_archived_logging(ctx.model, result, task_text)
         if hint:
             ctx.results.append(hint)
 
-        # Pagination hints (pass model for context-specific hints)
-        hint = self._pagination_hints.maybe_hint_pagination(result, ctx.model)
+        # Pagination hints (pass model and task_text for context-specific hints)
+        hint = self._pagination_hints.maybe_hint_pagination(result, ctx.model, task_text)
         if hint:
             ctx.results.append(hint)
 
@@ -175,6 +223,41 @@ class ActionPipeline:
         if hint:
             ctx.results.append(hint)
 
+        # Employee name resolution hints (t007)
+        hint = self._name_resolution_hints.maybe_hint_name_resolution(ctx.model, result, task_text)
+        if hint:
+            ctx.results.append(hint)
+
+        # Query subject hints (t077) - detect coachee/mentee who should NOT be in links
+        hint = self._query_subject_hints.maybe_hint_query_subject(ctx.model, result, task_text, ctx)
+        if hint:
+            ctx.results.append(hint)
+
+        # Skill search strategy hints (t013, t074)
+        hint = self._skill_strategy_hints.maybe_hint_skill_strategy(ctx.model, result, task_text)
+        if hint:
+            ctx.results.append(hint)
+
+        # Skill comparison hints (t094)
+        hint = self._skill_comparison_hints.maybe_hint_skill_comparison(ctx.model, result, task_text)
+        if hint:
+            ctx.results.append(hint)
+
+        # Tie-breaker hints (t010, t075)
+        hint = self._tie_breaker_hints.maybe_hint_tie_breaker(ctx.model, result, task_text)
+        if hint:
+            ctx.results.append(hint)
+
+        # Recommendation query hints (t017) - remind to return ALL qualifying employees
+        # AICODE-NOTE: t017 FIX - now pass model for pagination tracking
+        if isinstance(ctx.model, client.Req_SearchEmployees):
+            next_offset = getattr(result, 'next_offset', -1)
+            hint = self._recommendation_hints.maybe_hint_recommendation_query(
+                result, task_text, next_offset, ctx.model
+            )
+            if hint:
+                ctx.results.append(hint)
+
         # Time entry update hints
         if isinstance(ctx.model, client.Req_SearchTimeEntries):
             hint = self._time_entry_hints.maybe_hint_time_update(result, task_text)
@@ -184,6 +267,19 @@ class ActionPipeline:
         # Project search disambiguation hints
         if isinstance(ctx.model, client.Req_SearchProjects):
             for hint in self._project_search.enrich(ctx, result, task_text):
+                ctx.results.append(hint)
+
+            # Workload calculation hints (t079)
+            hint = self._workload_hints.maybe_hint_workload(ctx.model, result, task_text)
+            if hint:
+                ctx.results.append(hint)
+
+        # Time summary fallback hints (t009)
+        if isinstance(ctx.model, client.Req_TimeSummaryByEmployee):
+            hint = self._time_summary_fallback_hints.maybe_hint_time_summary_fallback(
+                ctx.model, result, task_text
+            )
+            if hint:
                 ctx.results.append(hint)
 
         # Wiki file hints on wiki_list
@@ -253,3 +349,20 @@ class ActionPipeline:
             hint = self._id_extraction_hints.maybe_hint_id_extraction(ctx.model, result, action_name)
             if hint:
                 ctx.results.append(hint)
+
+    def clear_task_caches(self) -> None:
+        """
+        Clear all per-task caches in enrichers.
+
+        AICODE-NOTE: Call this at the start of each new task to prevent
+        state leaking between tasks. Critical for enrichers that track
+        accumulated results across pagination (e.g., RecommendationQueryHintEnricher).
+        """
+        # Clear efficiency hints turn cache
+        self._efficiency_hints.clear_turn_cache()
+
+        # Clear customer projects filter cache
+        self._customer_projects_hints.clear_cache()
+
+        # Clear recommendation query accumulated results (t017 fix)
+        self._recommendation_hints.clear_cache()

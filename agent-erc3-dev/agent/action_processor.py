@@ -127,6 +127,13 @@ class ActionProcessor:
 
         for action in action_queue:
             if isinstance(action, dict) and "tool" in action:
+                # AICODE-NOTE: Validate args type early to give better feedback
+                # LLM sometimes generates {"tool": "X", "args": "string"} instead of {"args": {...}}
+                args = action.get("args")
+                if args is not None and not isinstance(args, (dict, str)):
+                    malformed_count += 1
+                    print(f"  {CLI_YELLOW}Malformed args type skipped: {type(args).__name__} in {action}{CLI_CLR}")
+                    continue
                 valid_actions.append(action)
             else:
                 malformed_count += 1
@@ -200,6 +207,21 @@ class ActionProcessor:
             if isinstance(action_model, client.Req_WhoAmI):
                 who_am_i_called = True
 
+            # AICODE-NOTE: Warn if doing wiki/search operations BEFORE who_am_i
+            # This helps catch cases where guest users read internal data before
+            # identity is verified (e.g., t061 failure pattern)
+            if not who_am_i_called and not isinstance(action_model, client.Req_WhoAmI):
+                if isinstance(action_model, (client.Req_SearchWiki, client.Req_LoadWiki,
+                                            client.Req_SearchEmployees, client.Req_GetEmployee,
+                                            client.Req_SearchProjects, client.Req_GetProject,
+                                            client.Req_SearchCustomers, client.Req_GetCustomer)):
+                    results.append(
+                        "\n⚠️ IDENTITY NOT VERIFIED: You are executing actions BEFORE calling `who_am_i`!\n"
+                        "**CRITICAL**: You may be a GUEST user with NO ACCESS to internal data!\n"
+                        "Call `who_am_i` FIRST to verify your identity before proceeding.\n"
+                        "If you are a guest (is_public: true), you must return `denied_security` for internal data."
+                    )
+
             # Security checks for respond
             if isinstance(action_model, client.Req_ProvideAgentResponse):
                 block_msg = self._check_respond_blocked(
@@ -212,6 +234,12 @@ class ActionProcessor:
 
             if self.stats:
                 self.stats.add_api_call(task_id=self.task.task_id)
+
+            # AICODE-NOTE: t075/t076 fix - Increment action_counts BEFORE creating shared dict
+            # so efficiency hints can see the correct count for pagination warnings.
+            tool_name_for_count = action_dict.get('tool', '')
+            if tool_name_for_count:
+                state.action_counts[tool_name_for_count] = state.action_counts.get(tool_name_for_count, 0) + 1
 
             # Execute action
             initial_shared = state.to_shared_dict()
@@ -239,8 +267,7 @@ class ActionProcessor:
                 tool_name = action_dict.get('tool', '')
                 if tool_name:
                     state.action_types_executed.add(tool_name)
-                    # Increment action count for efficiency tracking
-                    state.action_counts[tool_name] = state.action_counts.get(tool_name, 0) + 1
+                    # AICODE-NOTE: action_counts already incremented before execution (t075/t076 fix)
 
             # Track mutations and searches
             self._track_mutation(action_model, state, ctx)
@@ -257,6 +284,20 @@ class ActionProcessor:
                     task_done = True
                     print(f"  {CLI_GREEN}FINAL RESPONSE SUBMITTED{CLI_CLR}")
                     stop_execution = True
+
+        # AICODE-NOTE: Generate summary for batch member-based project searches.
+        # When agent does multiple projects_search(member=X), show aggregated mapping
+        # to prevent LLM confusion about which employee has which projects.
+        if state.member_projects_batch and len(state.member_projects_batch) >= 3:
+            summary_lines = ["📊 **MEMBER-PROJECTS SUMMARY** (from this batch):"]
+            for emp_id, proj_ids in sorted(state.member_projects_batch.items()):
+                if proj_ids:
+                    summary_lines.append(f"  • {emp_id}: {len(proj_ids)} project(s) — {', '.join(proj_ids)}")
+                else:
+                    summary_lines.append(f"  • {emp_id}: 0 projects")
+            summary_lines.append("\n⚠️ Use this mapping when calculating workloads. Don't confuse employee IDs!")
+            results.append("\n".join(summary_lines))
+            state.member_projects_batch.clear()
 
         return ActionResult(
             results=results,
@@ -346,7 +387,16 @@ class ActionProcessor:
         elif isinstance(action_model, client.Req_UpdateProjectTeam):
             if hasattr(action_model, 'id') and action_model.id:
                 state.mutation_entities.append({"id": action_model.id, "kind": "project"})
-            if hasattr(action_model, 'team') and action_model.team:
+
+            # AICODE-NOTE: Use team_modified_employees from ProjectTeamUpdateStrategy
+            # to only include employees whose time_slice/role actually changed,
+            # not all team members (t097 fix - "extra link" problem)
+            modified_employees = ctx.shared.get('team_modified_employees', [])
+            if modified_employees:
+                for emp_id in modified_employees:
+                    state.mutation_entities.append({"id": emp_id, "kind": "employee"})
+            elif hasattr(action_model, 'team') and action_model.team:
+                # Fallback: if strategy didn't provide diff, add all (backward compat)
                 for member in action_model.team:
                     emp_id = member.get('employee') if isinstance(member, dict) else getattr(member, 'employee', None)
                     if emp_id:
@@ -359,6 +409,15 @@ class ActionProcessor:
 
     def _track_search(self, action_model: Any, state: AgentTurnState, ctx: Any):
         """Track search entities for auto-linking."""
+        # AICODE-NOTE: Track employees_search queries for name resolution guard (t007, t008)
+        # This must be done BEFORE the SEARCH_TYPES check, since Req_SearchEmployees
+        # is not in SEARCH_TYPES (it doesn't auto-add to links).
+        if isinstance(action_model, client.Req_SearchEmployees):
+            if not any("FAILED" in r or "ERROR" in r for r in ctx.results):
+                query = getattr(action_model, 'query', None)
+                if query and query not in state.employees_search_queries:
+                    state.employees_search_queries.append(query)
+
         if not isinstance(action_model, SEARCH_TYPES):
             return
         if any("FAILED" in r or "ERROR" in r for r in ctx.results):
@@ -371,6 +430,17 @@ class ActionProcessor:
             if action_model.project:
                 state.search_entities.append({"id": action_model.project, "kind": "project"})
 
+            # AICODE-NOTE: Extract customer from time entries response (t098 fix)
+            # The customer is in the response entries, not in the request params
+            api_result = ctx.shared.get('_last_api_result')
+            if api_result and hasattr(api_result, 'entries') and api_result.entries:
+                customers_seen = set()
+                for entry in api_result.entries:
+                    cust = getattr(entry, 'customer', None)
+                    if cust and cust not in customers_seen:
+                        customers_seen.add(cust)
+                        state.search_entities.append({"id": cust, "kind": "customer"})
+
         elif isinstance(action_model, client.Req_TimeSummaryByEmployee):
             employees = getattr(action_model, 'employees', None) or []
             for emp in employees:
@@ -380,3 +450,20 @@ class ActionProcessor:
             projects = getattr(action_model, 'projects', None) or []
             for proj in projects:
                 state.search_entities.append({"id": proj, "kind": "project"})
+
+        # AICODE-NOTE: Extract customer from projects_search response (t098 fix)
+        # Project responses contain customer field which should be linked
+        elif isinstance(action_model, client.Req_SearchProjects):
+            api_result = ctx.shared.get('_last_api_result')
+            if api_result and hasattr(api_result, 'projects') and api_result.projects:
+                customers_seen = set()
+                for proj in api_result.projects:
+                    # Extract project ID
+                    proj_id = getattr(proj, 'id', None)
+                    if proj_id:
+                        state.search_entities.append({"id": proj_id, "kind": "project"})
+                    # Extract customer from project
+                    cust = getattr(proj, 'customer', None)
+                    if cust and cust not in customers_seen:
+                        customers_seen.add(cust)
+                        state.search_entities.append({"id": cust, "kind": "customer"})

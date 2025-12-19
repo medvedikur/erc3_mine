@@ -28,6 +28,64 @@ class ProjectMembershipMiddleware(Middleware):
 
             print(f"  {CLI_YELLOW}🛡️ Safety Check: Verifying project membership...{CLI_CLR}")
 
+            # CHECK AUTHORIZATION: Can current user log time for target employee?
+            security_manager = ctx.shared.get('security_manager')
+            current_user = getattr(security_manager, 'current_user', None) if security_manager else None
+
+            if current_user and employee_id != current_user:
+                # Logging time for ANOTHER employee - need authorization
+                print(f"  {CLI_YELLOW}🛡️ Authorization Check: Can {current_user} log time for {employee_id}?{CLI_CLR}")
+
+                is_authorized = False
+                auth_reason = None
+
+                try:
+                    # 1. Check if current_user is Direct Manager of target employee
+                    target_employee = ctx.api.dispatch(client.Req_GetEmployee(id=employee_id))
+                    if target_employee and hasattr(target_employee, 'employee') and target_employee.employee:
+                        target_manager = getattr(target_employee.employee, 'manager', None)
+                        if target_manager == current_user:
+                            is_authorized = True
+                            auth_reason = "Direct Manager"
+
+                    # 2. Check if current_user is Project Lead
+                    if not is_authorized and project_id:
+                        try:
+                            resp_project = ctx.api.dispatch(client.Req_GetProject(id=project_id))
+                            if resp_project and hasattr(resp_project, 'project') and resp_project.project:
+                                for member in (resp_project.project.team or []):
+                                    mem_emp = getattr(member, 'employee', None)
+                                    mem_role = getattr(member, 'role', None)
+                                    if mem_emp == current_user and mem_role == 'Lead':
+                                        is_authorized = True
+                                        auth_reason = "Project Lead"
+                                        break
+                        except Exception:
+                            pass
+
+                    # 3. Check if current_user is Account Manager for customer
+                    # (Would need customer lookup - skip for now as it's less common)
+
+                except Exception as e:
+                    print(f"  {CLI_YELLOW}⚠️ Authorization check failed: {e}{CLI_CLR}")
+                    # Fail-safe: block if we can't verify
+                    is_authorized = False
+
+                if not is_authorized:
+                    print(f"  {CLI_RED}⛔ Authorization Denied: Not authorized to log time for {employee_id}{CLI_CLR}")
+                    ctx.stop_execution = True
+                    ctx.results.append(
+                        f"AUTHORIZATION ERROR: You ({current_user}) are NOT authorized to log time for employee '{employee_id}'. "
+                        f"To log time for another employee, you must be their:\n"
+                        f"  • Direct Manager (verified via employees_get)\n"
+                        f"  • Project Lead (role='Lead' in project team)\n"
+                        f"  • Account Manager for their customer\n\n"
+                        f"Use `denied_security` outcome if you cannot establish authorization."
+                    )
+                    return
+                else:
+                    print(f"  {CLI_YELLOW}✓ Authorized as: {auth_reason}{CLI_CLR}")
+
             # CHECK M&A POLICY: If merger.md exists and requires CC codes, inject a warning
             wiki_manager = ctx.shared.get('wiki_manager')
             if wiki_manager and wiki_manager.has_page("merger.md"):

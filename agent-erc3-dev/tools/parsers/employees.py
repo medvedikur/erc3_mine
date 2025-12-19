@@ -105,6 +105,25 @@ def _normalize_skills(skills_input: Any) -> List[SkillLevel]:
                 skill_name = item.get("name") or item.get("skill") or item.get("id")
                 skill_level = item.get("level", DEFAULT_LEVEL)
                 if skill_name:
+                    # AICODE-NOTE: LLM may generate MongoDB-style operators like {"$add": 1}
+                    # We need to handle this gracefully - either convert or reject
+                    if isinstance(skill_level, dict):
+                        # Handle {"$add": N} operator - means "add N to current level"
+                        if "$add" in skill_level:
+                            delta = skill_level["$add"]
+                            # We cannot apply delta without knowing current level
+                            # Return error guidance for correct format
+                            raise ValueError(
+                                f"Cannot use '$add' operator for skill '{skill_name}'. "
+                                f"To update skill level by +{delta}, first use employees_get to find current level, "
+                                f"then provide the absolute new level. Example: {{'name': '{skill_name}', 'level': 5}}"
+                            )
+                        else:
+                            # Unknown dict format
+                            raise ValueError(
+                                f"Invalid level format for skill '{skill_name}': {skill_level}. "
+                                f"Level must be an integer 1-10. Example: {{'name': '{skill_name}', 'level': 5}}"
+                            )
                     result.append(SkillLevel(
                         name=skill_name.lower().replace(" ", "_"),
                         level=int(skill_level) if skill_level else DEFAULT_LEVEL
@@ -118,9 +137,23 @@ def _normalize_skills(skills_input: Any) -> List[SkillLevel]:
 @ToolParser.register("employees_list", "employeeslist", "listemployees")
 def _parse_employees_list(ctx: ParseContext) -> Any:
     """List all employees with pagination."""
+    # AICODE-NOTE: Support both page (1-indexed) and offset (0-indexed) pagination (t009 fix)
+    # AICODE-NOTE: offset takes precedence over page when both are provided (t009 regression)
+    limit = int(ctx.args.get("limit", ctx.args.get("per_page", 5)))
+    explicit_offset = ctx.args.get("offset")
+    page = ctx.args.get("page")
+    if explicit_offset is not None:
+        # Explicit offset always wins
+        offset = int(explicit_offset)
+    elif page is not None:
+        # Convert page to offset: page 1 = offset 0, page 2 = offset 5, etc.
+        offset = (int(page) - 1) * limit
+    else:
+        offset = 0
+
     return client.Req_ListEmployees(
-        offset=int(ctx.args.get("offset", 0)),
-        limit=int(ctx.args.get("limit", 5))
+        offset=offset,
+        limit=limit
     )
 
 
@@ -138,15 +171,43 @@ def _parse_employees_search(ctx: ParseContext) -> Any:
         elif not wf.name.startswith("will_"):
             wf.name = "will_" + wf.name
 
+    # AICODE-NOTE: Build query from multiple possible sources (t044 fix)
+    # Agent may use first_name/last_name separately instead of combined query
+    query_val = ctx.args.get("query") or ctx.args.get("name") or ctx.args.get("query_regex")
+    if not query_val:
+        # Combine first_name and last_name into query if provided
+        first_name = ctx.args.get("first_name") or ctx.args.get("firstName")
+        last_name = ctx.args.get("last_name") or ctx.args.get("lastName")
+        if first_name and last_name:
+            query_val = f"{first_name} {last_name}"
+        elif first_name:
+            query_val = first_name
+        elif last_name:
+            query_val = last_name
+
+    # AICODE-NOTE: Support both page (1-indexed) and offset (0-indexed) pagination (t009 fix)
+    # AICODE-NOTE: offset takes precedence over page when both are provided (t009 regression)
+    limit = int(ctx.args.get("limit", ctx.args.get("per_page", 5)))
+    explicit_offset = ctx.args.get("offset")
+    page = ctx.args.get("page")
+    if explicit_offset is not None:
+        # Explicit offset always wins
+        offset = int(explicit_offset)
+    elif page is not None:
+        # Convert page to offset: page 1 = offset 0, page 2 = offset 5, etc.
+        offset = (int(page) - 1) * limit
+    else:
+        offset = 0
+
     return client.Req_SearchEmployees(
-        query=ctx.args.get("query") or ctx.args.get("name") or ctx.args.get("query_regex"),
+        query=query_val,
         location=ctx.args.get("location"),
         department=ctx.args.get("department"),
         manager=ctx.args.get("manager"),
         skills=skills_filter,
         wills=wills_filter,
-        offset=int(ctx.args.get("offset", 0)),
-        limit=int(ctx.args.get("limit", 5))
+        offset=offset,
+        limit=limit
     )
 
 

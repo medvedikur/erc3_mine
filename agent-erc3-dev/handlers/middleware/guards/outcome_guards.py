@@ -6,11 +6,100 @@ Guards:
 - OutcomeValidationMiddleware: Validates denied outcomes
 - SingleCandidateOkHint: Nudges ok_answer for single candidate
 - SubjectiveQueryGuard: Blocks ok_answer on ambiguous queries
+- IncompletePaginationGuard: Blocks ok_answer when pagination not exhausted for LIST queries
 """
 import re
 from ..base import ResponseGuard, get_task_text
 from ...base import ToolContext
 from utils import CLI_GREEN, CLI_CLR
+
+
+class IncompletePaginationGuard(ResponseGuard):
+    """
+    Guard for ok_answer responses when pagination is incomplete for LIST queries.
+
+    AICODE-NOTE: Critical for t016, t086, t076. Agent sees next_offset=5 hint but
+    ignores it, responding with partial results. This guard blocks the response
+    and forces agent to continue paginating.
+
+    Problem: Agent fetches 5 employees (page 1), sees next_offset=5, but decides
+    "that's enough" and responds. Task says "List all employees with X" - needs ALL.
+
+    Solution: Soft block if:
+    1. Task contains LIST keywords ("list", "list all", "how many", "find all")
+    2. pending_pagination exists (next_offset > 0 not consumed)
+    3. Agent tries ok_answer
+    """
+
+    target_outcomes = {"ok_answer"}
+
+    # Keywords indicating exhaustive list is expected
+    LIST_KEYWORDS = [
+        r'\blist\s+(?:all\s+)?(?:employees?|projects?|customers?)\b',
+        r'\blist\s+(?:the\s+)?(?:employees?|people|staff)\b',
+        r'\bfind\s+all\b',
+        r'\bget\s+all\b',
+        r'\bhow\s+many\b',
+        r'\ball\s+(?:employees?|projects?|customers?)\s+(?:who|that|with|in)\b',
+        r'\bevery(?:one)?\s+(?:who|that|with|in)\b',
+        r'\bwho\s+(?:all\s+)?(?:are|is|has|have|works?|can)\b',
+    ]
+
+    # Keywords that suggest sampling is OK (superlatives)
+    SAMPLING_OK_KEYWORDS = [
+        r'\bmost\s+(?:busy|skilled|experienced)\b',
+        r'\bleast\s+(?:busy|skilled|experienced)\b',
+        r'\bbusiest\b',
+        r'\bbest\b',
+        r'\btop\s+\d+\b',
+        r'\bfind\s+(?:one|a|the)\s+(?:employee|person)\b',  # singular
+    ]
+
+    def __init__(self):
+        self._list_re = re.compile('|'.join(self.LIST_KEYWORDS), re.IGNORECASE)
+        self._sampling_re = re.compile('|'.join(self.SAMPLING_OK_KEYWORDS), re.IGNORECASE)
+
+    def _check(self, ctx: ToolContext, outcome: str) -> None:
+        task_text = get_task_text(ctx)
+        if not task_text:
+            return
+
+        # Skip if task suggests sampling is OK (superlatives, singular)
+        if self._sampling_re.search(task_text):
+            return
+
+        # Check if task expects exhaustive list
+        if not self._list_re.search(task_text):
+            return
+
+        # Check for pending pagination
+        pending = ctx.shared.get('pending_pagination', {})
+        if not pending:
+            return
+
+        # Build warning message
+        pending_info = []
+        for action_type, info in pending.items():
+            next_off = info.get('next_offset', 0)
+            count = info.get('current_count', 0)
+            pending_info.append(f"{action_type}: fetched {count}, next_offset={next_off}")
+
+        if pending_info:
+            self._soft_block(
+                ctx,
+                warning_key='incomplete_pagination_warned',
+                log_msg=f"IncompletePaginationGuard: LIST query with unfetched pages: {pending_info}",
+                block_msg=(
+                    f"⛔ INCOMPLETE LIST: Task asks to LIST items, but you haven't fetched all results!\n\n"
+                    f"**Pending pagination:**\n" +
+                    "\n".join(f"  • {p}" for p in pending_info) +
+                    f"\n\n"
+                    f"**REQUIRED**: Continue paginating with `offset={list(pending.values())[0].get('next_offset')}` "
+                    f"until `next_offset=-1` (no more pages).\n\n"
+                    f"The task says 'list' which means ALL matching items, not just the first page!\n\n"
+                    f"**If you've sampled enough** and are confident in your answer, call respond again."
+                )
+            )
 
 
 class AmbiguityGuardMiddleware(ResponseGuard):
@@ -151,6 +240,13 @@ class OutcomeValidationMiddleware(ResponseGuard):
             print(f"  {CLI_GREEN}✓ Outcome Validation: Skipped for destructive operation{CLI_CLR}")
             return
 
+        # AICODE-NOTE: Adaptive denial validation (t011 fix).
+        # If agent declares denial_basis, validate appropriately instead of requiring entity checks.
+        denial_basis = ctx.shared.get('denial_basis')
+        if denial_basis:
+            if self._validate_denial_basis(ctx, denial_basis, outcome):
+                return  # Validation passed, skip legacy checks
+
         # Get execution context
         missing_tools = ctx.shared.get('missing_tools', [])
         action_types_executed = ctx.shared.get('action_types_executed', set())
@@ -222,6 +318,116 @@ class OutcomeValidationMiddleware(ResponseGuard):
                 f"Only use `denied_security` if you actually LACK the role/permission to do the action.\n\n"
                 f"**If you're certain you lack permission**, call respond again with the same outcome."
             )
+
+    def _validate_denial_basis(self, ctx: ToolContext, denial_basis: str, outcome: str) -> bool:
+        """
+        Validate denied outcome based on agent's declared denial_basis.
+
+        AICODE-NOTE: Adaptive approach (t011 fix). Instead of hardcoding department checks,
+        agent declares WHY it's denying, and we validate the appropriate checks were made.
+
+        Args:
+            ctx: Tool context
+            denial_basis: Agent's declared reason for denial
+            outcome: The outcome being validated
+
+        Returns:
+            True if validation passed (skip legacy checks), False otherwise
+        """
+        action_types_executed = ctx.shared.get('action_types_executed', set())
+
+        if denial_basis == 'identity_restriction':
+            # Agent claims system-level restriction from who_am_i
+            # (e.g., External dept cannot access cross-department time summaries)
+            # Validation: who_am_i must have been called
+            if 'who_am_i' in action_types_executed:
+                print(f"  {CLI_GREEN}✓ Outcome Validation: Accepted '{outcome}' with "
+                      f"denial_basis='identity_restriction' (who_am_i verified){CLI_CLR}")
+                return True
+            else:
+                # Agent claims identity restriction but didn't call who_am_i
+                self._soft_block(
+                    ctx,
+                    warning_key='outcome_validation_warned',
+                    log_msg=f"Denial basis 'identity_restriction' but who_am_i not called",
+                    block_msg=(
+                        f"🔍 OUTCOME VALIDATION: You declared `denial_basis='identity_restriction'` "
+                        f"but you didn't call `who_am_i` to verify your identity restrictions!\n\n"
+                        f"Call `who_am_i` first to confirm your department/role restrictions."
+                    )
+                )
+                return False
+
+        elif denial_basis == 'entity_permission':
+            # Agent claims no permission on specific entity
+            # Validation: must have called _get to check roles
+            had_strong_check = bool(action_types_executed & self.PERMISSION_CHECK_TOOLS_STRONG)
+            if had_strong_check:
+                print(f"  {CLI_GREEN}✓ Outcome Validation: Accepted '{outcome}' with "
+                      f"denial_basis='entity_permission' (entity check verified){CLI_CLR}")
+                return True
+            else:
+                # Will fall through to legacy CASE 2/3 which handles this
+                return False
+
+        elif denial_basis == 'policy_violation':
+            # Agent claims wiki policy prevents action
+            # Validation: wiki_search or wiki_load must have been called
+            wiki_checked = any(t in action_types_executed for t in ['wiki_search', 'wiki_load'])
+            if wiki_checked:
+                print(f"  {CLI_GREEN}✓ Outcome Validation: Accepted '{outcome}' with "
+                      f"denial_basis='policy_violation' (wiki checked){CLI_CLR}")
+                return True
+            else:
+                self._soft_block(
+                    ctx,
+                    warning_key='outcome_validation_warned',
+                    log_msg=f"Denial basis 'policy_violation' but wiki not checked",
+                    block_msg=(
+                        f"🔍 OUTCOME VALIDATION: You declared `denial_basis='policy_violation'` "
+                        f"but you didn't search the wiki to verify the policy!\n\n"
+                        f"Use `wiki_search` to find and cite the specific policy that prevents this action."
+                    )
+                )
+                return False
+
+        elif denial_basis == 'guest_restriction':
+            # Agent claims guest/public user restriction
+            # Validation: who_am_i called and is_public=True
+            is_public = ctx.shared.get('is_public', False)
+            if 'who_am_i' in action_types_executed and is_public:
+                print(f"  {CLI_GREEN}✓ Outcome Validation: Accepted '{outcome}' with "
+                      f"denial_basis='guest_restriction' (public user verified){CLI_CLR}")
+                return True
+            elif 'who_am_i' not in action_types_executed:
+                self._soft_block(
+                    ctx,
+                    warning_key='outcome_validation_warned',
+                    log_msg=f"Denial basis 'guest_restriction' but who_am_i not called",
+                    block_msg=(
+                        f"🔍 OUTCOME VALIDATION: You declared `denial_basis='guest_restriction'` "
+                        f"but you didn't call `who_am_i` to verify you're a guest!\n\n"
+                        f"Call `who_am_i` first to confirm your public/guest status."
+                    )
+                )
+                return False
+            else:
+                # who_am_i called but not public - agent is wrong
+                self._soft_block(
+                    ctx,
+                    warning_key='outcome_validation_warned',
+                    log_msg=f"Denial basis 'guest_restriction' but user is not public",
+                    block_msg=(
+                        f"🔍 OUTCOME VALIDATION: You declared `denial_basis='guest_restriction'` "
+                        f"but `who_am_i` shows you are NOT a guest (is_public=False)!\n\n"
+                        f"You are an authenticated user. Check your actual permissions via "
+                        f"`projects_get` or `employees_get`."
+                    )
+                )
+                return False
+
+        # Unknown denial_basis - fall through to legacy validation
+        return False
 
     def _validate_ok_not_found_for_mutations(self, ctx: ToolContext, outcome: str) -> None:
         """Soft hint for ok_not_found on mutation tasks after projects_search."""

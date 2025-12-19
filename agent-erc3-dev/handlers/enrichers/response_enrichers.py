@@ -295,13 +295,42 @@ class PaginationHintEnricher:
     Provides hints for paginated results.
     """
 
-    def maybe_hint_pagination(self, result: Any, model: Any = None) -> Optional[str]:
+    # Keywords indicating ALL results are needed (recommendation, list, AND superlative queries)
+    # AICODE-NOTE: t075 fix - superlative queries also need ALL results to find the minimum/maximum
+    # AICODE-NOTE: Separate SUPERLATIVE from RECOMMENDATION queries!
+    # Superlative = need to compare ALL and find min/max (must paginate)
+    # Recommendation = list ALL matching, but no comparison needed
+    SUPERLATIVE_KEYWORDS = [
+        'least', 'most', 'lowest', 'highest', 'busiest', 'worst',
+        'minimum', 'maximum', 'smallest', 'largest', 'fewest'
+    ]
+
+    RECOMMENDATION_KEYWORDS = [
+        'recommend', 'suggest', 'candidates', 'who would', 'who can',
+        'list all', 'find all', 'all employees', 'everyone'
+    ]
+
+    # AICODE-NOTE: t017 FIX #2 - Singular indicators for recommendation queries
+    # If task mentions these, it expects ONE result, not a list
+    SINGULAR_INDICATORS = [
+        'primary trainer', 'primary coach', 'primary mentor',
+        'the trainer', 'the coach', 'the mentor', 'the best',
+        'one person', 'single', 'a trainer', 'a coach', 'a mentor',
+        'someone who', 'somebody who', 'anyone who'
+    ]
+
+    def _is_singular_recommendation(self, task_lower: str) -> bool:
+        """Check if recommendation query expects a single result."""
+        return any(indicator in task_lower for indicator in self.SINGULAR_INDICATORS)
+
+    def maybe_hint_pagination(self, result: Any, model: Any = None, task_text: str = None) -> Optional[str]:
         """
         Generate hint if there are more pages of results.
 
         Args:
             result: API response
             model: Request model (optional, for context-specific hints)
+            task_text: Task instructions (optional, for query type detection)
 
         Returns:
             Hint string or None
@@ -310,10 +339,45 @@ class PaginationHintEnricher:
         if next_offset is None or next_offset <= 0:
             return None
 
+        # Check query type
+        task_lower = (task_text or '').lower()
+        is_superlative = any(kw in task_lower for kw in self.SUPERLATIVE_KEYWORDS)
+        is_recommendation = any(kw in task_lower for kw in self.RECOMMENDATION_KEYWORDS)
+
+        # AICODE-NOTE: For TRUE superlative queries (least/most/busiest), show strong hint
+        # But NOT for "recommend" or "strong" which are filter queries
+        if is_superlative:
+            return (
+                f"🛑 SUPERLATIVE QUERY DETECTED: Task asks for 'least'/'most'/'busiest'/etc.\n"
+                f"You MUST fetch ALL results to find the correct answer!\n"
+                f"Current: {next_offset} items fetched, MORE exist (next_offset={next_offset}).\n\n"
+                f"❌ IGNORE any 'turn budget' warnings! Superlative queries REQUIRE all data!\n"
+                f"❌ DO NOT RESPOND until next_offset=-1 (all pages fetched)!\n"
+                f"✅ Continue with offset={next_offset} until next_offset=-1."
+            )
+
+        # AICODE-NOTE: t017 FIX #2 - Skip recommendation hint for SINGULAR queries!
+        # "primary trainer" expects ONE person, not a list
+        if is_recommendation and not self._is_singular_recommendation(task_lower):
+            return (
+                f"⚠️ RECOMMENDATION QUERY DETECTED: Task asks to 'recommend'/'suggest' candidates.\n"
+                f"This is a FILTER query — return ALL qualifying employees, not just the 'best' one!\n"
+                f"You found {next_offset} so far, but next_offset={next_offset} means MORE exist.\n"
+                f"**PAGINATE** to find ALL candidates, then link EVERY qualifying employee in your response.\n"
+                f"The user wants a list of options to choose from, not your single pick."
+            )
+
+        # AICODE-NOTE: For non-exhaustive queries with many results, suggest stopping
+        if next_offset >= 15:
+            return (
+                f"PAGINATION: next_offset={next_offset}. You've fetched {next_offset} items already. "
+                f"Consider if you have ENOUGH data to answer, or use FILTERS to narrow results."
+            )
+
+        # Simple pagination hint - don't overwhelm with JSON examples
         base_hint = (
-            f"PAGINATION: next_offset={next_offset} means there are MORE results! "
-            f"Use offset={next_offset} in your next search to get the remaining items. "
-            f"Do NOT assume you found everything!"
+            f"⚠️ PAGINATION: next_offset={next_offset} — MORE results exist! "
+            f"Use offset={next_offset} to fetch more, or use FILTERS to narrow results."
         )
 
         # Add filter-specific hint for employees_search
@@ -471,6 +535,262 @@ class SearchResultExtractionHintEnricher:
         return None
 
 
+class WorkloadHintEnricher:
+    """
+    Provides hints when agent needs time_slice data for workload calculations.
+
+    AICODE-NOTE: Critical for t079. projects_search only returns id, name, customer, status.
+    For workload calculations (sum of time_slice), agent MUST use projects_get.
+    """
+
+    def maybe_hint_workload(
+        self,
+        model: Any,
+        result: Any,
+        task_text: str
+    ) -> Optional[str]:
+        """
+        Generate hint if task mentions workload but using projects_search.
+
+        Args:
+            model: The request model
+            result: API response
+            task_text: Task instructions
+
+        Returns:
+            Hint string or None
+        """
+        if not isinstance(model, client.Req_SearchProjects):
+            return None
+
+        task_lower = task_text.lower()
+        # AICODE-NOTE: Extended for t076 - "least busy" also requires time_slice calculation
+        workload_keywords = [
+            'workload', 'time_slice', 'allocation', 'capacity', 'utilization',
+            'how much time', 'least busy', 'most busy', 'busiest', 'free time',
+            'available', 'availability', 'overloaded', 'underloaded'
+        ]
+
+        if not any(kw in task_lower for kw in workload_keywords):
+            return None
+
+        projects = getattr(result, 'projects', None) or []
+        if not projects:
+            return None
+
+        return (
+            "⚠️ WORKLOAD CALCULATION: `projects_search` does NOT return `time_slice` data!\n"
+            "To calculate workload (sum of time_slice), you MUST:\n"
+            "  1. Use `projects_get(id='proj_xxx')` for EACH project\n"
+            "  2. Find the employee in the `team` array\n"
+            "  3. Sum their `time_slice` values across all projects\n"
+            "The `team` array structure: [{employee: 'emp_id', time_slice: 0.5, role: 'Lead'}, ...]"
+        )
+
+
+class SkillSearchStrategyHintEnricher:
+    """
+    Provides hints for efficient skill/will search strategies.
+
+    AICODE-NOTE: Critical for t013, t017, t074. Handles cases:
+    1. "most skilled" → use high min_level (9-10) to find top experts
+    2. "strong" → use moderate min_level (7) to catch all qualified candidates
+    """
+
+    # Keywords that mean "absolute best" - use high threshold
+    SUPERLATIVE_KEYWORDS = ['most skilled', 'best expert', 'highest', 'top expert', 'most experienced']
+
+    # Keywords that mean "good enough" - use moderate threshold
+    STRONG_KEYWORDS = ['strong', 'good', 'solid', 'competent', 'experienced']
+
+    def maybe_hint_skill_strategy(
+        self,
+        model: Any,
+        result: Any,
+        task_text: str
+    ) -> Optional[str]:
+        """
+        Generate hint for optimal skill search strategy.
+
+        Args:
+            model: The request model
+            result: API response
+            task_text: Task instructions
+
+        Returns:
+            Hint string or None
+        """
+        if not isinstance(model, client.Req_SearchEmployees):
+            return None
+
+        task_lower = task_text.lower()
+
+        # Check what kind of query this is
+        is_superlative = any(kw in task_lower for kw in self.SUPERLATIVE_KEYWORDS)
+        is_strong = any(kw in task_lower for kw in self.STRONG_KEYWORDS) and not is_superlative
+
+        # Get skill/will filters from model
+        skills = getattr(model, 'skills', None) or []
+        wills = getattr(model, 'wills', None) or []
+        all_filters = skills + wills
+
+        if not all_filters:
+            return None
+
+        min_levels = [getattr(f, 'min_level', 1) for f in all_filters]
+        max_min_level = max(min_levels) if min_levels else 1
+
+        employees = getattr(result, 'employees', None) or []
+        next_offset = getattr(result, 'next_offset', -1)
+
+        # CASE 1: "strong" query with high min_level and few results
+        # AICODE-NOTE: Critical for t017. "Strong" doesn't mean level 8+, it means level 7+
+        if is_strong and max_min_level >= 8 and len(employees) <= 5:
+            return (
+                f"⚠️ THRESHOLD TOO HIGH: You used min_level={max_min_level}, but task says 'strong' (not 'best/most').\n"
+                f"  • 'Strong' typically means level 7+ (competent), not level 8+ (expert)\n"
+                f"  • 'Most skilled' / 'best' = level 9-10 (exceptional)\n"
+                f"  • 'Strong' / 'good' = level 7+ (all qualified candidates)\n\n"
+                f"You found only {len(employees)} employee(s). Try `min_level=7` to find ALL candidates with 'strong' skills.\n"
+                f"The task asks for recommendations, so include everyone who qualifies!"
+            )
+
+        # CASE 2: "most skilled" query with low min_level and pagination needed
+        if is_superlative and max_min_level < 8 and next_offset > 0:
+            return (
+                "💡 SKILL SEARCH STRATEGY: For 'most skilled' / 'best expert' queries:\n"
+                "  1. START with high min_level (9 or 10) to find top experts first\n"
+                "  2. If too few results, try min_level=8, then 7\n"
+                "  3. Compare skill levels using `employees_get(id='...')` to see actual levels\n"
+                f"Current search uses min_level={max_min_level} which returns ALL employees with ANY level.\n"
+                "This wastes turns on pagination. Use `min_level=9` to find exceptional experts first!"
+            )
+
+        # CASE 3: "most skilled" with high min_level but only 1 result - might be ties!
+        # AICODE-NOTE: Critical for t013. If only 1 result at level 9+, there might be others at same level
+        if is_superlative and max_min_level >= 9 and len(employees) == 1 and next_offset == -1:
+            return (
+                f"⚠️ SINGLE RESULT at min_level={max_min_level}. There might be OTHER employees with the SAME level!\n"
+                f"  • Try `min_level={max_min_level - 1}` to find all candidates at levels {max_min_level - 1}-10\n"
+                f"  • Then compare their ACTUAL levels with `employees_get` to find ALL top experts\n"
+                f"  • If multiple have level 10, they are ALL 'most skilled' and should be included!"
+            )
+
+        return None
+
+
+class EmployeeNameResolutionHintEnricher:
+    """
+    Provides hints when agent searches for employee by name.
+
+    AICODE-NOTE: Critical for t007. When task mentions a person's name,
+    agent must first resolve name -> employee ID before using ID in filters.
+    """
+
+    def maybe_hint_name_resolution(
+        self,
+        model: Any,
+        result: Any,
+        task_text: str
+    ) -> Optional[str]:
+        """
+        Generate hint about name -> ID resolution.
+
+        Args:
+            model: The request model
+            result: API response
+            task_text: Task instructions
+
+        Returns:
+            Hint string or None
+        """
+        if not isinstance(model, client.Req_SearchEmployees):
+            return None
+
+        employees = getattr(result, 'employees', None) or []
+        if not employees:
+            return None
+
+        query = getattr(model, 'query', None)
+        if not query:
+            return None
+
+        # Check if query looks like a person's name (has space, no underscore)
+        if ' ' not in query or '_' in query:
+            return None
+
+        # Provide hint with found IDs
+        found_ids = [getattr(e, 'id', 'unknown') for e in employees[:3]]
+        found_names = [getattr(e, 'name', 'unknown') for e in employees[:3]]
+
+        return (
+            f"📋 NAME → ID RESOLUTION: Found {len(employees)} employee(s) matching '{query}':\n"
+            f"  {', '.join(f'{name} ({id})' for name, id in zip(found_names, found_ids))}"
+            f"{'...' if len(employees) > 3 else ''}\n"
+            f"Use the employee ID (e.g., '{found_ids[0]}') in subsequent API calls, not the name!"
+        )
+
+
+class SkillComparisonHintEnricher:
+    """
+    Provides hints when agent needs to compare skill sets.
+
+    AICODE-NOTE: Critical for t094. When task asks for "skills I don't have",
+    agent must correctly compute set difference: all_skills - my_skills.
+    """
+
+    def maybe_hint_skill_comparison(
+        self,
+        model: Any,
+        result: Any,
+        task_text: str
+    ) -> Optional[str]:
+        """
+        Generate hint when task involves skill set comparison.
+
+        Args:
+            model: The request model
+            result: API response
+            task_text: Task instructions
+
+        Returns:
+            Hint string or None
+        """
+        if not isinstance(model, client.Req_GetEmployee):
+            return None
+
+        task_lower = task_text.lower()
+        comparison_keywords = [
+            "don't have", "do not have", "don't possess", "missing",
+            "lack", "need to learn", "skills i don't", "skills that i don't"
+        ]
+
+        if not any(kw in task_lower for kw in comparison_keywords):
+            return None
+
+        employee = getattr(result, 'employee', None)
+        if not employee:
+            return None
+
+        skills = getattr(employee, 'skills', None) or []
+        skill_names = [getattr(s, 'name', '') for s in skills]
+
+        if not skill_names:
+            return None
+
+        return (
+            f"📊 SKILL COMPARISON: Your current skills are: {', '.join(skill_names[:10])}"
+            f"{'...' if len(skill_names) > 10 else ''}\n"
+            f"When listing skills you DON'T have:\n"
+            f"  1. Get ALL possible skills from wiki/examples\n"
+            f"  2. EXCLUDE skills you already have (listed above)\n"
+            f"  3. Only include skills NOT in your current list\n"
+            f"⚠️ CRITICAL: Do NOT include any skill from your profile in the 'don't have' list!\n"
+            f"⚠️ FORMAT: Use HUMAN-READABLE names (e.g., 'Customer relationship management'), "
+            f"NOT raw IDs (e.g., 'skill_crm'). Avoid substring collisions like 'skill_corrosion' vs 'skill_corrosion_resistance_testing'!"
+        )
+
+
 class ProjectNameNormalizationHintEnricher:
     """
     Provides hints for project name search normalization.
@@ -520,3 +840,477 @@ class ProjectNameNormalizationHintEnricher:
             )
 
         return None
+
+
+class QuerySubjectHintEnricher:
+    """
+    Provides hints when task involves finding something FOR a specific person.
+
+    AICODE-NOTE: Critical for t077. When task says "find coaches FOR Roberta",
+    Roberta is the QUERY SUBJECT - she should NOT be included in links.
+    Only the RESULTS (coaches) should be linked.
+    """
+
+    # Patterns that indicate "find X FOR Y" type queries
+    FOR_PATTERNS = [
+        r'(?:find|get|list|recommend|suggest)\s+(?:\w+\s+)*(?:for|to help|to coach|to mentor|to train)\s+(\w+(?:\s+\w+)?)',
+        r'(?:coach|mentor|train|help|assist)\s+(\w+(?:\s+\w+)?)',
+        r'who can (?:coach|mentor|train|help)\s+(\w+(?:\s+\w+)?)',
+    ]
+
+    def maybe_hint_query_subject(
+        self,
+        model: Any,
+        result: Any,
+        task_text: str,
+        ctx: Any = None
+    ) -> Optional[str]:
+        """
+        Generate hint when employee search finds query subject.
+
+        Args:
+            model: The request model
+            result: API response
+            task_text: Task instructions
+            ctx: Context with shared state
+
+        Returns:
+            Hint string or None
+        """
+        if not isinstance(model, (client.Req_SearchEmployees, client.Req_GetEmployee)):
+            return None
+
+        # Check if this is a "find X FOR Y" type task
+        task_lower = task_text.lower()
+        for_keywords = ['coach', 'mentor', 'train', 'help', 'upskill', 'for']
+        if not any(kw in task_lower for kw in for_keywords):
+            return None
+
+        # Get employee(s) from result
+        employees = []
+        if hasattr(result, 'employees') and result.employees:
+            employees = result.employees
+        elif hasattr(result, 'employee') and result.employee:
+            employees = [result.employee]
+
+        if not employees:
+            return None
+
+        # Check if query was a name search (likely looking FOR this person)
+        query = getattr(model, 'query', None)
+        if not query or '_' in query:  # Skip if query is an ID
+            # Also check if this was employees_get
+            if not isinstance(model, client.Req_GetEmployee):
+                return None
+
+        # Store query subjects in context for later filtering
+        if ctx and hasattr(ctx, 'shared'):
+            query_subjects = ctx.shared.get('query_subject_ids', set())
+            for emp in employees:
+                emp_id = getattr(emp, 'id', None)
+                if emp_id:
+                    query_subjects.add(emp_id)
+            ctx.shared['query_subject_ids'] = query_subjects
+
+        # Generate hint
+        emp_names = []
+        for emp in employees[:3]:
+            emp_id = getattr(emp, 'id', None)
+            emp_name = getattr(emp, 'name', emp_id)
+            if emp_id:
+                emp_names.append(f"{emp_name} ({emp_id})")
+
+        if emp_names and ('coach' in task_lower or 'mentor' in task_lower or
+                          'train' in task_lower or 'upskill' in task_lower):
+            return (
+                f"⚠️ QUERY SUBJECT DETECTED: {', '.join(emp_names)}\n"
+                f"This is the person you are searching FOR (the coachee/mentee).\n"
+                f"When you respond, do NOT include query subjects in links!\n"
+                f"Links should contain ONLY the results (coaches/mentors), not the person being helped."
+            )
+
+        return None
+
+
+class TieBreakerHintEnricher:
+    """
+    Provides hints when multiple candidates tie on the queried metric.
+
+    AICODE-NOTE: Critical for t010, t075. When task asks for "least busy" or
+    "least skilled" and multiple candidates have the same value (e.g., all 0 hours),
+    agent must apply deterministic tie-breaker instead of returning all tied results.
+    """
+
+    def maybe_hint_tie_breaker(
+        self,
+        model: Any,
+        result: Any,
+        task_text: str
+    ) -> Optional[str]:
+        """
+        Generate hint when multiple results tie and task expects single answer.
+
+        Args:
+            model: The request model
+            result: API response
+            task_text: Task instructions
+
+        Returns:
+            Hint string or None
+        """
+        task_lower = task_text.lower()
+
+        # Detect if task expects SINGLE result
+        singular_keywords = [
+            'who is the', 'find the', 'which one', 'the least', 'the most',
+            'least busy', 'most busy', 'busiest', 'least skilled', 'most skilled',
+            'pick one', 'find one', 'select one', 'choose one',
+            'the employee', 'one employee', 'single'
+        ]
+
+        expects_single = any(kw in task_lower for kw in singular_keywords)
+        if not expects_single:
+            return None
+
+        # Check for time_summary_employee response (t010 case)
+        summaries = getattr(result, 'summaries', None)
+        if summaries and isinstance(summaries, list) and len(summaries) > 1:
+            return self._check_time_summary_tie(summaries, task_lower)
+
+        # Check for employees with skills (t075 case)
+        if isinstance(model, client.Req_SearchEmployees):
+            employees = getattr(result, 'employees', None) or []
+            next_offset = getattr(result, 'next_offset', -1)
+            # AICODE-NOTE: t075 FIX - Only show tie-breaker hint when pagination is COMPLETE.
+            # If next_offset > 0, more employees exist and we don't know the true minimum yet.
+            if len(employees) > 1 and next_offset == -1:
+                return self._check_skill_tie(employees, task_lower, model)
+
+        return None
+
+    def _check_time_summary_tie(
+        self,
+        summaries: List[Any],
+        task_lower: str
+    ) -> Optional[str]:
+        """Check for tie in time summaries (hours worked)."""
+        # Extract total hours for each employee
+        hours_map = {}
+        for s in summaries:
+            emp_id = getattr(s, 'employee', None)
+            total = getattr(s, 'total_hours', 0) or 0
+            if emp_id:
+                hours_map[emp_id] = total
+
+        if len(hours_map) < 2:
+            return None
+
+        # Check if there's a tie at min or max
+        values = list(hours_map.values())
+        min_val = min(values)
+        max_val = max(values)
+
+        tied_at_min = [emp for emp, hrs in hours_map.items() if hrs == min_val]
+        tied_at_max = [emp for emp, hrs in hours_map.items() if hrs == max_val]
+
+        # Determine which tie is relevant based on task
+        if 'least' in task_lower and len(tied_at_min) > 1:
+            tied_employees = sorted(tied_at_min)
+            return (
+                f"⚠️ TIE-BREAKER NEEDED: {len(tied_at_min)} employees tied at {min_val} hours "
+                f"(least busy): {', '.join(tied_employees)}.\n"
+                f"Task asks for ONE employee. Apply DETERMINISTIC tie-breaker:\n"
+                f"  → Pick employee with LOWEST ID (alphabetically first): **{tied_employees[0]}**\n"
+                f"Do NOT use 'more projects' as tie-breaker unless task explicitly says so!"
+            )
+        elif ('most' in task_lower or 'busiest' in task_lower) and len(tied_at_max) > 1:
+            tied_employees = sorted(tied_at_max)
+            return (
+                f"⚠️ TIE-BREAKER NEEDED: {len(tied_at_max)} employees tied at {max_val} hours "
+                f"(most busy): {', '.join(tied_employees)}.\n"
+                f"Task asks for ONE employee. Apply DETERMINISTIC tie-breaker:\n"
+                f"  → Pick employee with LOWEST ID (alphabetically first): **{tied_employees[0]}**\n"
+                f"Do NOT use 'more projects' as tie-breaker unless task explicitly says so!"
+            )
+
+        return None
+
+    def _check_skill_tie(
+        self,
+        employees: List[Any],
+        task_lower: str,
+        model: Any
+    ) -> Optional[str]:
+        """Check for tie in skill levels."""
+        # Get the skill filter being used
+        skills_filter = getattr(model, 'skills', None) or []
+        if not skills_filter:
+            return None
+
+        # We can only detect ties if we have skill data in response
+        # Usually employees_search returns employees, and we need employees_get for full skills
+        # This hint helps when agent has already fetched skill details
+
+        # Check if task is about finding least/most skilled
+        is_least = 'least' in task_lower
+        is_most = 'most' in task_lower or 'best' in task_lower or 'highest' in task_lower
+
+        if not (is_least or is_most):
+            return None
+
+        # If multiple employees returned with same skill filter, likely a tie situation
+        if len(employees) > 1:
+            emp_ids = sorted([getattr(e, 'id', 'unknown') for e in employees])
+            direction = "LOWEST" if is_least else "HIGHEST"
+            metric = "least skilled" if is_least else "most skilled"
+
+            return (
+                f"💡 POTENTIAL TIE: {len(employees)} employees match your skill filter.\n"
+                f"If multiple have the SAME skill level ({metric}), apply tie-breaker:\n"
+                f"  → Pick employee with LOWEST ID (alphabetically first): **{emp_ids[0]}**\n"
+                f"Use `employees_get(id='...')` to compare exact skill levels, then pick ONE."
+            )
+
+        return None
+
+
+class RecommendationQueryHintEnricher:
+    """
+    Provides hints for recommendation/suggestion queries.
+
+    AICODE-NOTE: Critical for t017. When task asks to "recommend", "suggest",
+    or find "candidates", the agent should return ALL qualifying employees,
+    not pick one "best" candidate. These are filter queries, not selection queries.
+
+    AICODE-NOTE: t017 FIX #2 - Distinguish between SINGULAR and PLURAL recommendations!
+    - "recommend candidates" → plural → list all
+    - "recommend as primary trainer" → singular → pick ONE
+    - "who would you recommend as the coach" → singular → pick ONE
+
+    AICODE-NOTE: t017 FIX - Now tracks accumulated results across pagination pages.
+    When pagination ends (next_offset=-1), reminds agent about ALL employees found
+    across ALL pages, not just the last page.
+    """
+
+    # Keywords indicating PLURAL (list all)
+    PLURAL_INDICATORS = [
+        'candidates', 'trainers', 'coaches', 'mentors', 'employees',
+        'people', 'options', 'choices', 'recommendations', 'suggestions',
+        'who can', 'who could', 'all who', 'everyone who'
+    ]
+
+    # Keywords indicating SINGULAR (pick one)
+    SINGULAR_INDICATORS = [
+        'primary trainer', 'primary coach', 'primary mentor',
+        'the trainer', 'the coach', 'the mentor', 'the best',
+        'one person', 'single', 'a trainer', 'a coach', 'a mentor',
+        'someone who', 'somebody who', 'anyone who'
+    ]
+
+    def __init__(self):
+        # Track accumulated employee IDs across pagination for recommendation queries
+        self._accumulated_employee_ids: List[str] = []
+        self._accumulated_employee_names: Dict[str, str] = {}
+        self._last_search_params: Optional[str] = None
+
+    def clear_cache(self):
+        """Reset accumulated results for new task."""
+        self._accumulated_employee_ids = []
+        self._accumulated_employee_names = {}
+        self._last_search_params = None
+
+    def _is_singular_query(self, task_lower: str) -> bool:
+        """
+        Determine if the query expects a single result or a list.
+
+        AICODE-NOTE: t017 FIX #2 - "primary trainer" is SINGULAR, not plural!
+        """
+        # Check for explicit singular indicators
+        if any(indicator in task_lower for indicator in self.SINGULAR_INDICATORS):
+            return True
+
+        # Check for plural indicators
+        if any(indicator in task_lower for indicator in self.PLURAL_INDICATORS):
+            return False
+
+        # Default: if "recommend" alone without plural nouns, assume singular
+        # because "Who would you recommend?" typically expects one answer
+        return True
+
+    def maybe_hint_recommendation_query(
+        self,
+        result: Any,
+        task_text: str,
+        next_offset: int,
+        model: Any = None
+    ) -> Optional[str]:
+        """
+        Generate hint when task is a recommendation query with more results available.
+
+        Args:
+            result: API response (SearchEmployees)
+            task_text: Task instructions
+            next_offset: Next pagination offset (-1 if no more results)
+            model: Request model for tracking search parameters
+
+        Returns:
+            Hint string or None
+        """
+        task_lower = task_text.lower()
+
+        # Detect recommendation/suggestion queries
+        recommendation_keywords = [
+            'recommend', 'suggest', 'candidates for', 'who would you recommend',
+            'who can', 'who could', 'suitable for', 'qualified for',
+            'potential trainer', 'potential candidate'
+        ]
+
+        is_recommendation_query = any(kw in task_lower for kw in recommendation_keywords)
+        if not is_recommendation_query:
+            return None
+
+        # AICODE-NOTE: t017 FIX #2 - Skip hint for SINGULAR queries!
+        # "primary trainer" expects ONE person, not a list
+        if self._is_singular_query(task_lower):
+            return None
+
+        employees = getattr(result, 'employees', None) or []
+        if not employees:
+            return None
+
+        # Track search parameters to detect new search vs pagination
+        current_search_params = self._get_search_params(model)
+        offset = getattr(model, 'offset', 0) if model else 0
+
+        # Reset accumulator if this is a new search (different params or offset=0)
+        if offset == 0 or current_search_params != self._last_search_params:
+            self._accumulated_employee_ids = []
+            self._accumulated_employee_names = {}
+            self._last_search_params = current_search_params
+
+        # Accumulate employee IDs from this page
+        for emp in employees:
+            emp_id = getattr(emp, 'id', None)
+            emp_name = getattr(emp, 'name', emp_id)
+            if emp_id and emp_id not in self._accumulated_employee_ids:
+                self._accumulated_employee_ids.append(emp_id)
+                self._accumulated_employee_names[emp_id] = emp_name
+
+        # If there are more results and this is a recommendation query
+        if next_offset > 0:
+            return (
+                f"⚠️ RECOMMENDATION QUERY DETECTED: Task asks to 'recommend'/'suggest' candidates.\n"
+                f"This is a FILTER query — return ALL qualifying employees, not just the 'best' one!\n"
+                f"You found {len(employees)} so far, but next_offset={next_offset} means MORE exist.\n"
+                f"**PAGINATE** to find ALL candidates, then link EVERY qualifying employee in your response.\n"
+                f"The user wants a list of options to choose from, not your single pick."
+            )
+
+        # AICODE-NOTE: t017 FIX - When pagination ends, show ALL accumulated employees
+        # This prevents agent from "forgetting" earlier pages
+        if next_offset == -1 and len(self._accumulated_employee_ids) > len(employees):
+            # Pagination just completed and we have more accumulated than on last page
+            all_ids = self._accumulated_employee_ids
+            total = len(all_ids)
+
+            # Show first 8 with names, then just IDs
+            display_items = []
+            for emp_id in all_ids[:8]:
+                name = self._accumulated_employee_names.get(emp_id, emp_id)
+                display_items.append(f"{name} ({emp_id})")
+
+            remaining = total - 8
+            id_list = ', '.join(all_ids)
+
+            return (
+                f"✅ PAGINATION COMPLETE: You found {total} employees across ALL pages!\n"
+                f"ALL qualifying employees: {', '.join(display_items)}"
+                f"{f', +{remaining} more' if remaining > 0 else ''}\n"
+                f"⚠️ CRITICAL: Include ALL {total} employees in your response, not just the last page!\n"
+                f"IDs to link: {id_list}"
+            )
+
+        # Even without more pages, remind to link all found employees
+        if len(employees) >= 3:
+            emp_ids = [getattr(e, 'id', 'unknown') for e in employees[:5]]
+            return (
+                f"💡 RECOMMENDATION QUERY: You found {len(employees)} qualifying employees.\n"
+                f"Since task asks to 'recommend'/'suggest', link ALL of them: {', '.join(emp_ids)}{'...' if len(employees) > 5 else ''}\n"
+                f"Do NOT pick just one — the user wants to see all options."
+            )
+
+        return None
+
+    def _get_search_params(self, model: Any) -> Optional[str]:
+        """Generate a string key representing search parameters (excluding offset)."""
+        if not model:
+            return None
+
+        parts = []
+        if hasattr(model, 'skills') and model.skills:
+            parts.append(f"skills={model.skills}")
+        if hasattr(model, 'wills') and model.wills:
+            parts.append(f"wills={model.wills}")
+        if hasattr(model, 'department') and model.department:
+            parts.append(f"dept={model.department}")
+        if hasattr(model, 'location') and model.location:
+            parts.append(f"loc={model.location}")
+        if hasattr(model, 'query') and model.query:
+            parts.append(f"q={model.query}")
+
+        return '|'.join(sorted(parts)) if parts else None
+
+
+class TimeSummaryFallbackHintEnricher:
+    """
+    Provides hints when time_summary_employee returns empty results.
+
+    AICODE-NOTE: Critical for t009. When time_summary_employee returns empty/null,
+    agent MUST use fallback via projects_search(member=X) for each employee,
+    then projects_get to get time_slice values.
+    """
+
+    def maybe_hint_time_summary_fallback(
+        self,
+        model: Any,
+        result: Any,
+        task_text: str
+    ) -> Optional[str]:
+        """
+        Generate hint if time_summary_employee returns empty and task is about workload.
+
+        Args:
+            model: The request model
+            result: API response
+            task_text: Task instructions
+
+        Returns:
+            Hint string or None
+        """
+        if not isinstance(model, client.Req_TimeSummaryByEmployee):
+            return None
+
+        # Check if result is empty
+        summaries = getattr(result, 'summaries', None)
+        if summaries:  # Not empty, no hint needed
+            return None
+
+        task_lower = task_text.lower()
+        workload_keywords = [
+            'workload', 'time_slice', 'busy', 'busiest', 'allocation',
+            'capacity', 'utilization', 'free time', 'available'
+        ]
+
+        if not any(kw in task_lower for kw in workload_keywords):
+            return None
+
+        return (
+            "⚠️ TIME SUMMARY EMPTY: `time_summary_employee` returned no data!\n"
+            "This does NOT mean all employees have 0 workload. You MUST use fallback:\n"
+            "  1. For EACH employee, call `projects_search(member='emp_id')` to get their projects\n"
+            "  2. For EACH project found, call `projects_get(id='proj_xxx')` to get `time_slice`\n"
+            "  3. Sum `time_slice` values for each employee to calculate workload\n"
+            "  4. Compare totals to find the most/least busy employee\n\n"
+            "⚠️ DO NOT apply tie-breaker when you haven't calculated actual workloads!\n"
+            "The time_summary API may be unavailable, but project data EXISTS."
+        )

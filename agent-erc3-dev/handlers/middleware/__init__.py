@@ -15,6 +15,7 @@ from .guards import (
     OutcomeValidationMiddleware,
     SingleCandidateOkHint,
     SubjectiveQueryGuard,
+    IncompletePaginationGuard,
     # Project Guards
     ProjectSearchReminderMiddleware,
     ProjectModificationClarificationGuard,
@@ -32,6 +33,8 @@ from .guards import (
     JiraTicketRequirementGuard,
     # Criteria Guards
     AddedCriteriaGuard,
+    # Name Resolution Guards
+    NameResolutionGuard,
 )
 
 from .membership import ProjectMembershipMiddleware
@@ -47,6 +50,7 @@ __all__ = [
     'OutcomeValidationMiddleware',
     'SingleCandidateOkHint',
     'SubjectiveQueryGuard',
+    'IncompletePaginationGuard',
     # Project Guards
     'ProjectSearchReminderMiddleware',
     'ProjectModificationClarificationGuard',
@@ -64,6 +68,8 @@ __all__ = [
     'JiraTicketRequirementGuard',
     # Criteria Guards
     'AddedCriteriaGuard',
+    # Name Resolution Guards
+    'NameResolutionGuard',
     # Membership
     'ProjectMembershipMiddleware',
 ]

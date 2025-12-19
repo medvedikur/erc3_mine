@@ -10,9 +10,21 @@ from ..normalizers import normalize_team_roles
 @ToolParser.register("projects_list", "projectslist", "listprojects")
 def _parse_projects_list(ctx: ParseContext) -> Any:
     """List all projects with pagination."""
+    # AICODE-NOTE: Support both page (1-indexed) and offset (0-indexed) pagination (t009 fix)
+    # AICODE-NOTE: offset takes precedence over page when both are provided (t009 regression)
+    limit = int(ctx.args.get("limit", ctx.args.get("per_page", 5)))
+    explicit_offset = ctx.args.get("offset")
+    page = ctx.args.get("page")
+    if explicit_offset is not None:
+        offset = int(explicit_offset)
+    elif page is not None:
+        offset = (int(page) - 1) * limit
+    else:
+        offset = 0
+
     return client.Req_ListProjects(
-        offset=int(ctx.args.get("offset", 0)),
-        limit=int(ctx.args.get("limit", 5))
+        offset=offset,
+        limit=limit
     )
 
 
@@ -64,14 +76,26 @@ def _parse_projects_search(ctx: ParseContext) -> Any:
     else:
         include_archived = True
 
+    # AICODE-NOTE: Support both page (1-indexed) and offset (0-indexed) pagination (t009 fix)
+    # AICODE-NOTE: offset takes precedence over page when both are provided (t009 regression)
+    limit = int(ctx.args.get("limit", ctx.args.get("per_page", 5)))
+    explicit_offset = ctx.args.get("offset")
+    page = ctx.args.get("page")
+    if explicit_offset is not None:
+        offset = int(explicit_offset)
+    elif page is not None:
+        offset = (int(page) - 1) * limit
+    else:
+        offset = 0
+
     search_args = {
         "query": ctx.args.get("query") or ctx.args.get("query_regex"),
         "customer_id": ctx.args.get("customer_id") or ctx.args.get("customer"),
         "status": status,
         "team": team_filter,
         "include_archived": include_archived,
-        "offset": int(ctx.args.get("offset", 0)),
-        "limit": int(ctx.args.get("limit", 5))
+        "offset": offset,
+        "limit": limit
     }
     valid_args = {k: v for k, v in search_args.items() if v is not None}
     return client.Req_SearchProjects(**valid_args)
@@ -85,29 +109,48 @@ def _parse_projects_team_update(ctx: ParseContext) -> Any:
     team_data = ctx.args.get("team") or ctx.args.get("members") or []
     project_id = ctx.args.get("id") or ctx.args.get("project_id") or ctx.args.get("project")
 
-    # If agent only provides new members to ADD (not full team), merge with current team
+    # AICODE-NOTE: Team update logic (t092, t097 fix)
+    # If agent provides team data that covers existing members, use it as-is (allows role/workload changes).
+    # Only merge with current team when agent provides PARTIAL new members to add.
     if team_data and ctx.context and hasattr(ctx.context, 'api'):
         try:
             resp = ctx.context.api.get_project(project_id)
             if hasattr(resp, 'project') and resp.project and hasattr(resp.project, 'team'):
-                current_team = []
-                existing_ids = set()
+                current_ids = set()
                 for member in resp.project.team:
                     emp_id = getattr(member, 'employee', None)
                     if emp_id:
-                        existing_ids.add(emp_id)
-                        current_team.append({
-                            "employee": emp_id,
-                            "role": getattr(member, 'role', 'Other'),
-                            "time_slice": getattr(member, 'time_slice', 0.0)
-                        })
-                # Add new members that aren't already on team
-                for new_member in team_data:
-                    new_id = new_member.get('employee') if isinstance(new_member, dict) else getattr(new_member, 'employee', None)
-                    if new_id and new_id not in existing_ids:
-                        current_team.append(new_member)
-                        existing_ids.add(new_id)
-                team_data = current_team
+                        current_ids.add(emp_id)
+
+                # Check if agent's team_data includes any existing members
+                provided_ids = set()
+                for m in team_data:
+                    m_id = m.get('employee') if isinstance(m, dict) else getattr(m, 'employee', None)
+                    if m_id:
+                        provided_ids.add(m_id)
+
+                # If agent provides existing members, they want to UPDATE them — use team_data as-is
+                has_existing_members = bool(provided_ids & current_ids)
+                if has_existing_members:
+                    # Agent is updating existing team members — trust their data
+                    pass  # Keep team_data unchanged
+                else:
+                    # Agent is adding NEW members only — merge with current team
+                    current_team = []
+                    for member in resp.project.team:
+                        emp_id = getattr(member, 'employee', None)
+                        if emp_id:
+                            current_team.append({
+                                "employee": emp_id,
+                                "role": getattr(member, 'role', 'Other'),
+                                "time_slice": getattr(member, 'time_slice', 0.0)
+                            })
+                    # Add new members
+                    for new_member in team_data:
+                        new_id = new_member.get('employee') if isinstance(new_member, dict) else getattr(new_member, 'employee', None)
+                        if new_id and new_id not in current_ids:
+                            current_team.append(new_member)
+                    team_data = current_team
         except Exception:
             pass  # Fall back to original team_data
 

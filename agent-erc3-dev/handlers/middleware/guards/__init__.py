@@ -9,6 +9,7 @@ Guards are organized by domain:
 - response_guards.py: General response validation
 - ma_compliance_guards.py: M&A compliance (CC codes, JIRA tickets)
 - criteria_guards.py: Detect when agent adds criteria not in task
+- name_resolution_guards.py: Ensure human names are resolved to IDs
 """
 
 from .outcome_guards import (
@@ -16,6 +17,7 @@ from .outcome_guards import (
     OutcomeValidationMiddleware,
     SingleCandidateOkHint,
     SubjectiveQueryGuard,
+    IncompletePaginationGuard,
 )
 
 from .project_guards import (
@@ -47,12 +49,17 @@ from .criteria_guards import (
     AddedCriteriaGuard,
 )
 
+from .name_resolution_guards import (
+    NameResolutionGuard,
+)
+
 __all__ = [
     # Outcome Guards
     'AmbiguityGuardMiddleware',
     'OutcomeValidationMiddleware',
     'SingleCandidateOkHint',
     'SubjectiveQueryGuard',
+    'IncompletePaginationGuard',
     # Project Guards
     'ProjectSearchReminderMiddleware',
     'ProjectModificationClarificationGuard',
@@ -70,4 +77,6 @@ __all__ = [
     'JiraTicketRequirementGuard',
     # Criteria Guards
     'AddedCriteriaGuard',
+    # Name Resolution Guards
+    'NameResolutionGuard',
 ]

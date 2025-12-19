@@ -21,6 +21,20 @@ def _parse_respond(ctx: ParseContext) -> Any:
     if ctx.context and hasattr(ctx.context, 'shared'):
         ctx.context.shared['query_specificity'] = query_specificity
 
+    # Extract denial_basis for denied_* outcomes
+    # AICODE-NOTE: Adaptive approach for security validation (t011 fix).
+    # Instead of hardcoding department checks, agent declares WHY it's denying:
+    # - "identity_restriction": System-level restriction from who_am_i (e.g., External dept)
+    # - "entity_permission": No Lead/AM/Manager role on specific entity
+    # - "policy_violation": Wiki policy prevents action
+    # Guard validates that agent did appropriate checks for the declared basis.
+    denial_basis = (args.get("denial_basis") or args.get("denialBasis") or
+                    args.get("denial_reason") or args.get("denialReason"))
+    if isinstance(denial_basis, str):
+        denial_basis = denial_basis.lower().strip()
+    if ctx.context and hasattr(ctx.context, 'shared'):
+        ctx.context.shared['denial_basis'] = denial_basis
+
     # Extract message
     message = (args.get("message") or args.get("Message") or
                args.get("text") or args.get("Text") or
@@ -58,9 +72,11 @@ def _parse_respond(ctx: ParseContext) -> Any:
     links = link_extractor.normalize_links(raw_links)
 
     # Auto-detect links from message for ok_answer outcomes only
-    # AICODE-NOTE: We only auto-extract for ok_answer because:
+    # AICODE-NOTE: Auto-extract ONLY for ok_answer:
+    # - ok_answer: entities mentioned ARE the answer
+    # Do NOT auto-extract for:
+    # - denied_security: links reveal entity was found (t045, t054, t055)
     # - ok_not_found: entities mentioned are NOT the answer
-    # - denied_security: we clear links anyway (line 103)
     # - none_*: clarification requests shouldn't auto-link
     if not links and outcome == 'ok_answer':
         links = link_extractor.extract_from_message(str(message))
@@ -90,20 +106,68 @@ def _parse_respond(ctx: ParseContext) -> Any:
             # For ok_answer, add search entities that represent THE answer
             # But limit to entities that appear in the message to avoid over-linking
             message_lower = str(message).lower()
+
+            # AICODE-NOTE: First pass - find all entity IDs mentioned in message
+            mentioned_ids = set()
             for entity in search_entities:
                 entity_id = entity.get("id", "")
-                # Only add if entity ID appears in message (it's part of the answer)
                 if entity_id and entity_id.lower() in message_lower:
-                    if not link_extractor._link_exists(links, entity_id, entity.get("kind")):
+                    mentioned_ids.add(entity_id)
+
+            # AICODE-NOTE: Build project->customer mapping for related entity linking (t098)
+            # If a project is mentioned, its customer should also be linked
+            project_customers = {}
+            for entity in search_entities:
+                if entity.get("kind") == "project":
+                    proj_id = entity.get("id")
+                    # Find customer for this project in search_entities
+                    # (customers are added right after their projects in _track_search)
+                    pass  # Will handle via related_ids below
+
+            # Second pass - add entities that are mentioned OR related to mentioned ones
+            for entity in search_entities:
+                entity_id = entity.get("id", "")
+                entity_kind = entity.get("kind", "")
+
+                # Add if directly mentioned in message
+                should_add = entity_id and entity_id.lower() in message_lower
+
+                # AICODE-NOTE: Also add customers that are related to mentioned projects (t098)
+                # If we mentioned a project, its customer should be linked too
+                if not should_add and entity_kind == "customer":
+                    # Check if any mentioned entity is a project that has this customer
+                    # We rely on the fact that project and its customer appear together
+                    # in API responses and are both in search_entities
+                    for mentioned_id in mentioned_ids:
+                        if mentioned_id.startswith("proj_"):
+                            # A project was mentioned - add related customer
+                            should_add = True
+                            break
+
+                if should_add:
+                    if not link_extractor._link_exists(links, entity_id, entity_kind):
                         links.append(entity)
         # For ok_not_found: do NOT add search_entities - they are NOT the answer!
 
     # Deduplicate
     links = link_extractor.deduplicate(links)
 
-    # Clear links for error/denied outcomes
-    # AICODE-NOTE: For denied_security responses (like salary queries), we should NOT
-    # link entities that were mentioned in the denial - this could leak information
+    # AICODE-NOTE: Filter out query subjects (t077)
+    # Query subjects are people we searched FOR (e.g., coachee/mentee),
+    # not results we found. They should NOT be in links.
+    if ctx.context:
+        query_subject_ids = ctx.context.shared.get('query_subject_ids', set())
+        if query_subject_ids:
+            links = [
+                link for link in links
+                if link.get('id') not in query_subject_ids
+            ]
+
+    # Clear links for error_internal and denied_security outcomes
+    # AICODE-NOTE: Links should be empty for:
+    # - error_internal: links are meaningless (infrastructure failure)
+    # - denied_security: links reveal entity was found, violates security (t045, t054, t055)
+    #   Security denials should NOT confirm entity existence
     if outcome in ("error_internal", "denied_security"):
         links = []
 

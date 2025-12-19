@@ -177,6 +177,9 @@ class ProjectTeamUpdateStrategy(UpdateStrategy):
     Handles Req_UpdateProjectTeam.
     Note: For project team updates, we typically want to REPLACE the team,
     not merge. The agent should provide the complete new team.
+
+    AICODE-NOTE: Also tracks which employees were ACTUALLY modified (changed time_slice/role)
+    vs just preserved in the team. Only modified employees should be in response links.
     """
 
     def can_handle(self, model: Any) -> bool:
@@ -185,9 +188,68 @@ class ProjectTeamUpdateStrategy(UpdateStrategy):
     def execute(self, model: Any, api: Any, shared: Dict[str, Any]) -> Any:
         """Execute project team update (replaces entire team)."""
         new_team = model.team or []
+        project_id = model.id
 
         # Warn if team is empty (might be accidental)
         if not new_team:
             print(f"  {CLI_YELLOW}Warning: Updating project team with empty team list!{CLI_CLR}")
+
+        # Fetch original team to detect which employees were actually modified
+        modified_employees = set()
+        try:
+            original_project = api.dispatch(client.Req_GetProject(id=project_id))
+            if original_project and hasattr(original_project, 'project') and original_project.project:
+                original_team = original_project.project.team or []
+
+                # Build map: employee_id -> {time_slice, role}
+                original_map = {}
+                for member in original_team:
+                    emp_id = getattr(member, 'employee', None)
+                    if emp_id:
+                        original_map[emp_id] = {
+                            'time_slice': getattr(member, 'time_slice', None),
+                            'role': getattr(member, 'role', None),
+                        }
+
+                # Compare with new team
+                for member in new_team:
+                    emp_id = member.get('employee') if isinstance(member, dict) else getattr(member, 'employee', None)
+                    if not emp_id:
+                        continue
+
+                    new_time_slice = member.get('time_slice') if isinstance(member, dict) else getattr(member, 'time_slice', None)
+                    new_role = member.get('role') if isinstance(member, dict) else getattr(member, 'role', None)
+
+                    if emp_id not in original_map:
+                        # New team member added
+                        modified_employees.add(emp_id)
+                    else:
+                        orig = original_map[emp_id]
+                        # Check if time_slice or role changed
+                        if orig['time_slice'] != new_time_slice or orig['role'] != new_role:
+                            modified_employees.add(emp_id)
+
+                # Check for removed employees
+                new_emp_ids = set()
+                for member in new_team:
+                    emp_id = member.get('employee') if isinstance(member, dict) else getattr(member, 'employee', None)
+                    if emp_id:
+                        new_emp_ids.add(emp_id)
+
+                for emp_id in original_map:
+                    if emp_id not in new_emp_ids:
+                        # Employee removed from team
+                        modified_employees.add(emp_id)
+
+        except Exception as e:
+            print(f"  {CLI_YELLOW}Could not fetch original team for diff: {e}{CLI_CLR}")
+            # Fallback: assume all team members are modified
+            for member in new_team:
+                emp_id = member.get('employee') if isinstance(member, dict) else getattr(member, 'employee', None)
+                if emp_id:
+                    modified_employees.add(emp_id)
+
+        # Store modified employees for auto-linking (used by _track_mutation)
+        shared['team_modified_employees'] = list(modified_employees)
 
         return api.dispatch(model)

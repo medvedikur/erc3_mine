@@ -38,7 +38,7 @@ DEFAULT_MODEL_OPENROUTER = "qwen/qwen3-235b-a22b-2507"
 
 
 # Pricing model ID (for cost calculation)
-DEFAULT_PRICING_MODEL = "qwen/qwen3-30b-a3b"
+DEFAULT_PRICING_MODEL = "qwen/qwen3-235b-a22b"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

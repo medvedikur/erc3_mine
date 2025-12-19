@@ -26,6 +26,14 @@ from .response_enrichers import (
     CustomerProjectsHintEnricher,
     SearchResultExtractionHintEnricher,
     ProjectNameNormalizationHintEnricher,
+    WorkloadHintEnricher,
+    SkillSearchStrategyHintEnricher,
+    EmployeeNameResolutionHintEnricher,
+    SkillComparisonHintEnricher,
+    QuerySubjectHintEnricher,
+    TieBreakerHintEnricher,
+    RecommendationQueryHintEnricher,
+    TimeSummaryFallbackHintEnricher,
 )
 
 __all__ = [
@@ -44,4 +52,12 @@ __all__ = [
     'CustomerProjectsHintEnricher',
     'SearchResultExtractionHintEnricher',
     'ProjectNameNormalizationHintEnricher',
+    'WorkloadHintEnricher',
+    'SkillSearchStrategyHintEnricher',
+    'EmployeeNameResolutionHintEnricher',
+    'SkillComparisonHintEnricher',
+    'QuerySubjectHintEnricher',
+    'TieBreakerHintEnricher',
+    'RecommendationQueryHintEnricher',
+    'TimeSummaryFallbackHintEnricher',
 ]

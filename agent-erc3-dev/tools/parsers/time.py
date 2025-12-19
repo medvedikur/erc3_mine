@@ -88,8 +88,9 @@ def _parse_time_get(ctx: ParseContext) -> Any:
         if date_single and not date_from:
             date_from = date_single
             date_to = date_single
+        # AICODE-NOTE: Do NOT default to current_user - allow project-wide search
         return client.Req_SearchTimeEntries(
-            employee=employee or ctx.current_user,
+            employee=employee,
             project=project,
             date_from=date_from,
             date_to=date_to,
@@ -104,10 +105,14 @@ def _parse_time_get(ctx: ParseContext) -> Any:
 @ToolParser.register("time_search", "timesearch", "searchtime")
 def _parse_time_search(ctx: ParseContext) -> Any:
     """Search time entries with filters."""
+    # AICODE-NOTE: Do NOT default to current_user when employee not specified (t098, t102 fix)
+    # If agent wants ALL time entries on a project, they omit employee param.
+    # Only expand "me" to current_user, but None stays None for project-wide queries.
     employee_arg = ctx.args.get("employee") or ctx.args.get("employee_id")
     if employee_arg and str(employee_arg).lower() == "me":
         employee_arg = ctx.current_user
-    employee_val = employee_arg or ctx.current_user
+    # Keep None if not specified - allows project-wide time search
+    employee_val = employee_arg
 
     return client.Req_SearchTimeEntries(
         employee=employee_val,
