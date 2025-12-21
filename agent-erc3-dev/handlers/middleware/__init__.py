@@ -35,6 +35,8 @@ from .guards import (
     AddedCriteriaGuard,
     # Name Resolution Guards
     NameResolutionGuard,
+    # Pagination Guards
+    PaginationEnforcementMiddleware,
 )
 
 from .membership import ProjectMembershipMiddleware
@@ -51,6 +53,7 @@ __all__ = [
     'SingleCandidateOkHint',
     'SubjectiveQueryGuard',
     'IncompletePaginationGuard',
+    'PaginationEnforcementMiddleware',
     # Project Guards
     'ProjectSearchReminderMiddleware',
     'ProjectModificationClarificationGuard',

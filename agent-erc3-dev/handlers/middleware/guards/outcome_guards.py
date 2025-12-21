@@ -16,17 +16,19 @@ from utils import CLI_GREEN, CLI_CLR
 
 class IncompletePaginationGuard(ResponseGuard):
     """
-    Guard for ok_answer responses when pagination is incomplete for LIST queries.
+    Guard for ok_answer responses when pagination is incomplete.
 
-    AICODE-NOTE: Critical for t016, t086, t076. Agent sees next_offset=5 hint but
-    ignores it, responding with partial results. This guard blocks the response
-    and forces agent to continue paginating.
+    AICODE-NOTE: Critical for t016, t086, t076, t075, t009.
+    Agent sees next_offset=N hint but ignores it, responding with partial results.
+    This guard blocks the response and forces agent to continue paginating.
 
     Problem: Agent fetches 5 employees (page 1), sees next_offset=5, but decides
-    "that's enough" and responds. Task says "List all employees with X" - needs ALL.
+    "that's enough" and responds.
+    - For LIST queries ("list all"): needs ALL.
+    - For SUPERLATIVE queries ("most busy"): needs ALL to find global min/max.
 
     Solution: Soft block if:
-    1. Task contains LIST keywords ("list", "list all", "how many", "find all")
+    1. Task contains LIST or SUPERLATIVE keywords
     2. pending_pagination exists (next_offset > 0 not consumed)
     3. Agent tries ok_answer
     """
@@ -45,18 +47,25 @@ class IncompletePaginationGuard(ResponseGuard):
         r'\bwho\s+(?:all\s+)?(?:are|is|has|have|works?|can)\b',
     ]
 
-    # Keywords that suggest sampling is OK (superlatives)
-    SAMPLING_OK_KEYWORDS = [
-        r'\bmost\s+(?:busy|skilled|experienced)\b',
-        r'\bleast\s+(?:busy|skilled|experienced)\b',
+    # Superlatives MUST be exhaustive (cannot sample)
+    SUPERLATIVE_KEYWORDS = [
+        r'\bmost\s+(?:busy|skilled|experienced|likely|interested)\b',
+        r'\bleast\s+(?:busy|skilled|experienced|likely|interested)\b',
         r'\bbusiest\b',
         r'\bbest\b',
         r'\btop\s+\d+\b',
-        r'\bfind\s+(?:one|a|the)\s+(?:employee|person)\b',  # singular
+        r'\bfind\s+(?:the\s+)?(?:employee|person)\s+who\s+(?:is|has)\b', # "Find the person who is..." -> usually superlative context
+    ]
+
+    # Keywords that suggest sampling is OK (only truly optional cases)
+    SAMPLING_OK_KEYWORDS = [
+        r'\bfind\s+(?:one|a)\s+(?:employee|person)\b',  # "Find a person" (singular, indefinite)
+        r'\bgive\s+(?:an|some)\s+example',
     ]
 
     def __init__(self):
         self._list_re = re.compile('|'.join(self.LIST_KEYWORDS), re.IGNORECASE)
+        self._superlative_re = re.compile('|'.join(self.SUPERLATIVE_KEYWORDS), re.IGNORECASE)
         self._sampling_re = re.compile('|'.join(self.SAMPLING_OK_KEYWORDS), re.IGNORECASE)
 
     def _check(self, ctx: ToolContext, outcome: str) -> None:
@@ -64,16 +73,31 @@ class IncompletePaginationGuard(ResponseGuard):
         if not task_text:
             return
 
-        # Skip if task suggests sampling is OK (superlatives, singular)
+        # Skip if task explicitly suggests sampling is OK
         if self._sampling_re.search(task_text):
             return
 
-        # Check if task expects exhaustive list
-        if not self._list_re.search(task_text):
+        # Check if task expects exhaustive list OR is superlative
+        is_list = bool(self._list_re.search(task_text))
+        is_superlative = bool(self._superlative_re.search(task_text))
+
+        if not is_list and not is_superlative:
+            return
+
+        # AICODE-NOTE: t076 CRITICAL FIX!
+        # On last turn, allow best-effort response instead of blocking.
+        # Blocking on last turn causes "agent should provide 1 response, found 0" failures.
+        current_turn = ctx.shared.get('current_turn', 0)
+        max_turns = ctx.shared.get('max_turns', 20)
+        remaining_turns = max_turns - current_turn - 1
+        if remaining_turns <= 1:
+            # Last turn - let the agent respond with what it has
+            print(f"  {CLI_GREEN}IncompletePaginationGuard: Last turn - allowing best-effort response{CLI_CLR}")
             return
 
         # Check for pending pagination
         pending = ctx.shared.get('pending_pagination', {})
+
         if not pending:
             return
 
@@ -82,22 +106,25 @@ class IncompletePaginationGuard(ResponseGuard):
         for action_type, info in pending.items():
             next_off = info.get('next_offset', 0)
             count = info.get('current_count', 0)
-            pending_info.append(f"{action_type}: fetched {count}, next_offset={next_off}")
+            # Only trigger if there are actually more pages
+            if next_off > 0:
+                pending_info.append(f"{action_type}: fetched {count}, next_offset={next_off}")
 
         if pending_info:
+            reason = "SUPERLATIVE" if is_superlative else "LIST"
             self._soft_block(
                 ctx,
                 warning_key='incomplete_pagination_warned',
-                log_msg=f"IncompletePaginationGuard: LIST query with unfetched pages: {pending_info}",
+                log_msg=f"IncompletePaginationGuard: {reason} query with unfetched pages: {pending_info}",
                 block_msg=(
-                    f"⛔ INCOMPLETE LIST: Task asks to LIST items, but you haven't fetched all results!\n\n"
+                    f"⛔ INCOMPLETE DATA: Task is a {reason} query, but you haven't fetched all results!\n\n"
                     f"**Pending pagination:**\n" +
                     "\n".join(f"  • {p}" for p in pending_info) +
                     f"\n\n"
                     f"**REQUIRED**: Continue paginating with `offset={list(pending.values())[0].get('next_offset')}` "
                     f"until `next_offset=-1` (no more pages).\n\n"
-                    f"The task says 'list' which means ALL matching items, not just the first page!\n\n"
-                    f"**If you've sampled enough** and are confident in your answer, call respond again."
+                    f"For {reason} queries, you MUST check ALL data to find the correct answer/global minimum/maximum.\n"
+                    f"Do not guess based on the first few pages!"
                 )
             )
 

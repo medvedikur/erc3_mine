@@ -56,6 +56,9 @@ class LinkExtractor:
         potential_users = re.findall(r'\b([a-zA-Z0-9]+(?:_[a-zA-Z0-9]+)+)\b', str(message))
         for pu in potential_users:
             if not pu.startswith(('proj_', 'emp_', 'cust_')):
+                # AICODE-NOTE: t076 fix - skip skill_* and will_* patterns, they are not employee IDs
+                if pu.startswith(('skill_', 'will_')):
+                    continue
                 if pu not in self.NON_EMPLOYEE_PATTERNS:
                     links.append({"id": pu, "kind": "employee"})
             if pu.startswith('emp_'):

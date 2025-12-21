@@ -1,0 +1,145 @@
+"""
+Pagination Guards - enforce pagination completeness.
+
+Guards:
+- PaginationEnforcementMiddleware: Blocks analysis tools when pagination is incomplete
+"""
+import re
+from typing import Set
+from erc3.erc3 import client
+from ..base import Middleware, get_task_text
+from ...base import ToolContext
+from utils import CLI_YELLOW, CLI_CLR
+
+
+class PaginationEnforcementMiddleware(Middleware):
+    """
+    Blocks switching to analysis tools (projects_search, time_summary) 
+    when employee pagination is incomplete for SUPERLATIVE queries.
+
+    Problem (t075): Agent finds some employees (page 1), then immediately switches
+    to projects_search to check their workload/projects for tie-breaking,
+    IGNORING the fact that more employees exist on page 2+ who might be better candidates.
+
+    Solution:
+    1. Detect superlative queries (least/most skilled/busy).
+    2. Detect if `employees_search` pagination is pending.
+    3. Block analysis tools if pending.
+    """
+
+    # Tools used for analysis/tie-breaking that should be blocked
+    # AICODE-NOTE: t075 fix - also block 'respond' to prevent premature answers
+    # when pagination is incomplete for superlative queries
+    ANALYSIS_TOOLS = {
+        'projects_search',
+        'projects_get',
+        'time_summary_employee',
+        'time_summary_project',
+        'time_search',
+        'respond',  # Block final response until pagination complete
+        'answer',   # Alias for respond
+        'reply',    # Alias for respond
+    }
+
+    # Superlatives MUST be exhaustive
+    SUPERLATIVE_KEYWORDS = [
+        r'\bmost\s+(?:busy|skilled|experienced|likely|interested)\b',
+        r'\bleast\s+(?:busy|skilled|experienced|likely|interested)\b',
+        r'\bbusiest\b',
+        r'\bbest\b',
+        r'\btop\s+\d+\b',
+        r'\bfind\s+(?:the\s+)?(?:employee|person)\s+who\s+(?:is|has)\b',
+    ]
+
+    def __init__(self):
+        self._superlative_re = re.compile('|'.join(self.SUPERLATIVE_KEYWORDS), re.IGNORECASE)
+
+    def process(self, ctx: ToolContext) -> None:
+        # Check tool type - we intercept analysis tools
+        tool_name = ctx.raw_action.get('tool', '')
+        if tool_name not in self.ANALYSIS_TOOLS:
+            return
+
+        task_text = get_task_text(ctx)
+        if not task_text:
+            return
+
+        # Check if task is superlative
+        if not self._superlative_re.search(task_text):
+            return
+
+        # AICODE-NOTE: t076/t075 CRITICAL FIX!
+        # On last turn, allow best-effort response instead of blocking.
+        # Blocking on last turn causes "agent should provide 1 response, found 0" failures.
+        current_turn = ctx.shared.get('current_turn', 0)
+        max_turns = ctx.shared.get('max_turns', 20)
+        remaining_turns = max_turns - current_turn - 1
+        if remaining_turns <= 1:
+            # Last turn - let the agent respond with what it has
+            from utils import CLI_GREEN, CLI_CLR
+            print(f"  {CLI_GREEN}PaginationEnforcement: Last turn - allowing best-effort response{CLI_CLR}")
+            return
+
+        # Check for pending employee pagination
+        # AICODE-NOTE: t075 fix — pipeline.py uses type(ctx.model).__name__ as key (e.g., 'Req_SearchEmployees')
+        # not the tool name 'employees_search'. Check both for robustness.
+        pending = ctx.shared.get('pending_pagination', {})
+        emp_pending = pending.get('Req_SearchEmployees') or pending.get('employees_search')
+
+        if not emp_pending:
+            return
+
+        next_off = emp_pending.get('next_offset', 0)
+        current_count = emp_pending.get('current_count', 0)
+
+        # Only block if there are actually more pages
+        if next_off > 0:
+            # AICODE-NOTE: Different message for respond vs analysis tools
+            if tool_name in ('respond', 'answer', 'reply'):
+                block_msg = (
+                    f"⛔ PREMATURE RESPONSE: You cannot answer this superlative query yet!\n\n"
+                    f"**Problem**: You haven't fetched ALL employees.\n"
+                    f"  • employees_search: fetched {current_count}, next_offset={next_off}\n\n"
+                    f"**Why this matters for 'least skilled'/'most busy' queries:**\n"
+                    f"  The TRUE minimum/maximum might be on a page you haven't fetched yet!\n"
+                    f"  If you answer now, you might pick the wrong person.\n\n"
+                    f"**REQUIRED**: Continue pagination until `next_offset=-1` (no more pages).\n"
+                    f"  → Use: employees_search(..., offset={next_off})\n\n"
+                    f"**THEN**: The GLOBAL SUMMARY will show you:\n"
+                    f"  • Which employees truly have the MIN/MAX level\n"
+                    f"  • The TIE-BREAKER (most project work) if multiple match\n"
+                    f"  • The correct answer to respond with"
+                )
+            else:
+                block_msg = (
+                    f"⛔ PREMATURE ANALYSIS: You are switching to `{tool_name}` to analyze candidates, "
+                    f"but you haven't finished finding ALL employees yet!\n\n"
+                    f"**Pending Pagination:**\n"
+                    f"  • employees_search: fetched {current_count}, next_offset={next_off}\n\n"
+                    f"**REQUIRED**: Finish fetching ALL employees first (until `next_offset=-1`).\n"
+                    f"For superlative queries ('most/least'), you cannot identify the correct candidates "
+                    f"to analyze until you have the FULL list.\n\n"
+                    f"Continue with `employees_search(..., offset={next_off})`."
+                )
+
+            self._soft_block(
+                ctx,
+                warning_key='pagination_enforcement_warned',
+                log_msg=f"PaginationEnforcement: Blocking {tool_name} due to incomplete employee search",
+                block_msg=block_msg
+            )
+
+    def _soft_block(self, ctx: ToolContext, warning_key: str, log_msg: str, block_msg: str) -> bool:
+        """
+        Block first time, allow on repeat.
+        """
+        if ctx.shared.get(warning_key):
+            # If already warned, allow through (maybe they know what they're doing)
+            return False
+
+        print(f"  {CLI_YELLOW}🛑 {log_msg}{CLI_CLR}")
+        ctx.shared[warning_key] = True
+        ctx.stop_execution = True
+        ctx.results.append(block_msg)
+        return True
+

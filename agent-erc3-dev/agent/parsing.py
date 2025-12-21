@@ -7,6 +7,7 @@ Provides robust JSON extraction from LLM responses, handling:
 - Multiple concatenated JSON objects
 """
 import json
+import re
 from typing import Dict, Any
 
 
@@ -55,6 +56,21 @@ def extract_json(content: str) -> Dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
+    # Try to repair common structural mistakes before more expensive fallbacks
+    # AICODE-NOTE: t009 fix — Qwen/OpenAI models sometimes produce invalid JSON like:
+    #   "plan": [
+    #     {...},
+    #     "step": "...",
+    #     "status": "pending"
+    #   ]
+    # where "step"/"status" were intended as a plan object but braces were omitted.
+    repaired = _try_fix_plan_step_status(content)
+    if repaired and repaired != content:
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            pass
+
     # Try multi-JSON detection
     json_objects = _find_all_json_objects(content)
     if json_objects:
@@ -72,6 +88,81 @@ def extract_json(content: str) -> Dict[str, Any]:
 
     # Give up - raise the original error
     return json.loads(content)
+
+
+def _try_fix_plan_step_status(content: str) -> str | None:
+    """
+    Fix common invalid JSON pattern where a plan array contains bare `"step": ...` / `"status": ...`
+    pairs instead of an object.
+
+    Returns:
+        Fixed JSON string if a fix was applied, otherwise None.
+    """
+    if '"plan"' not in content:
+        return None
+
+    plan_key_idx = content.find('"plan"')
+    if plan_key_idx < 0:
+        return None
+
+    open_idx = content.find('[', plan_key_idx)
+    if open_idx < 0:
+        return None
+
+    close_idx = _find_matching_bracket(content, open_idx, '[', ']')
+    if close_idx is None:
+        return None
+
+    plan_body = content[open_idx:close_idx + 1]
+
+    # Replace multiline:
+    #   "step": "...",
+    #   "status": "pending"
+    # with:
+    #   {"step": "...", "status": "pending"}
+    pattern = re.compile(
+        r'\n(?P<indent>\s*)"step"\s*:\s*(?P<step>"(?:[^"\\]|\\.)*")\s*,\s*'
+        r'\n(?P=indent)"status"\s*:\s*(?P<status>"(?:[^"\\]|\\.)*")\s*(?P<trailing_comma>,?)',
+        flags=re.MULTILINE
+    )
+
+    fixed_body, n = pattern.subn(
+        r'\n\g<indent>{"step": \g<step>, "status": \g<status>}\g<trailing_comma>',
+        plan_body
+    )
+    if n <= 0:
+        return None
+
+    return content[:open_idx] + fixed_body + content[close_idx + 1:]
+
+
+def _find_matching_bracket(text: str, start_idx: int, open_char: str, close_char: str) -> int | None:
+    """Find matching closing bracket/brace for a given opening bracket/brace index."""
+    depth = 0
+    in_string = False
+    escape_next = False
+
+    for i in range(start_idx, len(text)):
+        char = text[i]
+        if escape_next:
+            escape_next = False
+            continue
+        if char == '\\' and in_string:
+            escape_next = True
+            continue
+        if char == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == open_char:
+            depth += 1
+        elif char == close_char:
+            depth -= 1
+            if depth == 0:
+                return i
+
+    return None
 
 
 def _find_all_json_objects(text: str) -> list:

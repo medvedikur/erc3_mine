@@ -53,6 +53,10 @@ from .name_resolution_guards import (
     NameResolutionGuard,
 )
 
+from .pagination_guards import (
+    PaginationEnforcementMiddleware,
+)
+
 __all__ = [
     # Outcome Guards
     'AmbiguityGuardMiddleware',
@@ -60,6 +64,7 @@ __all__ = [
     'SingleCandidateOkHint',
     'SubjectiveQueryGuard',
     'IncompletePaginationGuard',
+    'PaginationEnforcementMiddleware',
     # Project Guards
     'ProjectSearchReminderMiddleware',
     'ProjectModificationClarificationGuard',

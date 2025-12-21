@@ -18,6 +18,8 @@ from .middleware import (
     ProjectTeamModAuthorizationGuard,
     SubjectiveQueryGuard,
     IncompletePaginationGuard,
+    # Pagination Guards
+    PaginationEnforcementMiddleware,
     # M&A Compliance
     CCCodeValidationGuard,
     JiraTicketRequirementGuard,
@@ -41,6 +43,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         BasicLookupDenialGuard(),                     # Catches denied_security for basic org-chart lookups
         SubjectiveQueryGuard(),                       # Blocks ok_answer on subjective queries (cool, best, that)
         IncompletePaginationGuard(),                  # Blocks ok_answer when LIST query has unfetched pages
+        PaginationEnforcementMiddleware(),            # Blocks analysis tools when pagination is incomplete
         NameResolutionGuard(),                        # Ensures human names resolved to IDs (t007, t008)
         OutcomeValidationMiddleware(),                # Validates denied outcomes (unsupported vs security)
         PublicUserSemanticGuard(),                    # Ensures guests use denied_security for internal data

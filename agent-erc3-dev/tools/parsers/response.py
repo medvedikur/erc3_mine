@@ -1,6 +1,7 @@
 """
 Response tool parsers.
 """
+import re
 from typing import Any
 from erc3.erc3 import client
 from ..registry import ToolParser, ParseContext
@@ -79,7 +80,54 @@ def _parse_respond(ctx: ParseContext) -> Any:
     # - ok_not_found: entities mentioned are NOT the answer
     # - none_*: clarification requests shouldn't auto-link
     if not links and outcome == 'ok_answer':
-        links = link_extractor.extract_from_message(str(message))
+        msg = str(message)
+
+        # AICODE-NOTE: Reduce over-linking (t075 fix).
+        # The benchmark evaluates links as "the answer". If the assistant mentions
+        # a non-winning candidate in a later explanation sentence ("Although X ..."),
+        # extracting links from the ENTIRE message can add incorrect links.
+        #
+        # Heuristic: extract from the primary answer segment first.
+        # - If that yields links, trust it and do NOT scan the rest of the message.
+        # - If it yields no links (e.g., answer is a bullet list), fall back to full message.
+        def _primary_answer_segment(text: str) -> str:
+            t = (text or "").strip()
+            if not t:
+                return t
+
+            # If answer starts with a list, don't try to slice it.
+            if re.match(r'^(\s*[-*•]|\s*\d+\.)', t):
+                return t
+
+            # Prefer first sentence (up to first . ! ?)
+            # AICODE-NOTE: t076 fix - avoid cutting on decimal points like "0.00"
+            # Use negative lookbehind to skip digits before the period
+            m = re.search(r'(?<!\d)[.!?]', t)
+            if m:
+                return t[:m.end()]
+
+            # Fallback to first line
+            return t.splitlines()[0] if t.splitlines() else t
+
+        primary = _primary_answer_segment(msg)
+        primary_links = link_extractor.extract_from_message(primary)
+        if not primary_links:
+            links = link_extractor.extract_from_message(msg)
+        else:
+            # AICODE-NOTE: Keep non-employee entities from the whole message, but
+            # restrict employee links to the primary segment if it already contains an employee.
+            # This prevents "runner-up" employee IDs in later sentences from polluting links,
+            # while avoiding under-linking projects/customers mentioned after the first sentence.
+            full_links = link_extractor.extract_from_message(msg)
+            primary_has_employee = any(l.get("kind") == "employee" for l in primary_links)
+
+            non_employee_links = [l for l in full_links if l.get("kind") != "employee"]
+            if primary_has_employee:
+                employee_links = [l for l in primary_links if l.get("kind") == "employee"]
+            else:
+                employee_links = [l for l in full_links if l.get("kind") == "employee"]
+
+            links = link_extractor.deduplicate(non_employee_links + employee_links)
 
     # Validate employee links
     if links and ctx.context:

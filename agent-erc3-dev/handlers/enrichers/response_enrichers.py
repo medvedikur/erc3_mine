@@ -1,6 +1,7 @@
 """
 Response enrichers for adding context to API responses.
 """
+import re
 from typing import Any, Dict, List, Optional
 
 from erc3.erc3 import client
@@ -323,7 +324,7 @@ class PaginationHintEnricher:
         """Check if recommendation query expects a single result."""
         return any(indicator in task_lower for indicator in self.SINGULAR_INDICATORS)
 
-    def maybe_hint_pagination(self, result: Any, model: Any = None, task_text: str = None) -> Optional[str]:
+    def maybe_hint_pagination(self, result: Any, model: Any = None, task_text: str = None, ctx: Any = None) -> Optional[str]:
         """
         Generate hint if there are more pages of results.
 
@@ -331,6 +332,7 @@ class PaginationHintEnricher:
             result: API response
             model: Request model (optional, for context-specific hints)
             task_text: Task instructions (optional, for query type detection)
+            ctx: ToolContext (optional, for turn budget awareness)
 
         Returns:
             Hint string or None
@@ -338,6 +340,16 @@ class PaginationHintEnricher:
         next_offset = getattr(result, 'next_offset', None)
         if next_offset is None or next_offset <= 0:
             return None
+
+        # AICODE-NOTE: t075 CRITICAL FIX!
+        # Check remaining turns - on last turn, don't tell agent to keep paginating!
+        # This was causing agent to ignore "LAST TURN" warnings because superlative hints
+        # said "❌ IGNORE any 'turn budget' warnings! Superlative queries REQUIRE all data!"
+        remaining_turns = None
+        if ctx and hasattr(ctx, 'shared'):
+            current_turn = ctx.shared.get('current_turn', 0)
+            max_turns = ctx.shared.get('max_turns', 20)
+            remaining_turns = max_turns - current_turn - 1
 
         # Check query type
         task_lower = (task_text or '').lower()
@@ -347,6 +359,43 @@ class PaginationHintEnricher:
         # AICODE-NOTE: For TRUE superlative queries (least/most/busiest), show strong hint
         # But NOT for "recommend" or "strong" which are filter queries
         if is_superlative:
+            # AICODE-NOTE: t009 fix — avoid wasting turns paginating employees by location
+            # when the task explicitly asks "employee from <DEPARTMENT>".
+            # The correct approach is to use employees_search(department="<DEPT>") directly.
+            if model and isinstance(model, client.Req_SearchEmployees):
+                used_location = getattr(model, 'location', None)
+                used_department = getattr(model, 'department', None)
+                if used_location and not used_department and task_text:
+                    m = re.search(
+                        r'\b(?:employee|person)\s+from\s+(.+?)(?:\s*\(|$)',
+                        task_text,
+                        flags=re.IGNORECASE
+                    )
+                    dept_from_task = m.group(1).strip() if m else None
+                    if dept_from_task:
+                        return (
+                            "🛑 SUPERLATIVE DEPARTMENT QUERY DETECTED.\n"
+                            f"Task asks for employee from department: **{dept_from_task}**.\n"
+                            f"You're paginating employees by location='{used_location}', which includes many other departments and wastes turns.\n\n"
+                            f"✅ Use the department filter instead:\n"
+                            f"  `employees_search(department=\"{dept_from_task}\")`\n"
+                            f"(Optionally also keep location if needed.)\n\n"
+                            "Then compute workload via project registry time_slices (projects_get → team[].time_slice), not by project count."
+                        )
+
+            # AICODE-NOTE: t075 CRITICAL FIX!
+            # On last turn (remaining_turns <= 1), switch to best-effort mode.
+            # Otherwise agent ignores "LAST TURN" warning and fails with 0 responses.
+            if remaining_turns is not None and remaining_turns <= 1:
+                return (
+                    f"⚠️ SUPERLATIVE QUERY with INCOMPLETE data (next_offset={next_offset}).\n"
+                    f"You fetched {next_offset} items but MORE exist.\n\n"
+                    f"🛑 **LAST TURN** - You MUST respond NOW with best-effort answer!\n"
+                    f"→ Use the data you have (GLOBAL MIN/MAX from prior pages).\n"
+                    f"→ Call `respond` tool immediately.\n"
+                    f"→ Your answer may be incomplete, but NO answer = task failure!"
+                )
+
             return (
                 f"🛑 SUPERLATIVE QUERY DETECTED: Task asks for 'least'/'most'/'busiest'/etc.\n"
                 f"You MUST fetch ALL results to find the correct answer!\n"

@@ -56,6 +56,10 @@ class AgentTurnState:
     # AICODE-NOTE: t009 FIX - Global workload tracker for pagination
     global_workload_tracker: Dict[str, tuple] = field(default_factory=dict)
 
+    # AICODE-NOTE: t076 FIX - Track pending pagination to block premature responses
+    # Format: {action_name: {'next_offset': int, 'current_count': int}}
+    pending_pagination: Dict[str, Dict] = field(default_factory=dict)
+
     # AICODE-NOTE: Aggregator for member-based searches within a turn.
     # When agent does multiple projects_search(member=X) in one batch,
     # we aggregate results to show a clear mapping at the end.
@@ -94,6 +98,8 @@ class AgentTurnState:
             '_global_skill_level_tracker': self.global_skill_level_tracker,
             # AICODE-NOTE: t009 FIX - Pass global workload tracker for batch pagination
             '_global_workload_tracker': self.global_workload_tracker,
+            # AICODE-NOTE: t076 FIX - Pass pending pagination for IncompletePaginationGuard
+            'pending_pagination': self.pending_pagination,
         }
 
     def clear_turn_aggregators(self) -> None:
@@ -134,6 +140,12 @@ class AgentTurnState:
         workload_tracker = ctx.shared.get('_global_workload_tracker')
         if workload_tracker:
             self.global_workload_tracker.update(workload_tracker)
+
+        # AICODE-NOTE: t076 FIX - Sync pending pagination state
+        # This is critical for IncompletePaginationGuard to work across actions
+        pending_pagination = ctx.shared.get('pending_pagination')
+        if pending_pagination is not None:
+            self.pending_pagination = pending_pagination
 
         # Note: had_mutations, mutation_entities, search_entities are
         # updated directly in the main loop after successful actions

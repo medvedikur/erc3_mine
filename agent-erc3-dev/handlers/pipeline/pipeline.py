@@ -208,8 +208,9 @@ class ActionPipeline:
         if hint:
             ctx.results.append(hint)
 
-        # Pagination hints (pass model and task_text for context-specific hints)
-        hint = self._pagination_hints.maybe_hint_pagination(result, ctx.model, task_text)
+        # Pagination hints (pass model, task_text, and ctx for context-specific hints)
+        # AICODE-NOTE: t075 fix - pass ctx for turn budget awareness
+        hint = self._pagination_hints.maybe_hint_pagination(result, ctx.model, task_text, ctx)
         if hint:
             ctx.results.append(hint)
 
