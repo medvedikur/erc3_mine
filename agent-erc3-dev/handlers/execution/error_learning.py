@@ -22,6 +22,20 @@ def extract_learning_from_error(error: Exception, request: Any) -> Optional[str]
 
     # Pattern 1: "Not found" errors for entities
     if "not found" in error_str:
+        # AICODE-NOTE: t026 FIX - Internal customer "not found" means no contact info exists
+        # Internal projects (cust_bellini_internal) don't have real customer contacts
+        if isinstance(request, client.Req_GetCustomer):
+            customer_id = getattr(request, 'id', '') or ''
+            if 'internal' in customer_id.lower() or 'bellini_internal' in customer_id.lower():
+                return (
+                    f"⚠️ INTERNAL PROJECT: Customer '{customer_id}' is an INTERNAL entity.\n"
+                    f"Internal projects do NOT have customer contact emails - this is by design.\n"
+                    f"If user is asking for contact info of an internal project:\n"
+                    f"  → Respond with `outcome: 'none_unsupported'`\n"
+                    f"  → Explain that internal projects don't have external customer contacts.\n"
+                    f"Do NOT use 'ok_not_found' - the data isn't missing, it simply doesn't apply!"
+                )
+
         # Time logging with invalid customer
         if isinstance(request, client.Req_LogTimeEntry) and hasattr(request, 'customer') and request.customer:
             if not request.customer.startswith('cust_'):

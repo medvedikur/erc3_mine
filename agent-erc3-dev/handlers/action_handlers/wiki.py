@@ -117,6 +117,7 @@ class WikiLoadHandler(ActionHandler):
     Handles wiki_load action using local WikiManager.
 
     Loads specific wiki page content from local cache.
+    Also stores content in ctx.shared for wiki rename operations (t067 fix).
     """
 
     def can_handle(self, ctx: ToolContext) -> bool:
@@ -135,6 +136,13 @@ class WikiLoadHandler(ActionHandler):
             content = wiki_manager.get_page(file_path)
             print(f"  {CLI_GREEN}✓ SUCCESS (Local){CLI_CLR}")
             ctx.results.append(f"Action ({action_name}): SUCCESS\nFile: {file_path}\nContent:\n{content}")
+
+            # AICODE-NOTE: t067 fix. Store loaded content for wiki rename operations.
+            # When LLM copies content to wiki_update, Unicode may be corrupted.
+            # We store the original content so wiki_update can use it if content matches.
+            if '_loaded_wiki_content' not in ctx.shared:
+                ctx.shared['_loaded_wiki_content'] = {}
+            ctx.shared['_loaded_wiki_content'][file_path] = content
         else:
             print(f"  {CLI_YELLOW}⚠ Page not found: {file_path}{CLI_CLR}")
             ctx.results.append(f"Action ({action_name}): Page '{file_path}' not found in wiki.")

@@ -117,7 +117,30 @@ def _parse_respond(ctx: ParseContext) -> Any:
             return t.splitlines()[0] if t.splitlines() else t
 
         primary = _primary_answer_segment(msg)
-        primary_links = link_extractor.extract_from_message(primary)
+
+        # AICODE-NOTE: t073 fix. Handle comparative statements like "X has more than Y".
+        # In such cases, only X is the answer - Y is being compared against.
+        # Split on comparison patterns and use only the first part for link extraction.
+        # Pattern matches " than " or " compared to " etc., and we take everything before.
+        comparison_patterns = [
+            r'\s+than\s+',           # "more projects than Y"
+            r'\s+compared\s+to\s+',  # "compared to Y"
+            r'\s+versus\s+',         # "versus Y"
+            r'\s+vs\.?\s+',          # "vs Y" or "vs. Y"
+            r'\s+rather\s+than\s+',  # "rather than Y"
+            r'\s+instead\s+of\s+',   # "instead of Y"
+        ]
+        primary_answer_part = primary
+        for pattern in comparison_patterns:
+            match = re.search(pattern, primary, re.IGNORECASE)
+            if match:
+                primary_answer_part = primary[:match.start()]
+                break
+
+        primary_links = link_extractor.extract_from_message(primary_answer_part)
+        # If no links in the answer part, try the full primary (might be structured differently)
+        if not primary_links:
+            primary_links = link_extractor.extract_from_message(primary)
         if not primary_links:
             links = link_extractor.extract_from_message(msg)
         else:
@@ -249,7 +272,8 @@ def _parse_respond(ctx: ParseContext) -> Any:
 
                 # AICODE-NOTE: t081 FIX - Only add if:
                 # 1. ID is mentioned in message, OR
-                # 2. There's only one fetched entity of this kind (t003 case)
+                # 2. There's only one fetched entity of this kind (t003 case), OR
+                # 3. Entity's contact info is mentioned (t087 FIX for customer contacts)
                 entity_id_lower = entity_id.lower()
                 id_in_message = entity_id_lower in message_lower
 
@@ -258,7 +282,23 @@ def _parse_respond(ctx: ParseContext) -> Any:
                     1 for e in fetched_entities if e.get("kind") == entity_kind
                 )
 
-                if id_in_message or same_kind_count == 1:
+                # AICODE-NOTE: t087 FIX - Check if this entity's related info is in message
+                # For customers: if primary_contact_name or primary_contact_email appears,
+                # the customer should be linked even if cust_id isn't mentioned directly
+                related_info_in_message = False
+                if entity_kind == "customer" and ctx.context:
+                    # Check if this customer's contact info was fetched and is in message
+                    customer_contacts = ctx.context.shared.get('customer_contacts', {})
+                    if entity_id in customer_contacts:
+                        contact_info = customer_contacts[entity_id]
+                        contact_name = contact_info.get('name', '').lower()
+                        contact_email = contact_info.get('email', '').lower()
+                        if contact_name and contact_name in message_lower:
+                            related_info_in_message = True
+                        elif contact_email and contact_email in message_lower:
+                            related_info_in_message = True
+
+                if id_in_message or same_kind_count == 1 or related_info_in_message:
                     links.append(entity)
 
     # Deduplicate

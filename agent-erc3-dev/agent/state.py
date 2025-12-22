@@ -55,6 +55,10 @@ class AgentTurnState:
     # These should be filtered from links in rename operations
     deleted_wiki_files: Set[str] = field(default_factory=set)
 
+    # AICODE-NOTE: t067 FIX - Store loaded wiki content for rename operations
+    # LLM may corrupt Unicode when copying content; we use original instead
+    loaded_wiki_content: Dict[str, str] = field(default_factory=dict)
+
     # Loop detection
     action_history: List[Any] = field(default_factory=list)
 
@@ -117,6 +121,8 @@ class AgentTurnState:
             'query_subject_ids': self.query_subject_ids,
             # AICODE-NOTE: t067 FIX - Pass deleted wiki files for link filtering
             'deleted_wiki_files': self.deleted_wiki_files,
+            # AICODE-NOTE: t067 FIX - Pass loaded wiki content for rename operations
+            '_loaded_wiki_content': self.loaded_wiki_content,
         }
 
     def clear_turn_aggregators(self) -> None:
@@ -175,6 +181,12 @@ class AgentTurnState:
         deleted_wiki = ctx.shared.get('deleted_wiki_files')
         if deleted_wiki:
             self.deleted_wiki_files.update(deleted_wiki)
+
+        # AICODE-NOTE: t067 FIX - Sync loaded wiki content
+        # Store content from wiki_load for use in wiki_update (preserves Unicode)
+        loaded_content = ctx.shared.get('_loaded_wiki_content')
+        if loaded_content:
+            self.loaded_wiki_content.update(loaded_content)
 
         # Note: had_mutations, mutation_entities, search_entities are
         # updated directly in the main loop after successful actions

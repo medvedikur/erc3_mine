@@ -248,10 +248,11 @@ class CustomerSearchHintEnricher:
 
 class EmployeeSearchHintEnricher:
     """
-    Provides hints for empty employee search results with location filter.
+    Provides hints for empty employee search results.
 
-    When searching by location returns 0 results, hints that location matching
-    is exact and suggests alternative approaches.
+    Handles:
+    1. Location filter - exact match required
+    2. Name query - suggests alternative name formats
     """
 
     def maybe_hint_empty_employees(
@@ -260,7 +261,7 @@ class EmployeeSearchHintEnricher:
         result: Any
     ) -> Optional[str]:
         """
-        Generate hint for empty employee search with location filter.
+        Generate hint for empty employee search.
 
         Args:
             model: The request model
@@ -278,17 +279,163 @@ class EmployeeSearchHintEnricher:
 
         # Check if location filter was used
         location = getattr(model, 'location', None)
-        if not location:
+        if location:
+            return (
+                f"EMPTY RESULTS with location='{location}'. "
+                f"Location matching requires EXACT match (e.g., 'Barcelona Office – Spain', not 'Barcelona' or 'Spain'). "
+                f"TRY:\n"
+                f"  1. Use `employees_search()` without location filter, then paginate through ALL employees to find matching locations\n"
+                f"  2. Check `wiki_search('locations')` for exact location format used in this company\n"
+                f"  3. Common formats: 'City Office – Country', 'HQ – Country', 'Country'"
+            )
+
+        # AICODE-NOTE: t087 FIX - Hint for empty NAME search
+        # When searching by name returns 0 results, suggest alternative approaches:
+        # 1. Try different name orderings (First Last vs Last First)
+        # 2. Try just first or last name
+        # 3. Check for spelling variations (Krisztina vs Kristina vs Christina)
+        query = getattr(model, 'query', None)
+        if query and ' ' in query and '_' not in query:
+            # Looks like a name search (has space, no underscore)
+            parts = query.strip().split()
+            if len(parts) >= 2:
+                first = parts[0]
+                last = parts[-1]
+                reversed_name = f"{last} {first}"
+                return (
+                    f"⚠️ EMPTY NAME SEARCH: No employees found for '{query}'.\n"
+                    f"Names may be stored differently. TRY:\n"
+                    f"  1. Reversed order: `employees_search(query=\"{reversed_name}\")`\n"
+                    f"  2. Last name only: `employees_search(query=\"{last}\")`\n"
+                    f"  3. First name only: `employees_search(query=\"{first}\")`\n"
+                    f"  4. Spelling variations: 'Krisztina' → 'Kristina', 'Christina'\n"
+                    f"  5. Paginate through ALL employees if name is unusual\n"
+                    f"⚠️ Don't return 'not found' until you've tried alternatives!"
+                )
+
+        return None
+
+    def maybe_hint_wrong_name_match(
+        self,
+        model: Any,
+        result: Any
+    ) -> Optional[str]:
+        """
+        Generate hint when search returns employees but names don't match query.
+
+        AICODE-NOTE: t087 FIX - When searching for "Peter de Vries" returns
+        "Sophie de Vries", agent should realize this is NOT a match and keep searching.
+        """
+        if not isinstance(model, client.Req_SearchEmployees):
             return None
 
-        return (
-            f"EMPTY RESULTS with location='{location}'. "
-            f"Location matching requires EXACT match (e.g., 'Barcelona Office – Spain', not 'Barcelona' or 'Spain'). "
-            f"TRY:\n"
-            f"  1. Use `employees_search()` without location filter, then paginate through ALL employees to find matching locations\n"
-            f"  2. Check `wiki_search('locations')` for exact location format used in this company\n"
-            f"  3. Common formats: 'City Office – Country', 'HQ – Country', 'Country'"
-        )
+        employees = getattr(result, 'employees', None) or []
+        if not employees:
+            return None
+
+        query = getattr(model, 'query', None)
+        if not query or '_' in query:
+            return None
+
+        # Extract first name from query
+        query_parts = query.strip().lower().split()
+        if len(query_parts) < 2:
+            return None
+
+        query_first = query_parts[0]
+        query_last = query_parts[-1]
+
+        # Check if any returned employee actually matches the FULL name
+        has_exact_match = False
+        partial_matches = []
+        for emp in employees:
+            emp_name = getattr(emp, 'name', '').lower()
+            emp_parts = emp_name.split()
+            if len(emp_parts) < 2:
+                continue
+
+            emp_first = emp_parts[0]
+            emp_last = emp_parts[-1]
+
+            # Check for exact first name match
+            if query_first == emp_first and query_last == emp_last:
+                has_exact_match = True
+                break
+
+            # Check for partial match (same last name, different first name)
+            if query_last == emp_last and query_first != emp_first:
+                partial_matches.append(getattr(emp, 'name', ''))
+
+        if has_exact_match:
+            return None
+
+        if partial_matches:
+            reversed_name = f"{query_last} {query_first}"
+            return (
+                f"⚠️ NAME MISMATCH: You searched for '{query}' but found: {', '.join(partial_matches)}.\n"
+                f"These share the LAST NAME but have DIFFERENT FIRST NAMES!\n"
+                f"The person you're looking for might:\n"
+                f"  1. Have name stored differently (try: `employees_search(query=\"{reversed_name}\")`)\n"
+                f"  2. Have their first name spelled differently (Peter → Pieter, Pete)\n"
+                f"  3. Be on a DIFFERENT PAGE - paginate with offset to check all '{query_last}' employees\n"
+                f"  4. Be a CUSTOMER CONTACT, not an employee - try `customers_search(query=\"{query_first}\")`\n"
+                f"⚠️ Don't assume 'not found' just because a DIFFERENT person with same surname appeared!"
+            )
+
+        return None
+
+    def maybe_hint_customer_contact_search(
+        self,
+        model: Any,
+        result: Any,
+        task_text: str
+    ) -> Optional[str]:
+        """
+        Generate hint when searching for contact email and employee not found.
+
+        AICODE-NOTE: t087 FIX - When task asks for "contact email of X" and
+        employee search returns no match, suggest searching customers.
+        The person might be a customer's primary_contact, not an employee!
+        """
+        if not isinstance(model, client.Req_SearchEmployees):
+            return None
+
+        employees = getattr(result, 'employees', None) or []
+        query = getattr(model, 'query', None)
+        if not query:
+            return None
+
+        # Check if task is about contact email
+        task_lower = task_text.lower()
+        if 'contact' not in task_lower or 'email' not in task_lower:
+            return None
+
+        # Check if we found no employees OR no exact match
+        query_parts = query.strip().lower().split()
+        has_exact_match = False
+
+        for emp in employees:
+            emp_name = getattr(emp, 'name', '').lower()
+            emp_parts = emp_name.split()
+            # Check if all query parts are in employee name
+            if all(qp in emp_parts for qp in query_parts):
+                has_exact_match = True
+                break
+
+        if not has_exact_match:
+            return (
+                f"💡 CONTACT EMAIL HINT: Task asks for 'contact email' of '{query}'.\n"
+                f"This person might be a CUSTOMER CONTACT, not an employee!\n"
+                f"⚠️ `customers_list` does NOT return contact details - only company metadata!\n"
+                f"TRY:\n"
+                f"  1. Get list of customer IDs with `customers_list()`\n"
+                f"  2. For EACH customer, call `customers_get(id='cust_xxx')` to see full details\n"
+                f"  3. Check `primary_contact_name` field for '{query}'\n"
+                f"  4. When found, return the `primary_contact_email` value.\n"
+                f"⚠️ You MUST call customers_get for each customer to see contact info!"
+            )
+
+        return None
 
 
 class PaginationHintEnricher:
@@ -905,6 +1052,9 @@ class QuerySubjectHintEnricher:
         r'(?:find|get|list|recommend|suggest)\s+(?:\w+\s+)*(?:for|to help|to coach|to mentor|to train)\s+(\w+(?:\s+\w+)?)',
         r'(?:coach|mentor|train|help|assist)\s+(\w+(?:\s+\w+)?)',
         r'who can (?:coach|mentor|train|help)\s+(\w+(?:\s+\w+)?)',
+        # AICODE-NOTE: t016 FIX - "higher/more/greater than X" patterns
+        # When asking for things COMPARED TO someone, that person is the reference (subject), not the answer
+        r'(?:higher|lower|more|less|greater|fewer|bigger|smaller|above|below)\s+than\s+(\w+(?:\s+\w+)?)',
     ]
 
     def maybe_hint_query_subject(
@@ -955,18 +1105,35 @@ class QuerySubjectHintEnricher:
 
         # Check if this is a "coach/train/help X" type task (X is the subject)
         # AICODE-NOTE: t077 fix. Extract subject name from task to compare with fetched employees.
+        # AICODE-NOTE: Patterns ordered by specificity - "coach X on" first to catch actual names,
+        # avoiding false positives like "upskill an employee".
+        # AICODE-NOTE: Use * instead of ? to capture 3+ word names like "De Santis Cristian".
         subject_patterns = [
-            r'\b(?:coach|mentor|train|help|upskill|assist)\s+(\w+(?:\s+\w+)?)',
-            r'\bfor\s+(\w+(?:\s+\w+)?)\s+(?:to|on|in)\b',
-            r'\b(?:coaches?|mentors?|trainers?)\s+for\s+(\w+)',
+            # "coach Rinaldi Giovanni on" - most specific, catches name before "on"
+            r'\b(?:coach|mentor|train)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+on\b',
+            # "coaches for X" pattern
+            r'\b(?:coaches?|mentors?|trainers?)\s+for\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
+            # Fallback: "for X to/on/in" pattern
+            r'\bfor\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:to|on|in)\b',
         ]
 
+        # Generic words that are NOT names - skip these matches
+        generic_words = {
+            'an', 'the', 'a', 'my', 'our', 'their', 'this', 'that', 'some',
+            'employee', 'employees', 'person', 'people', 'someone', 'staff',
+            'team', 'member', 'members', 'worker', 'workers', 'colleague',
+        }
+
         task_subject_name = None
+        # Use original case task text for name patterns (they expect capitalized names)
         for pattern in subject_patterns:
-            match = re.search(pattern, task_lower)
+            match = re.search(pattern, task_text)
             if match:
-                task_subject_name = match.group(1).strip().lower()
-                break
+                candidate = match.group(1).strip().lower()
+                # Skip if it's a generic word
+                if candidate.split()[0] not in generic_words:
+                    task_subject_name = candidate
+                    break
 
         if not task_subject_name:
             return None

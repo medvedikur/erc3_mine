@@ -226,6 +226,16 @@ class ActionPipeline:
         if hint:
             ctx.results.append(hint)
 
+        # Employee name mismatch hints (t087) - when search returns wrong person
+        hint = self._employee_hints.maybe_hint_wrong_name_match(ctx.model, result)
+        if hint:
+            ctx.results.append(hint)
+
+        # Customer contact search hint (t087) - when looking for contact email
+        hint = self._employee_hints.maybe_hint_customer_contact_search(ctx.model, result, task_text)
+        if hint:
+            ctx.results.append(hint)
+
         # Employee name resolution hints (t007)
         hint = self._name_resolution_hints.maybe_hint_name_resolution(ctx.model, result, task_text)
         if hint:
@@ -292,6 +302,24 @@ class ActionPipeline:
             )
             if hint:
                 ctx.results.append(hint)
+
+        # AICODE-NOTE: t087 FIX - Track customer contact info for link extraction.
+        # When customers_get returns contact info, store it for later lookup
+        # so that response parser can link customer when contact email is mentioned.
+        if isinstance(ctx.model, client.Req_GetCustomer):
+            # API returns 'company' field, not 'customer'
+            customer = getattr(result, 'company', None) or getattr(result, 'customer', None) or result
+            cust_id = getattr(ctx.model, 'id', None)
+            if cust_id and customer:
+                contact_name = getattr(customer, 'primary_contact_name', None)
+                contact_email = getattr(customer, 'primary_contact_email', None)
+                if contact_name or contact_email:
+                    customer_contacts = ctx.shared.get('customer_contacts', {})
+                    customer_contacts[cust_id] = {
+                        'name': contact_name or '',
+                        'email': contact_email or ''
+                    }
+                    ctx.shared['customer_contacts'] = customer_contacts
 
         # Wiki file hints on wiki_list
         wiki_manager = ctx.shared.get('wiki_manager')
