@@ -143,6 +143,23 @@ def _parse_time_update(ctx: ParseContext) -> Any:
     )
 
 
+# AICODE-NOTE: t101 FIX - Add time_void as alias for time_update with status='voided'
+# Agent often tries to call "time_void" which doesn't exist. This alias handles that.
+@ToolParser.register("time_void", "timevoid", "voidtime")
+def _parse_time_void(ctx: ParseContext) -> Any:
+    """Void a time entry (alias for time_update with status='voided')."""
+    return client.Req_UpdateTimeEntry.model_construct(
+        id=ctx.args.get("id"),
+        date=ctx.args.get("date"),
+        hours=ctx.args.get("hours"),
+        work_category=ctx.args.get("work_category"),
+        notes=ctx.args.get("notes"),
+        billable=ctx.args.get("billable"),
+        status="voided",  # Always set to voided
+        changed_by=ctx.args.get("changed_by")
+    )
+
+
 @ToolParser.register("time_summary_employee", "timesummaryemployee",
                      "timesummarybyemployee", "employeetimesummary")
 def _parse_time_summary_by_employee(ctx: ParseContext) -> Any:

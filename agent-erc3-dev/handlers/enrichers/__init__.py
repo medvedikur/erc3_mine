@@ -34,6 +34,7 @@ from .response_enrichers import (
     TieBreakerHintEnricher,
     RecommendationQueryHintEnricher,
     TimeSummaryFallbackHintEnricher,
+    ProjectTeamNameResolutionHintEnricher,
 )
 
 __all__ = [
@@ -60,4 +61,5 @@ __all__ = [
     'TieBreakerHintEnricher',
     'RecommendationQueryHintEnricher',
     'TimeSummaryFallbackHintEnricher',
+    'ProjectTeamNameResolutionHintEnricher',
 ]

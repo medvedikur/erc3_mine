@@ -1417,3 +1417,94 @@ class TimeSummaryFallbackHintEnricher:
             "⚠️ DO NOT apply tie-breaker when you haven't calculated actual workloads!\n"
             "The time_summary API may be unavailable, but project data EXISTS."
         )
+
+
+class ProjectTeamNameResolutionHintEnricher:
+    """
+    Provides hints when task asks for person's role in project but team only has IDs.
+
+    AICODE-NOTE: Critical for t081. When task asks "What is Heinrich's role at project X"
+    and projects_get returns team with employee IDs only, agent must call employees_get
+    to resolve IDs to names and find the matching person.
+    """
+
+    def maybe_hint_team_name_resolution(
+        self,
+        model: Any,
+        result: Any,
+        task_text: str
+    ) -> Optional[str]:
+        """
+        Generate hint when searching for person by name in project team.
+
+        Args:
+            model: The request model
+            result: API response
+            task_text: Task instructions
+
+        Returns:
+            Hint string or None
+        """
+        if not isinstance(model, client.Req_GetProject):
+            return None
+
+        project = getattr(result, 'project', None)
+        if not project:
+            return None
+
+        team = getattr(project, 'team', None) or []
+        if not team:
+            return None
+
+        task_lower = task_text.lower()
+
+        # AICODE-NOTE: t081 fix. Detect if task is asking about a PERSON's role
+        # Patterns: "role of X", "X's role", "what does X do", "is X on the team"
+        role_patterns = [
+            r'(?:role|position|job|responsibility)\s+(?:of|for)\s+(\w+)',
+            r'(\w+)(?:\'s|\s+is)\s+(?:role|position|job)',
+            r'what\s+(?:does|is)\s+(\w+)\s+(?:do|doing)',
+            r'(?:is|does)\s+(\w+)\s+(?:on|in|part of)\s+(?:the\s+)?team',
+        ]
+
+        person_name = None
+        for pattern in role_patterns:
+            match = re.search(pattern, task_lower)
+            if match:
+                person_name = match.group(1).strip()
+                # Skip common words that aren't names
+                if person_name not in ('the', 'a', 'this', 'that', 'my', 'your', 'his', 'her'):
+                    break
+                person_name = None
+
+        if not person_name:
+            return None
+
+        # Check if team has employee IDs (not names)
+        team_ids = []
+        for member in team:
+            emp_id = getattr(member, 'employee', None)
+            if emp_id and (emp_id.startswith('QR') or emp_id.startswith('iv') or
+                          emp_id.startswith('Fph') or emp_id.startswith('6KR') or
+                          emp_id.startswith('Cj') or emp_id.startswith('bA') or
+                          '_' in emp_id):
+                team_ids.append(emp_id)
+
+        if not team_ids:
+            return None
+
+        # Check if the person name is NOT in team IDs (meaning we need name resolution)
+        person_lower = person_name.lower()
+        if any(person_lower in tid.lower() for tid in team_ids):
+            return None  # Name might already be in ID, no hint needed
+
+        return (
+            f"🔍 NAME RESOLUTION REQUIRED: Task asks about '{person_name}' but project team "
+            f"only contains employee IDs: {', '.join(team_ids)}.\n"
+            f"To find if '{person_name}' is on this team:\n"
+            f"  1. Call `employees_get(id='...')` for EACH team member ID\n"
+            f"  2. Check the `name` field of each employee\n"
+            f"  3. Compare names to find '{person_name}'\n"
+            f"  4. If found, their `role` is in the team array (Lead, Engineer, QA, Ops, Other)\n"
+            f"⚠️ Do NOT return 'not found' until you've checked ALL team member names!"
+        )

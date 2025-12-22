@@ -28,6 +28,7 @@ from ..enrichers import (
     SkillSearchStrategyHintEnricher, EmployeeNameResolutionHintEnricher,
     SkillComparisonHintEnricher, QuerySubjectHintEnricher, TieBreakerHintEnricher,
     RecommendationQueryHintEnricher, TimeSummaryFallbackHintEnricher,
+    ProjectTeamNameResolutionHintEnricher,
 )
 from utils import CLI_BLUE, CLI_GREEN, CLI_YELLOW, CLI_CLR
 
@@ -87,6 +88,7 @@ class ActionPipeline:
         self._tie_breaker_hints = TieBreakerHintEnricher()
         self._recommendation_hints = RecommendationQueryHintEnricher()
         self._time_summary_fallback_hints = TimeSummaryFallbackHintEnricher()
+        self._project_team_name_hints = ProjectTeamNameResolutionHintEnricher()
 
         # Error/Success handling
         self._error_handler = ErrorHandler()
@@ -278,6 +280,14 @@ class ActionPipeline:
         # Time summary fallback hints (t009)
         if isinstance(ctx.model, client.Req_TimeSummaryByEmployee):
             hint = self._time_summary_fallback_hints.maybe_hint_time_summary_fallback(
+                ctx.model, result, task_text
+            )
+            if hint:
+                ctx.results.append(hint)
+
+        # Project team name resolution hints (t081)
+        if isinstance(ctx.model, client.Req_GetProject):
+            hint = self._project_team_name_hints.maybe_hint_team_name_resolution(
                 ctx.model, result, task_text
             )
             if hint:

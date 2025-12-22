@@ -228,12 +228,37 @@ def _parse_respond(ctx: ParseContext) -> Any:
         # When agent explicitly calls employees_get/projects_get/customers_get,
         # those entities are likely THE answer and should be linked even if
         # not mentioned in message text. Example: "from Sales dept" without ID.
+        #
+        # AICODE-NOTE: t081 FIX - BUT only add fetched entities if they're mentioned
+        # in the message (by ID or name) OR if there's only one fetched entity.
+        # This prevents linking all team members when only one is the answer.
         if outcome == 'ok_answer':
             fetched_entities = ctx.context.shared.get('fetched_entities', [])
+            message_lower = str(message).lower()
+
             for entity in fetched_entities:
                 entity_id = entity.get("id", "")
                 entity_kind = entity.get("kind", "")
-                if entity_id and not link_extractor._link_exists(links, entity_id, entity_kind):
+
+                if not entity_id:
+                    continue
+
+                # Skip if already linked
+                if link_extractor._link_exists(links, entity_id, entity_kind):
+                    continue
+
+                # AICODE-NOTE: t081 FIX - Only add if:
+                # 1. ID is mentioned in message, OR
+                # 2. There's only one fetched entity of this kind (t003 case)
+                entity_id_lower = entity_id.lower()
+                id_in_message = entity_id_lower in message_lower
+
+                # Count entities of same kind
+                same_kind_count = sum(
+                    1 for e in fetched_entities if e.get("kind") == entity_kind
+                )
+
+                if id_in_message or same_kind_count == 1:
                     links.append(entity)
 
     # Deduplicate
