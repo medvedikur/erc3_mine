@@ -30,6 +30,11 @@ class AgentTurnState:
     # Search tracking (for auto-linking in read-only operations)
     search_entities: List[Dict] = field(default_factory=list)
 
+    # AICODE-NOTE: t003 FIX - Track explicitly fetched entities via GET calls.
+    # These entities should be auto-linked for ok_answer even if not mentioned in message.
+    # Use case: Agent answers "from Sales dept" but doesn't mention employee ID in text.
+    fetched_entities: List[Dict] = field(default_factory=list)
+
     # Validation tracking
     missing_tools: List[str] = field(default_factory=list)
     action_types_executed: Set[str] = field(default_factory=set)
@@ -42,6 +47,13 @@ class AgentTurnState:
 
     # Pending mutations (mutation tools planned but not yet executed)
     pending_mutation_tools: Set[str] = field(default_factory=set)
+
+    # AICODE-NOTE: t077 FIX - Track query subjects (coachees/mentees) to filter from links
+    query_subject_ids: Set[str] = field(default_factory=set)
+
+    # AICODE-NOTE: t067 FIX - Track wiki files "deleted" (content set to empty)
+    # These should be filtered from links in rename operations
+    deleted_wiki_files: Set[str] = field(default_factory=set)
 
     # Loop detection
     action_history: List[Any] = field(default_factory=list)
@@ -83,6 +95,7 @@ class AgentTurnState:
             'had_mutations': self.had_mutations,
             'mutation_entities': self.mutation_entities,
             'search_entities': self.search_entities,
+            'fetched_entities': self.fetched_entities,  # AICODE-NOTE: t003 FIX
             'missing_tools': self.missing_tools,
             'action_types_executed': self.action_types_executed,
             'action_counts': self.action_counts,
@@ -100,6 +113,10 @@ class AgentTurnState:
             '_global_workload_tracker': self.global_workload_tracker,
             # AICODE-NOTE: t076 FIX - Pass pending pagination for IncompletePaginationGuard
             'pending_pagination': self.pending_pagination,
+            # AICODE-NOTE: t077 FIX - Pass query subject IDs for link filtering
+            'query_subject_ids': self.query_subject_ids,
+            # AICODE-NOTE: t067 FIX - Pass deleted wiki files for link filtering
+            'deleted_wiki_files': self.deleted_wiki_files,
         }
 
     def clear_turn_aggregators(self) -> None:
@@ -146,6 +163,18 @@ class AgentTurnState:
         pending_pagination = ctx.shared.get('pending_pagination')
         if pending_pagination is not None:
             self.pending_pagination = pending_pagination
+
+        # AICODE-NOTE: t077 FIX - Sync query subject IDs
+        # Enricher adds IDs when detecting coachee/mentee searches
+        query_subjects = ctx.shared.get('query_subject_ids')
+        if query_subjects:
+            self.query_subject_ids.update(query_subjects)
+
+        # AICODE-NOTE: t067 FIX - Sync deleted wiki files
+        # For wiki rename operations, track files that were "deleted"
+        deleted_wiki = ctx.shared.get('deleted_wiki_files')
+        if deleted_wiki:
+            self.deleted_wiki_files.update(deleted_wiki)
 
         # Note: had_mutations, mutation_entities, search_entities are
         # updated directly in the main loop after successful actions

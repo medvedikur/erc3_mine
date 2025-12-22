@@ -74,6 +74,17 @@ class NameResolutionGuard(ResponseGuard):
         if not self._team_search_re.search(task_text):
             return
 
+        # AICODE-NOTE: Fix for t070, t071. Skip for CUSTOMER queries.
+        # "Machina Press", "Carpathia Metalworkers" look like human names but are company names.
+        # If task is about customers OR agent used customers_search, this guard doesn't apply.
+        action_types_executed = ctx.shared.get('action_types_executed', set())
+        if re.search(r'\bcustomer[s]?\b', task_text, re.IGNORECASE):
+            print(f"  {CLI_GREEN}✓ NameResolutionGuard: Skipped - customer query{CLI_CLR}")
+            return
+        if 'customers_search' in action_types_executed:
+            print(f"  {CLI_GREEN}✓ NameResolutionGuard: Skipped - customers_search was used{CLI_CLR}")
+            return
+
         # Extract human names from task
         human_names = self._extract_human_names(task_text)
         if not human_names:

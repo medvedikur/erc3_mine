@@ -65,10 +65,11 @@ class LinkExtractor:
                 # Also extract the username part after emp_ prefix
                 links.append({"id": pu[4:], "kind": "employee"})
 
-        # AICODE-NOTE: Extract wiki file paths (t062, t064)
-        # Patterns: "systems/time_tracking.md", "hr/example.md", etc.
+        # AICODE-NOTE: Extract wiki file paths (t062, t064, t067)
+        # Patterns: "systems/time_tracking.md", "hr/example.md", "systems/crm.md.bak", etc.
+        # Supports .md and .md.bak extensions for rename operations
         wiki_paths = re.findall(
-            r'\b([a-z_]+/[a-z0-9_]+\.md)\b',
+            r'\b([a-z_]+/[a-z0-9_]+\.md(?:\.bak)?)\b',
             str(message),
             re.IGNORECASE
         )

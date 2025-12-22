@@ -269,9 +269,10 @@ class ActionProcessor:
                     state.action_types_executed.add(tool_name)
                     # AICODE-NOTE: action_counts already incremented before execution (t075/t076 fix)
 
-            # Track mutations and searches
+            # Track mutations, searches, and fetched entities
             self._track_mutation(action_model, state, ctx)
             self._track_search(action_model, state, ctx)
+            self._track_fetched(action_model, state, ctx)  # t003 fix
 
             if ctx.stop_execution:
                 stop_execution = True
@@ -407,6 +408,21 @@ class ActionProcessor:
             for entity in time_update_entities:
                 state.mutation_entities.append(entity)
 
+        elif isinstance(action_model, client.Req_UpdateWiki):
+            # AICODE-NOTE: t067 fix. Track wiki file for auto-linking.
+            # For rename operations (create new + delete old), only the NEW file
+            # with non-empty content should be linked.
+            if hasattr(action_model, 'file') and action_model.file:
+                content = getattr(action_model, 'content', '')
+                if content and content.strip():
+                    # Non-empty content = creation/update → add to mutation_entities
+                    state.mutation_entities.append({"id": action_model.file, "kind": "wiki"})
+                else:
+                    # Empty content = deletion → track for exclusion from links
+                    # AICODE-NOTE: Write directly to state, not ctx.shared, because
+                    # sync_from_context was already called before _track_mutation
+                    state.deleted_wiki_files.add(action_model.file)
+
     def _track_search(self, action_model: Any, state: AgentTurnState, ctx: Any):
         """Track search entities for auto-linking."""
         # AICODE-NOTE: Track employees_search queries for name resolution guard (t007, t008)
@@ -467,3 +483,39 @@ class ActionProcessor:
                     if cust and cust not in customers_seen:
                         customers_seen.add(cust)
                         state.search_entities.append({"id": cust, "kind": "customer"})
+
+    def _track_fetched(self, action_model: Any, state: AgentTurnState, ctx: Any):
+        """
+        Track explicitly fetched entities via GET calls (t003 fix).
+        These are auto-linked for ok_answer even if not mentioned in message text.
+        """
+        if any("FAILED" in r or "ERROR" in r for r in ctx.results):
+            return
+
+        # AICODE-NOTE: t003 FIX - Track employees_get targets.
+        # When agent explicitly fetches an employee, they're likely the answer
+        # (e.g., "who is the lead" → fetches employee → should link even if
+        # response just says "from Sales dept" without mentioning ID).
+        if isinstance(action_model, client.Req_GetEmployee):
+            emp_id = getattr(action_model, 'id', None)
+            if emp_id:
+                # Only add if not already in list
+                if not any(e.get('id') == emp_id and e.get('kind') == 'employee'
+                           for e in state.fetched_entities):
+                    state.fetched_entities.append({"id": emp_id, "kind": "employee"})
+
+        # Track projects_get
+        elif isinstance(action_model, client.Req_GetProject):
+            proj_id = getattr(action_model, 'id', None)
+            if proj_id:
+                if not any(e.get('id') == proj_id and e.get('kind') == 'project'
+                           for e in state.fetched_entities):
+                    state.fetched_entities.append({"id": proj_id, "kind": "project"})
+
+        # Track customers_get
+        elif isinstance(action_model, client.Req_GetCustomer):
+            cust_id = getattr(action_model, 'id', None)
+            if cust_id:
+                if not any(e.get('id') == cust_id and e.get('kind') == 'customer'
+                           for e in state.fetched_entities):
+                    state.fetched_entities.append({"id": cust_id, "kind": "customer"})

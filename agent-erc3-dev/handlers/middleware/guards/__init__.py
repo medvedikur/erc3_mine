@@ -18,6 +18,7 @@ from .outcome_guards import (
     SingleCandidateOkHint,
     SubjectiveQueryGuard,
     IncompletePaginationGuard,
+    VagueQueryNotFoundGuard,
 )
 
 from .project_guards import (
@@ -64,6 +65,7 @@ __all__ = [
     'SingleCandidateOkHint',
     'SubjectiveQueryGuard',
     'IncompletePaginationGuard',
+    'VagueQueryNotFoundGuard',
     'PaginationEnforcementMiddleware',
     # Project Guards
     'ProjectSearchReminderMiddleware',

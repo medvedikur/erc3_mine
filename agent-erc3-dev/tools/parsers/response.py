@@ -72,14 +72,21 @@ def _parse_respond(ctx: ParseContext) -> Any:
     raw_links = args.get("links") or args.get("Links") or []
     links = link_extractor.normalize_links(raw_links)
 
-    # Auto-detect links from message for ok_answer outcomes only
-    # AICODE-NOTE: Auto-extract ONLY for ok_answer:
+    # Auto-detect links from message
+    # AICODE-NOTE: Auto-extract for ok_answer AND ok_not_found (t035 fix):
     # - ok_answer: entities mentioned ARE the answer
+    # - ok_not_found: entities mentioned are SUBJECTS that WERE found, but the SEARCHED item was not
+    #   Example: "Check if Sarah has CEO approval" → Sarah found, approval not found → link Sarah!
     # Do NOT auto-extract for:
     # - denied_security: links reveal entity was found (t045, t054, t055)
-    # - ok_not_found: entities mentioned are NOT the answer
     # - none_*: clarification requests shouldn't auto-link
-    if not links and outcome == 'ok_answer':
+    #
+    # AICODE-NOTE: t089 fix. For ok_not_found, be more restrictive:
+    # - Only link SUBJECTS (employees searched FOR), not contextual entities
+    # - "List projects where A and B both are" → link A and B, NOT any projects mentioned
+    # - Projects/customers mentioned in ok_not_found are usually "what we searched" not "what we found"
+    ok_not_found_mode = (outcome == 'ok_not_found')
+    if not links and outcome in ('ok_answer', 'ok_not_found'):
         msg = str(message)
 
         # AICODE-NOTE: Reduce over-linking (t075 fix).
@@ -121,13 +128,33 @@ def _parse_respond(ctx: ParseContext) -> Any:
             full_links = link_extractor.extract_from_message(msg)
             primary_has_employee = any(l.get("kind") == "employee" for l in primary_links)
 
+            # AICODE-NOTE: t077 fix. If primary segment ONLY contains query subjects
+            # (the person being helped, not the results), we should extract employees
+            # from the full message. Example: "Employees who can coach Danijela (FphR_098) are:\n- Coach1 (FphR_001)..."
+            # The header mentions the subject, but the actual answers are in the list.
+            query_subject_ids = set()
+            if ctx.context and hasattr(ctx.context, 'shared'):
+                query_subject_ids = ctx.context.shared.get('query_subject_ids', set())
+
+            primary_employee_ids = {l.get("id") for l in primary_links if l.get("kind") == "employee"}
+            primary_only_has_subjects = (
+                primary_employee_ids and
+                query_subject_ids and
+                primary_employee_ids.issubset(query_subject_ids)
+            )
+
             non_employee_links = [l for l in full_links if l.get("kind") != "employee"]
-            if primary_has_employee:
+            if primary_has_employee and not primary_only_has_subjects:
                 employee_links = [l for l in primary_links if l.get("kind") == "employee"]
             else:
                 employee_links = [l for l in full_links if l.get("kind") == "employee"]
 
             links = link_extractor.deduplicate(non_employee_links + employee_links)
+
+        # AICODE-NOTE: t089 fix. For ok_not_found, only keep employee links (subjects).
+        # Projects/customers mentioned are usually "what we searched", not results.
+        if ok_not_found_mode and links:
+            links = [l for l in links if l.get("kind") == "employee"]
 
     # Validate employee links
     if links and ctx.context:
@@ -197,6 +224,18 @@ def _parse_respond(ctx: ParseContext) -> Any:
                         links.append(entity)
         # For ok_not_found: do NOT add search_entities - they are NOT the answer!
 
+        # AICODE-NOTE: t003 FIX - Add fetched entities for ok_answer.
+        # When agent explicitly calls employees_get/projects_get/customers_get,
+        # those entities are likely THE answer and should be linked even if
+        # not mentioned in message text. Example: "from Sales dept" without ID.
+        if outcome == 'ok_answer':
+            fetched_entities = ctx.context.shared.get('fetched_entities', [])
+            for entity in fetched_entities:
+                entity_id = entity.get("id", "")
+                entity_kind = entity.get("kind", "")
+                if entity_id and not link_extractor._link_exists(links, entity_id, entity_kind):
+                    links.append(entity)
+
     # Deduplicate
     links = link_extractor.deduplicate(links)
 
@@ -209,6 +248,17 @@ def _parse_respond(ctx: ParseContext) -> Any:
             links = [
                 link for link in links
                 if link.get('id') not in query_subject_ids
+            ]
+
+    # AICODE-NOTE: Filter out deleted wiki files (t067)
+    # For wiki rename operations (create new + delete old), only the NEW file
+    # should be in links. The old file was "deleted" (content set to empty).
+    if ctx.context:
+        deleted_wiki_files = ctx.context.shared.get('deleted_wiki_files', set())
+        if deleted_wiki_files:
+            links = [
+                link for link in links
+                if not (link.get('kind') == 'wiki' and link.get('id') in deleted_wiki_files)
             ]
 
     # Clear links for error_internal and denied_security outcomes

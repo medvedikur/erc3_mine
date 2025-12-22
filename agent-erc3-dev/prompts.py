@@ -239,8 +239,8 @@ When logging time for a target employee (Self or Other):
 | Tool | Technical Usage |
 |------|-----------------|
 | `who_am_i` | Returns current user, role, and permissions. **Mandatory Step 1.** |
-| `wiki_list`/`load`/`search` | KB access. Use `wiki_update(file="page.md", content="")` to DELETE. |
-| `employees_search`/`get`/`update` | Manage people. **FILTER by skills/wills**: `search(skills=[{"name":"skill_project_mgmt","min_level":7}], wills=[{"name":"will_people_management","min_level":7}])` - returns ONLY employees matching criteria! To find reports use `search(manager=id)`. **TIP**: When task asks for a "lead", check both skills AND role/title in wiki. |
+| `wiki_list`/`load`/`search` | KB access. Use `wiki_update(file="page.md", content="")` to DELETE. **⚠️ RENAME (t067 fix)**: To RENAME a wiki page, you MUST: 1) `wiki_load` original, 2) `wiki_update` NEW file with content, 3) `wiki_update(file="original.md", content="")` to DELETE original! Just creating new file = COPY, not rename! |
+| `employees_search`/`get`/`update` | Manage people. **FILTER by skills/wills**: `search(skills=[{"name":"skill_project_mgmt","min_level":7}], wills=[{"name":"will_people_management","min_level":7}])` - returns ONLY employees matching criteria! To find reports use `search(manager=id)`. **TIP**: When task asks for a "lead", check both skills AND role/title in wiki. **⚠️ NAME SEARCH RETRY (t087 fix)**: If full name search returns empty, retry with FIRST NAME ONLY or LAST NAME ONLY! Names may be stored differently (e.g., "Andrei" vs "Andrew", "Erik" vs "Eric"). |
 | `customers_search`/`get` | Find by `locations`, `deal_phase`, `account_managers`. Note: Locations vary ("DK" vs "Denmark"). **⚠️ "Key account" is `high_level_status` field (returned in results), NOT `deal_phase`!** To find key accounts: use `customers_list` then filter results by `high_level_status='Key account'`. |
 | `projects_search`/`get` | Find projects. Params: `member`, `owner`, `query`. **⚠️ "Lead" vs "Owner" (CRITICAL!)**: `owner` param returns projects where person is ACCOUNT OWNER (business owner, usually AM). To find projects where person is **PROJECT LEAD** (team role='Lead'), you MUST: 1) `projects_search(member=employee_id)` to get all their projects, 2) then `projects_get(id=...)` for each and filter by `role='Lead'` in team array! Example: "Which projects does X lead?" → search member=X, then check team role, NOT owner param! |
 | `projects_status_update` | Valid statuses: 'idea', 'exploring', 'active', 'paused', 'archived'. |
@@ -265,10 +265,18 @@ Every entity mentioned in text MUST include its ID in parentheses.
   - Did you mention a project? → Include `(proj_xxx)` in text!
   - Did you mention a customer? → Include `(cust_xxx)` in text!
   - Did you mention a wiki page? → Include path like `(systems/time_tracking.md)` if relevant!
-- **⚠️ SKILL NAME FORMAT (t094 fix)**: When listing skills, use HUMAN-READABLE names WITHOUT the `skill_` prefix!
-  - ✅ "Corrosion resistance testing" (human name)
-  - ❌ "skill_corrosion_resistance_testing" (raw ID — causes substring collision!)
-  - **WHY?** If you have `skill_corrosion` and list `skill_corrosion_resistance_testing` in "skills I don't have", the substring `skill_corrosion` appears in your answer and benchmark thinks you listed a skill you DO have!
+- **⚠️ SKILL/WILL NAME FORMAT (t094, t095, t096 fix)**: Format depends on context!
+  - **PERSONAL context ("my skills", "skills I have/don't have")**: Use HUMAN-READABLE names WITHOUT prefix!
+    - ✅ "Corrosion resistance testing" ❌ "skill_corrosion_resistance_testing"
+    - **⚠️ CRITICAL**: Do NOT mention your OWN skill IDs in response! Even in explanations!
+    - ❌ "I have 'skill_corrosion' which is similar..." (substring collision!)
+    - ✅ Just list the skills you DON'T have, no comparisons with your own skills
+  - **PROJECT/TEAM context ("skills in project", "team skills", "all skills")**: Use RAW API format WITH prefix!
+    - ✅ Table with "skill_corrosion", "skill_crm", "will_process_improvement"
+    - ❌ Table with "Corrosion", "CRM", "process improvement"
+    - **WHY?** Benchmark checks for exact skill IDs in project skill listings!
+  - **"WHICH skill/will" questions**: Use RAW API format!
+    - ✅ "The will with highest potential is will_process_improvement" ❌ "...is process improvement"
 - **Links array**: The `respond` tool auto-extracts IDs from your message text. If you don't mention IDs, links will be empty and the benchmark will FAIL!
 - **TIP**: When mentioning employees, include their full name (e.g., "Richard Klein (richard_klein)") — use `employees_get` if needed.
 - **NUMBER FORMAT**: Always use raw numbers WITHOUT thousand separators! ✅ "62000" ❌ "62,000"
@@ -280,11 +288,14 @@ Every entity mentioned in text MUST include its ID in parentheses.
   - ✅ "Employees who can coach on skills: Nino Valente (FphR_001), ..." (subject Petra omitted)
   - ❌ "Coaches for Petra Milićević (FphR_088): ..." (subject ID included → Petra becomes a link!)
   - **WHY?** The `respond` tool auto-extracts ALL IDs from your message. If you mention the subject's ID, it becomes a link even though it's NOT the answer!
-  - **⚠️ WINNER vs OTHER CANDIDATES (tie-breaker / runner-up) (t075 fix)**:
+  - **⚠️ WINNER vs OTHER CANDIDATES (tie-breaker / runner-up) (t075, t071 fix)**:
     - If you mention a losing candidate ONLY to explain a tie-breaker ("Although Bianca also has level 2..."), **DO NOT include their ID**.
     - Only include IDs for the FINAL selected answer entity/entities. Otherwise the losing candidate ID will be auto-extracted into links and the benchmark will treat it as part of the answer.
+    - **⚠️ COMPARISON "LINK ONLY WINNER" QUERIES (t071 fix)**: When task says "link only X" or "link only the winner", your message text must mention ONLY the winner's ID! Do NOT include loser ID even for context!
     - ✅ "The least skilled person is Giorgio Pellegrini (ayEi_045). Another candidate (Bianca Leone) also has level 2, but Giorgio has more project work."
     - ❌ "The least skilled person is Giorgio Pellegrini (ayEi_045). Although Bianca Leone (ayEi_052) also has level 2..." (ayEi_052 becomes an incorrect link)
+    - ✅ "Iberia Construction (cust_iberia_construction) has more projects with 2 vs 1." (only winner ID mentioned)
+    - ❌ "Iberia Construction (cust_iberia_construction) has 2 projects, compared to Mediterranean Bottling (cust_mediterranean_bottling) with 1." (loser ID cust_mediterranean_bottling becomes incorrect link!)
 
 **2. Outcome Selection (`respond` tool)**:
 - `ok_answer`: Task completed successfully.

@@ -657,3 +657,55 @@ class SubjectiveQueryGuard(ResponseGuard):
                     "If specific -> set `query_specificity: 'specific'` and call respond again."
                 )
             )
+
+
+class VagueQueryNotFoundGuard(ResponseGuard):
+    """
+    Catches ok_not_found on vague/ambiguous queries.
+
+    AICODE-NOTE: Fix for t005. Agent correctly identifies query as "vague" but uses
+    ok_not_found instead of none_clarification_needed. If the query is vague,
+    agent cannot claim "not found" - they don't even know what to search for!
+
+    Logic:
+    - If query_specificity == "vague" AND outcome == "ok_not_found" -> block
+    - Vague queries should ALWAYS use none_clarification_needed to ask for specifics
+    """
+
+    target_outcomes = {"ok_not_found"}
+    require_public = None  # Both public and internal users
+
+    def _check(self, ctx: ToolContext, outcome: str) -> None:
+        query_specificity = ctx.shared.get('query_specificity', 'unspecified')
+
+        # PRIMARY CHECK: Agent explicitly declared query as vague
+        if query_specificity == 'vague':
+            self._soft_block(
+                ctx,
+                warning_key='vague_not_found_warned',
+                log_msg="VagueQueryNotFoundGuard: Agent declared 'vague' but used ok_not_found",
+                block_msg=(
+                    "⚠️ CONTRADICTION: You declared `query_specificity: 'vague'` but responded with `ok_not_found`!\n\n"
+                    "**If the query is vague, you CANNOT claim 'not found'!**\n"
+                    "You don't even know what exactly to search for.\n\n"
+                    "For vague/ambiguous queries, ALWAYS use `none_clarification_needed` and ask:\n"
+                    "- 'Could you specify which project you mean?'\n"
+                    "- 'What exactly are you looking for?'\n\n"
+                    "**ACTION**: Change outcome to `none_clarification_needed` and ask user to clarify."
+                )
+            )
+            return
+
+        # SECONDARY CHECK: Agent declared "ambiguous" (similar to vague)
+        if query_specificity == 'ambiguous':
+            self._soft_block(
+                ctx,
+                warning_key='vague_not_found_warned',
+                log_msg="VagueQueryNotFoundGuard: Agent declared 'ambiguous' but used ok_not_found",
+                block_msg=(
+                    "⚠️ CONTRADICTION: You declared `query_specificity: 'ambiguous'` but responded with `ok_not_found`!\n\n"
+                    "**If the query is ambiguous, you CANNOT claim 'not found'!**\n\n"
+                    "For ambiguous queries, use `none_clarification_needed` and ask for specifics.\n\n"
+                    "**ACTION**: Change outcome to `none_clarification_needed`."
+                )
+            )

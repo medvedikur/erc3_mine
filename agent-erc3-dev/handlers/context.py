@@ -49,6 +49,11 @@ class SharedState:
     # === Search Tracking (for auto-linking) ===
     search_entities: List[Dict[str, Any]] = field(default_factory=list)
 
+    # === Fetched Entities (t003 FIX) ===
+    # AICODE-NOTE: Entities explicitly fetched via GET calls (employees_get, projects_get, customers_get).
+    # These should be auto-linked for ok_answer even if not mentioned in message text.
+    fetched_entities: List[Dict[str, Any]] = field(default_factory=list)
+
     # === Validation State ===
     missing_tools: List[str] = field(default_factory=list)
     action_types_executed: Set[str] = field(default_factory=set)
@@ -75,6 +80,15 @@ class SharedState:
     # === Time Entry Update State ===
     time_update_entities: List[Dict[str, Any]] = field(default_factory=list)
 
+    # === Query Subject Tracking (t077) ===
+    # AICODE-NOTE: Track query subjects (coachees/mentees) to filter from links
+    query_subject_ids: Set[str] = field(default_factory=set)
+
+    # === Deleted Wiki Files (t067) ===
+    # AICODE-NOTE: Track wiki files that were "deleted" (content set to empty)
+    # These should be filtered from links in rename operations
+    deleted_wiki_files: Set[str] = field(default_factory=set)
+
     def to_dict(self) -> Dict[str, Any]:
         """
         Convert to dict for backward compatibility.
@@ -91,6 +105,7 @@ class SharedState:
             'had_mutations': self.had_mutations,
             'mutation_entities': self.mutation_entities,
             'search_entities': self.search_entities,
+            'fetched_entities': self.fetched_entities,  # AICODE-NOTE: t003 FIX
             'missing_tools': self.missing_tools,
             'action_types_executed': self.action_types_executed,
             'action_counts': self.action_counts,
@@ -102,6 +117,8 @@ class SharedState:
             '_project_search_result': self._project_search_result,
             '_employee_search_result': self._employee_search_result,
             'time_update_entities': self.time_update_entities,
+            'query_subject_ids': self.query_subject_ids,
+            'deleted_wiki_files': self.deleted_wiki_files,
         }
 
     @classmethod
@@ -132,6 +149,8 @@ class SharedState:
             state.mutation_entities = data['mutation_entities']
         if 'search_entities' in data:
             state.search_entities = data['search_entities']
+        if 'fetched_entities' in data:
+            state.fetched_entities = data['fetched_entities']
         if 'missing_tools' in data:
             state.missing_tools = data['missing_tools']
         if 'action_types_executed' in data:
@@ -154,6 +173,10 @@ class SharedState:
             state._employee_search_result = data['_employee_search_result']
         if 'time_update_entities' in data:
             state.time_update_entities = data['time_update_entities']
+        if 'query_subject_ids' in data:
+            state.query_subject_ids = data['query_subject_ids']
+        if 'deleted_wiki_files' in data:
+            state.deleted_wiki_files = data['deleted_wiki_files']
 
         return state
 
@@ -174,11 +197,11 @@ class SharedStateProxy(dict):
     _KNOWN_KEYS = {
         'security_manager', 'wiki_manager', 'task', 'task_id', 'api',
         'failure_logger', 'had_mutations', 'mutation_entities',
-        'search_entities', 'missing_tools', 'action_types_executed',
+        'search_entities', 'fetched_entities', 'missing_tools', 'action_types_executed',
         'action_counts', 'outcome_validation_warned', 'pending_mutation_tools',
         '_overlap_definitive_hints', 'query_specificity',
         '_search_error', '_project_search_result', '_employee_search_result',
-        'time_update_entities',
+        'time_update_entities', 'query_subject_ids', 'deleted_wiki_files',
     }
 
     # Map dict keys to attribute names

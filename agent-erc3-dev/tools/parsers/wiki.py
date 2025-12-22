@@ -32,8 +32,13 @@ def _parse_wiki_search(ctx: ParseContext) -> Any:
 @ToolParser.register("wiki_update", "wikiupdate", "updatewiki")
 def _parse_wiki_update(ctx: ParseContext) -> Any:
     """Update or create a wiki page."""
+    content = ctx.args.get("content")
+    # AICODE-NOTE: t067 fix. LLM often passes escaped newlines (\\n) in JSON strings.
+    # Decode them to actual newlines for proper wiki content.
+    if content and isinstance(content, str):
+        content = content.replace('\\n', '\n').replace('\\t', '\t')
     return client.Req_UpdateWiki(
         file=ctx.args.get("file") or ctx.args.get("path"),
-        content=ctx.args.get("content"),
+        content=content,
         changed_by=ctx.args.get("changed_by")
     )

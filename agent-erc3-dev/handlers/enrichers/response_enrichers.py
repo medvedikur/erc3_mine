@@ -917,6 +917,12 @@ class QuerySubjectHintEnricher:
         """
         Generate hint when employee search finds query subject.
 
+        AICODE-NOTE: This enricher identifies the COACHEE/MENTEE (person to be helped),
+        NOT the coaches/mentors/trainers. Critical distinction:
+        - "find coaches FOR John" → John = subject (don't link)
+        - "find trainers" → trainers = RESULTS (DO link them!)
+        - "update employee X" → X = target (DO link them!)
+
         Args:
             model: The request model
             result: API response
@@ -929,10 +935,40 @@ class QuerySubjectHintEnricher:
         if not isinstance(model, (client.Req_SearchEmployees, client.Req_GetEmployee)):
             return None
 
-        # Check if this is a "find X FOR Y" type task
         task_lower = task_text.lower()
-        for_keywords = ['coach', 'mentor', 'train', 'help', 'upskill', 'for']
-        if not any(kw in task_lower for kw in for_keywords):
+
+        # AICODE-NOTE: t017/t048/t050 fix. Skip if task is looking for HELPERS (not subjects).
+        # "find trainers" / "find coaches" / "list mentors" → these are RESULTS, not subjects!
+        helper_patterns = [
+            r'\b(?:find|get|list|search|recommend)\s+(?:\w+\s+)*(?:trainers?|coaches?|mentors?)\b',
+            r'\b(?:trainers?|coaches?|mentors?)\s+(?:with|who|that)\b',
+        ]
+        for pattern in helper_patterns:
+            if re.search(pattern, task_lower):
+                return None
+
+        # AICODE-NOTE: Skip UPDATE/SWAP operations - target should be in links, not filtered
+        # t097 fix: "swap workloads" is a mutation, not a coaching query
+        skip_keywords = ['update', 'change', 'modify', 'swap', 'switch', 'exchange', 'replace']
+        if any(kw in task_lower for kw in skip_keywords):
+            return None
+
+        # Check if this is a "coach/train/help X" type task (X is the subject)
+        # AICODE-NOTE: t077 fix. Extract subject name from task to compare with fetched employees.
+        subject_patterns = [
+            r'\b(?:coach|mentor|train|help|upskill|assist)\s+(\w+(?:\s+\w+)?)',
+            r'\bfor\s+(\w+(?:\s+\w+)?)\s+(?:to|on|in)\b',
+            r'\b(?:coaches?|mentors?|trainers?)\s+for\s+(\w+)',
+        ]
+
+        task_subject_name = None
+        for pattern in subject_patterns:
+            match = re.search(pattern, task_lower)
+            if match:
+                task_subject_name = match.group(1).strip().lower()
+                break
+
+        if not task_subject_name:
             return None
 
         # Get employee(s) from result
@@ -946,20 +982,39 @@ class QuerySubjectHintEnricher:
             return None
 
         # Check if query was a name search (likely looking FOR this person)
+        # AICODE-NOTE: t077 fix. Only add to query_subjects if:
+        # 1. SearchEmployees with name query matching task subject, OR
+        # 2. GetEmployee where fetched employee name matches task subject
+        # This prevents coaches (fetched via GetEmployee) from being filtered,
+        # while still filtering the actual subject even if fetched directly.
         query = getattr(model, 'query', None)
-        if not query or '_' in query:  # Skip if query is an ID
-            # Also check if this was employees_get
-            if not isinstance(model, client.Req_GetEmployee):
-                return None
 
-        # Store query subjects in context for later filtering
-        if ctx and hasattr(ctx, 'shared'):
+        should_store_subject = False
+        if isinstance(model, client.Req_GetEmployee):
+            # For GetEmployee: only store if employee name matches task subject
+            for emp in employees:
+                emp_name = getattr(emp, 'name', '').lower()
+                # Check if task subject name matches employee name (in any order)
+                # "Valente Nino" should match "Nino Valente"
+                emp_name_parts = set(emp_name.split())
+                subject_name_parts = set(task_subject_name.split())
+                if emp_name_parts == subject_name_parts or task_subject_name in emp_name or emp_name in task_subject_name:
+                    should_store_subject = True
+                    break
+        elif query and '_' not in query:
+            # SearchEmployees with name query - likely the subject
+            should_store_subject = True
+
+        if should_store_subject and ctx and hasattr(ctx, 'shared'):
             query_subjects = ctx.shared.get('query_subject_ids', set())
             for emp in employees:
                 emp_id = getattr(emp, 'id', None)
                 if emp_id:
                     query_subjects.add(emp_id)
             ctx.shared['query_subject_ids'] = query_subjects
+        elif not should_store_subject and isinstance(model, client.Req_GetEmployee):
+            # GetEmployee for non-subject - skip hint entirely
+            return None
 
         # Generate hint
         emp_names = []
@@ -969,8 +1024,7 @@ class QuerySubjectHintEnricher:
             if emp_id:
                 emp_names.append(f"{emp_name} ({emp_id})")
 
-        if emp_names and ('coach' in task_lower or 'mentor' in task_lower or
-                          'train' in task_lower or 'upskill' in task_lower):
+        if emp_names:
             return (
                 f"⚠️ QUERY SUBJECT DETECTED: {', '.join(emp_names)}\n"
                 f"This is the person you are searching FOR (the coachee/mentee).\n"

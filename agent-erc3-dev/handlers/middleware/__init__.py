@@ -16,6 +16,7 @@ from .guards import (
     SingleCandidateOkHint,
     SubjectiveQueryGuard,
     IncompletePaginationGuard,
+    VagueQueryNotFoundGuard,
     # Project Guards
     ProjectSearchReminderMiddleware,
     ProjectModificationClarificationGuard,
@@ -53,6 +54,7 @@ __all__ = [
     'SingleCandidateOkHint',
     'SubjectiveQueryGuard',
     'IncompletePaginationGuard',
+    'VagueQueryNotFoundGuard',
     'PaginationEnforcementMiddleware',
     # Project Guards
     'ProjectSearchReminderMiddleware',

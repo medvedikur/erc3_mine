@@ -18,6 +18,7 @@ from .middleware import (
     ProjectTeamModAuthorizationGuard,
     SubjectiveQueryGuard,
     IncompletePaginationGuard,
+    VagueQueryNotFoundGuard,
     # Pagination Guards
     PaginationEnforcementMiddleware,
     # M&A Compliance
@@ -42,6 +43,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         ProjectModificationClarificationGuard(),      # Ensures project mod clarifications include project link
         BasicLookupDenialGuard(),                     # Catches denied_security for basic org-chart lookups
         SubjectiveQueryGuard(),                       # Blocks ok_answer on subjective queries (cool, best, that)
+        VagueQueryNotFoundGuard(),                    # Blocks ok_not_found on vague queries (t005 fix)
         IncompletePaginationGuard(),                  # Blocks ok_answer when LIST query has unfetched pages
         PaginationEnforcementMiddleware(),            # Blocks analysis tools when pagination is incomplete
         NameResolutionGuard(),                        # Ensures human names resolved to IDs (t007, t008)
