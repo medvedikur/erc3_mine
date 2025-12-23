@@ -489,6 +489,16 @@ class PaginationHintEnricher:
         'list all', 'find all', 'all employees', 'everyone'
     ]
 
+    # AICODE-NOTE: t069 FIX - Keywords for exhaustive project queries
+    # When task requires processing EVERY project (e.g., "create wiki for every lead"),
+    # agent must paginate through ALL projects, not just first page
+    EXHAUSTIVE_PROJECT_KEYWORDS = [
+        'every lead', 'all leads', 'every project', 'all projects',
+        'for each lead', 'for every lead', 'for each project',
+        'each project lead', 'team leads across projects',
+        'create wiki', 'every employee that is a lead'
+    ]
+
     # AICODE-NOTE: t017 FIX #2 - Singular indicators for recommendation queries
     # If task mentions these, it expects ONE result, not a list
     SINGULAR_INDICATORS = [
@@ -605,6 +615,34 @@ class PaginationHintEnricher:
                 f"You found {next_offset} so far, but next_offset={next_offset} means MORE exist.\n"
                 f"**PAGINATE** to find ALL candidates, then link EVERY qualifying employee in your response.\n"
                 f"The user wants a list of options to choose from, not your single pick."
+            )
+
+        # AICODE-NOTE: t069 FIX - For exhaustive project queries, show batch pagination hint
+        # Agent must fetch ALL projects to find ALL leads (e.g., "create wiki for every lead")
+        is_exhaustive_project = any(kw in task_lower for kw in self.EXHAUSTIVE_PROJECT_KEYWORDS)
+        if is_exhaustive_project and model and isinstance(model, client.Req_SearchProjects):
+            # CRITICAL: Use next_offset from API response, NOT fixed step of 5 or 20!
+            # API returns next_offset=5 after first page → next offsets are 5, 10, 15...
+            # NOT 20, 40, 60 which would skip most results!
+            next_offsets = [next_offset + i * 5 for i in range(8)]
+            return (
+                f"🛑 EXHAUSTIVE PROJECT QUERY: Task requires processing ALL projects!\n"
+                f"(Detected: 'every lead' / 'all projects' / 'create wiki' pattern)\n\n"
+                f"Current: {next_offset} projects fetched, MORE exist.\n\n"
+                f"⚡ **USE BATCH PAGINATION** with CORRECT offsets from `next_offset`:\n"
+                f"```json\n"
+                f'"action_queue": [\n'
+                f'  {{"tool": "projects_search", "args": {{"offset": {next_offsets[0]}}}}},\n'
+                f'  {{"tool": "projects_search", "args": {{"offset": {next_offsets[1]}}}}},\n'
+                f'  {{"tool": "projects_search", "args": {{"offset": {next_offsets[2]}}}}},\n'
+                f'  {{"tool": "projects_search", "args": {{"offset": {next_offsets[3]}}}}},\n'
+                f'  // Continue: {next_offsets[4]}, {next_offsets[5]}, {next_offsets[6]}... until empty\n'
+                f']\n'
+                f'```\n'
+                f"⚠️ IMPORTANT: Each page returns ~5 projects. Do NOT skip offsets!\n"
+                f"   Wrong: offset=0, 20, 40 (skips projects 5-19!)\n"
+                f"   Correct: offset=0, 5, 10, 15, 20... (based on next_offset)\n\n"
+                f"❌ DO NOT RESPOND until you've fetched ALL projects (next_offset=0)!"
             )
 
         # AICODE-NOTE: For non-exhaustive queries with many results, suggest stopping

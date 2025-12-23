@@ -43,10 +43,15 @@ def _parse_wiki_update(ctx: ParseContext) -> Any:
     # AICODE-NOTE: t067 fix. LLM may corrupt Unicode when copying wiki content.
     # If content was recently loaded via wiki_load and LLM is copying it,
     # use the original content to preserve exact bytes.
-    # NOTE: This fix helps with links (correct file is linked), but content mismatch
-    # persists due to possible cache/API synchronization issues.
+    #
+    # IMPORTANT: We now use '_loaded_wiki_content_api' which comes from API,
+    # not from local WikiManager cache. This ensures consistency with evaluation.
     if content and ctx.context and hasattr(ctx.context, 'shared'):
-        loaded_content = ctx.context.shared.get('_loaded_wiki_content', {})
+        # First try API-loaded content (preferred for rename operations)
+        loaded_content = ctx.context.shared.get('_loaded_wiki_content_api', {})
+        if not loaded_content:
+            # Fallback to local cache content
+            loaded_content = ctx.context.shared.get('_loaded_wiki_content', {})
         if loaded_content:
             # Check if LLM content matches any loaded content (after normalization)
             for loaded_path, original_content in loaded_content.items():

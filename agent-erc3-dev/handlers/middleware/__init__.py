@@ -29,6 +29,7 @@ from .guards import (
     PublicUserSemanticGuard,
     # Response Guards
     ResponseValidationMiddleware,
+    LeadWikiCreationGuard,
     # M&A Compliance Guards
     CCCodeValidationGuard,
     JiraTicketRequirementGuard,
@@ -39,6 +40,7 @@ from .guards import (
     # Pagination Guards
     PaginationEnforcementMiddleware,
     CustomerContactPaginationMiddleware,
+    ProjectSearchOffsetGuard,
 )
 
 from .membership import ProjectMembershipMiddleware
@@ -58,6 +60,7 @@ __all__ = [
     'VagueQueryNotFoundGuard',
     'PaginationEnforcementMiddleware',
     'CustomerContactPaginationMiddleware',
+    'ProjectSearchOffsetGuard',
     # Project Guards
     'ProjectSearchReminderMiddleware',
     'ProjectModificationClarificationGuard',
@@ -70,6 +73,7 @@ __all__ = [
     'PublicUserSemanticGuard',
     # Response Guards
     'ResponseValidationMiddleware',
+    'LeadWikiCreationGuard',
     # M&A Compliance Guards
     'CCCodeValidationGuard',
     'JiraTicketRequirementGuard',

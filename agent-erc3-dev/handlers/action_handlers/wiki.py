@@ -121,7 +121,19 @@ class WikiLoadHandler(ActionHandler):
     """
 
     def can_handle(self, ctx: ToolContext) -> bool:
-        return isinstance(ctx.model, client.Req_LoadWiki)
+        if not isinstance(ctx.model, client.Req_LoadWiki):
+            return False
+
+        # AICODE-NOTE: t067 fix. For rename/backup operations, use API directly.
+        # Local cache may have different content than API, causing content mismatch.
+        # Detect rename tasks by checking task_text for patterns like "rename", ".bak", "copy"
+        task_text = ctx.shared.get('task_text', '').lower()
+        is_rename_task = any(kw in task_text for kw in ['rename', '.bak', 'backup', 'copy to'])
+        if is_rename_task:
+            print(f"  [t067] Rename task detected - using API instead of local cache")
+            return False  # Fall back to API for consistency
+
+        return True
 
     def handle(self, ctx: ToolContext) -> bool:
         wiki_manager = ctx.shared.get('wiki_manager')

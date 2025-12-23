@@ -39,6 +39,7 @@ from .security_guards import (
 
 from .response_guards import (
     ResponseValidationMiddleware,
+    LeadWikiCreationGuard,
 )
 
 from .ma_compliance_guards import (
@@ -57,6 +58,7 @@ from .name_resolution_guards import (
 from .pagination_guards import (
     PaginationEnforcementMiddleware,
     CustomerContactPaginationMiddleware,
+    ProjectSearchOffsetGuard,
 )
 
 __all__ = [
@@ -69,6 +71,7 @@ __all__ = [
     'VagueQueryNotFoundGuard',
     'PaginationEnforcementMiddleware',
     'CustomerContactPaginationMiddleware',
+    'ProjectSearchOffsetGuard',
     # Project Guards
     'ProjectSearchReminderMiddleware',
     'ProjectModificationClarificationGuard',
@@ -81,6 +84,7 @@ __all__ = [
     'PublicUserSemanticGuard',
     # Response Guards
     'ResponseValidationMiddleware',
+    'LeadWikiCreationGuard',
     # M&A Compliance Guards
     'CCCodeValidationGuard',
     'JiraTicketRequirementGuard',

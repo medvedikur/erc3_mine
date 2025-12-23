@@ -164,9 +164,16 @@ When task asks to compare, rank, or find "most/least/higher/lower":
         -   Task says "in department Z" → `employees_search(department="Z")`
         -   **COMBINE filters** for smallest result set!
     -   **🚀 PRIORITY 2: BATCH REQUESTS** — put multiple searches in ONE action_queue
+    -   **⚠️ CRITICAL: PAGINATION OFFSETS (t069 fix)**:
+        -   API returns page_size=5 (5 results per page)!
+        -   When batching, use offsets: 0, 5, 10, 15, 20, 25... (step of 5)
+        -   **WRONG**: offset 0, 50, 100 (skips most results!)
+        -   **CORRECT**: offset 0, 5, 10, 15, 20, 25, 30, 35...
+        -   When API returns `next_offset=X`, the next page starts at offset X (not X+20!)
     -   **QUERY TYPE RULES**:
         -   **SUPERLATIVE** ("most", "least", "busiest"): Need ALL results to find minimum/maximum!
         -   **RECOMMENDATION** ("recommend", "suggest"): Need ALL matching candidates!
+        -   **EXHAUSTIVE** ("every", "all leads", "create wiki for each"): Need ALL results!
         -   **SAMPLING** ("examples", "show some"): 2-3 pages sufficient
     -   **WORKLOAD QUERIES**: To find "most/least busy":
         1. Filter by department/skill/will if specified

@@ -7,6 +7,7 @@ from .middleware import (
     ProjectMembershipMiddleware,
     ProjectSearchReminderMiddleware,
     ResponseValidationMiddleware,
+    LeadWikiCreationGuard,
     AmbiguityGuardMiddleware,
     TimeLoggingClarificationGuard,
     TimeLoggingAuthorizationGuard,
@@ -22,6 +23,7 @@ from .middleware import (
     # Pagination Guards
     PaginationEnforcementMiddleware,
     CustomerContactPaginationMiddleware,
+    ProjectSearchOffsetGuard,
     # M&A Compliance
     CCCodeValidationGuard,
     JiraTicketRequirementGuard,
@@ -48,6 +50,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         IncompletePaginationGuard(),                  # Blocks ok_answer when LIST query has unfetched pages
         PaginationEnforcementMiddleware(),            # Blocks analysis tools when pagination is incomplete
         CustomerContactPaginationMiddleware(),        # t087: Blocks customers_get when customers_list incomplete
+        ProjectSearchOffsetGuard(),                   # t069: Validates sequential offsets for projects_search
         NameResolutionGuard(),                        # Ensures human names resolved to IDs (t007, t008)
         OutcomeValidationMiddleware(),                # Validates denied outcomes (unsupported vs security)
         PublicUserSemanticGuard(),                    # Ensures guests use denied_security for internal data
@@ -57,6 +60,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         # Criteria Guards
         AddedCriteriaGuard(),                         # Warns when agent adds criteria not in task
         ResponseValidationMiddleware(),               # Validates respond has proper message/links
+        LeadWikiCreationGuard(),                      # t069: Validates all leads have wiki pages
     ]
     if security_manager:
         middleware.append(SecurityMiddleware(security_manager))

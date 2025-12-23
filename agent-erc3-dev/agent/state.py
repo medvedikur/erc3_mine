@@ -35,6 +35,10 @@ class AgentTurnState:
     # Use case: Agent answers "from Sales dept" but doesn't mention employee ID in text.
     fetched_entities: List[Dict] = field(default_factory=list)
 
+    # AICODE-NOTE: t069 FIX - Track project leads found via projects_get.
+    # When task asks to create wiki pages for leads, we validate all were created.
+    found_project_leads: Set[str] = field(default_factory=set)
+
     # Validation tracking
     missing_tools: List[str] = field(default_factory=list)
     action_types_executed: Set[str] = field(default_factory=set)
@@ -58,6 +62,8 @@ class AgentTurnState:
     # AICODE-NOTE: t067 FIX - Store loaded wiki content for rename operations
     # LLM may corrupt Unicode when copying content; we use original instead
     loaded_wiki_content: Dict[str, str] = field(default_factory=dict)
+    # AICODE-NOTE: t067 FIX - Store wiki content from API (preferred for rename consistency)
+    loaded_wiki_content_api: Dict[str, str] = field(default_factory=dict)
 
     # AICODE-NOTE: t087 FIX - Track customer contact info for link extraction
     # When customers_get returns contact info, store it so response parser
@@ -86,6 +92,11 @@ class AgentTurnState:
     # we aggregate results to show a clear mapping at the end.
     # Format: {employee_id: [project_ids]}
     member_projects_batch: Dict[str, List[str]] = field(default_factory=dict)
+
+    # AICODE-NOTE: t069 FIX - Accumulate ALL project IDs from projects_search
+    # When doing exhaustive project queries, LLM may lose track of some projects.
+    # We accumulate IDs and show summary when pagination completes.
+    accumulated_project_ids: List[str] = field(default_factory=list)
 
     # LLM response tracking (for criteria guards)
     last_thoughts: str = ""
@@ -128,8 +139,14 @@ class AgentTurnState:
             'deleted_wiki_files': self.deleted_wiki_files,
             # AICODE-NOTE: t067 FIX - Pass loaded wiki content for rename operations
             '_loaded_wiki_content': self.loaded_wiki_content,
+            # AICODE-NOTE: t067 FIX - Pass wiki content from API (preferred for rename)
+            '_loaded_wiki_content_api': self.loaded_wiki_content_api,
+            # AICODE-NOTE: t069 FIX - Pass found project leads for wiki creation guard
+            'found_project_leads': self.found_project_leads,
             # AICODE-NOTE: t087 FIX - Pass customer contacts for link extraction
             'customer_contacts': self.customer_contacts,
+            # AICODE-NOTE: t069 FIX - Pass accumulated project IDs for summary hint
+            'accumulated_project_ids': self.accumulated_project_ids,
         }
 
     def clear_turn_aggregators(self) -> None:
@@ -195,11 +212,24 @@ class AgentTurnState:
         if loaded_content:
             self.loaded_wiki_content.update(loaded_content)
 
+        # AICODE-NOTE: t067 FIX - Sync wiki content from API (preferred for rename)
+        loaded_content_api = ctx.shared.get('_loaded_wiki_content_api')
+        if loaded_content_api:
+            self.loaded_wiki_content_api.update(loaded_content_api)
+
         # AICODE-NOTE: t087 FIX - Sync customer contacts for link extraction
         # Pipeline stores contact info from customers_get; response parser needs it
         customer_contacts = ctx.shared.get('customer_contacts')
         if customer_contacts:
             self.customer_contacts.update(customer_contacts)
+
+        # AICODE-NOTE: t069 FIX - Sync accumulated project IDs
+        accumulated_project_ids = ctx.shared.get('accumulated_project_ids')
+        if accumulated_project_ids:
+            # Extend (not replace) since we accumulate across multiple searches
+            for pid in accumulated_project_ids:
+                if pid not in self.accumulated_project_ids:
+                    self.accumulated_project_ids.append(pid)
 
         # Note: had_mutations, mutation_entities, search_entities are
         # updated directly in the main loop after successful actions

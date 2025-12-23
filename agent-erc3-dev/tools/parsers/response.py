@@ -118,22 +118,43 @@ def _parse_respond(ctx: ParseContext) -> Any:
 
         primary = _primary_answer_segment(msg)
 
-        # AICODE-NOTE: t070 fix. If message indicates a TIE or NO WINNER, don't auto-link.
-        # Patterns: "tied", "same number", "no winner", "no customer is linked"
-        tie_patterns = [
-            r'\btied\b',
-            r'\bsame\s+number\b',
+        # AICODE-NOTE: t070 fix. If message indicates NO WINNER, don't auto-link.
+        # But t009 fix: "tied" responses WITH valid candidates from search_entities SHOULD link.
+        #
+        # Strategy:
+        # 1. Extract links from message first
+        # 2. Check if any extracted IDs exist in search_entities (real API results)
+        # 3. If yes → these are valid candidates, keep links (even if "tied")
+        # 4. If no AND message has "no winner/neither" patterns → skip links
+        #
+        # Patterns that indicate NO valid candidates (not just a tie):
+        no_winner_patterns = [
             r'\bno\s+winner\b',
             r'\bno\s+\w+\s+is\s+linked\b',
-            r'\bboth\s+have\s+(?:the\s+)?same\b',
             r'\bneither\b',
             r'\bno\s+link\b',
+            r'\bnone\s+of\s+them\b',
+            r'\bno\s+one\b',
         ]
         msg_lower = msg.lower()
-        is_tie_response = any(re.search(p, msg_lower) for p in tie_patterns)
+        is_no_winner_response = any(re.search(p, msg_lower) for p in no_winner_patterns)
 
-        # AICODE-NOTE: t070 fix. Skip link extraction if it's a tie response
-        if not is_tie_response:
+        # Get search_entities for validation
+        search_entity_ids = set()
+        if ctx.context and hasattr(ctx.context, 'shared'):
+            for entity in ctx.context.shared.get('search_entities', []):
+                if entity.get('id'):
+                    search_entity_ids.add(entity['id'].lower())
+
+        # AICODE-NOTE: t009/t070 fix. Only skip link extraction if it's a "no winner"
+        # response AND we can't find valid candidates from search results.
+        # First, always try to extract links, then validate against search_entities.
+        should_extract_links = True
+        if is_no_winner_response and not search_entity_ids:
+            # No winner AND no search entities → definitely skip
+            should_extract_links = False
+
+        if should_extract_links:
             # AICODE-NOTE: t073 fix. Handle comparative statements like "X has more than Y".
             # In such cases, only X is the answer - Y is being compared against.
             # Split on comparison patterns and use only the first part for link extraction.

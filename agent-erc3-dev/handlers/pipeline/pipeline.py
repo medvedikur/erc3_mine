@@ -129,6 +129,18 @@ class ActionPipeline:
         # AICODE-NOTE: Store last API result for entity extraction in action_processor
         ctx.shared['_last_api_result'] = result
 
+        # AICODE-NOTE: t067 fix. Store wiki content from API for rename operations.
+        # When LLM copies content, it may corrupt Unicode. We store API content
+        # so wiki_update parser can use the exact bytes from API.
+        if isinstance(ctx.model, client.Req_LoadWiki):
+            wiki_content = getattr(result, 'content', None)
+            wiki_file = getattr(ctx.model, 'file', None)
+            if wiki_content and wiki_file:
+                if '_loaded_wiki_content_api' not in ctx.shared:
+                    ctx.shared['_loaded_wiki_content_api'] = {}
+                ctx.shared['_loaded_wiki_content_api'][wiki_file] = wiki_content
+                print(f"  [t067] Stored API wiki content for {wiki_file} ({len(wiki_content)} bytes)")
+
         # AICODE-NOTE: Track pending pagination for LIST query guard (t016, t086)
         # If API returns next_offset > 0, agent should continue paginating
         next_offset = getattr(result, 'next_offset', -1)
@@ -208,6 +220,34 @@ class ActionPipeline:
                     project_ids = [p.id for p in result.projects]
                 batch[member_filter] = project_ids
                 ctx.shared['member_projects_batch'] = batch
+
+            # AICODE-NOTE: t069 FIX - Accumulate ALL project IDs from projects_search
+            # When pagination completes (next_offset <= 0), show complete list to prevent
+            # LLM from losing track of projects when aggregating large result sets
+            if hasattr(result, 'projects') and result.projects:
+                accumulated = ctx.shared.get('accumulated_project_ids', [])
+                for proj in result.projects:
+                    if proj.id and proj.id not in accumulated:
+                        accumulated.append(proj.id)
+                ctx.shared['accumulated_project_ids'] = accumulated
+
+                # When pagination is complete, show summary of ALL project IDs
+                next_offset = getattr(result, 'next_offset', None)
+                if next_offset is not None and next_offset <= 0 and len(accumulated) > 5:
+                    # Check if this is an exhaustive project query
+                    task_lower = task_text.lower() if task_text else ''
+                    is_exhaustive = any(kw in task_lower for kw in [
+                        'every lead', 'all leads', 'every project', 'all projects',
+                        'for each lead', 'create wiki', 'each project'
+                    ])
+                    if is_exhaustive:
+                        ids_list = ', '.join(accumulated)
+                        ctx.results.append(
+                            f"\n📊 **PROJECT SEARCH COMPLETE** — {len(accumulated)} projects found:\n"
+                            f"IDs: [{ids_list}]\n\n"
+                            f"⚠️ IMPORTANT: Use EXACTLY these {len(accumulated)} project IDs for projects_get!\n"
+                            f"Do NOT miss any project — copy this list to your action_queue."
+                        )
 
         # Archived project hints
         hint = self._archive_hints.maybe_hint_archived_logging(ctx.model, result, task_text)

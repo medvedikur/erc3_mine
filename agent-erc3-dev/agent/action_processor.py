@@ -246,7 +246,10 @@ class ActionProcessor:
             initial_shared['failure_logger'] = self.failure_logger
             initial_shared['task_id'] = self.task.task_id
             # AICODE-NOTE: t094 FIX - Add task_text for guards that need to check task patterns
-            initial_shared['task_text'] = self.task.task if hasattr(self.task, 'task') else ''
+            initial_shared['task_text'] = self.task.task_text if hasattr(self.task, 'task_text') else ''
+            # AICODE-NOTE: t069 FIX - Pass state reference so guards can read live mutation state
+            # Guards need to see mutations from CURRENT turn, not snapshot from start of queue
+            initial_shared['_state_ref'] = state
 
             if hasattr(parse_ctx, 'shared') and 'query_specificity' in parse_ctx.shared:
                 initial_shared['query_specificity'] = parse_ctx.shared['query_specificity']
@@ -416,9 +419,11 @@ class ActionProcessor:
             # with non-empty content should be linked.
             if hasattr(action_model, 'file') and action_model.file:
                 content = getattr(action_model, 'content', '')
+                print(f"  [DEBUG mutation] wiki file={action_model.file}, content={repr(content)[:50]}, has_content={bool(content and content.strip())}")
                 if content and content.strip():
                     # Non-empty content = creation/update → add to mutation_entities
                     state.mutation_entities.append({"id": action_model.file, "kind": "wiki"})
+                    print(f"  [DEBUG mutation] Added wiki mutation, total={len(state.mutation_entities)}")
                 else:
                     # Empty content = deletion → track for exclusion from links
                     # AICODE-NOTE: Write directly to state, not ctx.shared, because
@@ -513,6 +518,17 @@ class ActionProcessor:
                 if not any(e.get('id') == proj_id and e.get('kind') == 'project'
                            for e in state.fetched_entities):
                     state.fetched_entities.append({"id": proj_id, "kind": "project"})
+
+            # AICODE-NOTE: t069 FIX - Extract leads from project team for wiki creation validation
+            api_result = ctx.shared.get('_last_api_result')
+            if api_result and hasattr(api_result, 'project') and api_result.project:
+                project = api_result.project
+                team = getattr(project, 'team', None) or []
+                for member in team:
+                    role = getattr(member, 'role', None)
+                    emp_id = getattr(member, 'employee', None)
+                    if role == 'Lead' and emp_id:
+                        state.found_project_leads.add(emp_id)
 
         # Track customers_get
         elif isinstance(action_model, client.Req_GetCustomer):

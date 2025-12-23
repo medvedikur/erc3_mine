@@ -144,6 +144,69 @@ class PaginationEnforcementMiddleware(Middleware):
         return True
 
 
+class ProjectSearchOffsetGuard(Middleware):
+    """
+    AICODE-NOTE: t069 FIX - Validates projects_search offset is sequential.
+
+    Problem: LLM sometimes uses offset=0, 50, 100 instead of 0, 5, 10, 15...
+    This skips most results and causes failures in exhaustive queries.
+
+    Solution: Track last successful offset and block non-sequential offsets.
+    """
+
+    # Keywords indicating exhaustive project query
+    EXHAUSTIVE_KEYWORDS = [
+        'every lead', 'all leads', 'every project', 'all projects',
+        'for each lead', 'for each project', 'create wiki',
+        'each project lead', 'team leads across'
+    ]
+    PAGE_SIZE = 5  # API page size for projects
+
+    def process(self, ctx: ToolContext) -> None:
+        tool_name = ctx.raw_action.get('tool', '')
+        if tool_name != 'projects_search':
+            return
+
+        task_text = get_task_text(ctx)
+        if not task_text:
+            return
+
+        # Only enforce for exhaustive queries
+        task_lower = task_text.lower()
+        is_exhaustive = any(kw in task_lower for kw in self.EXHAUSTIVE_KEYWORDS)
+        if not is_exhaustive:
+            return
+
+        # Get requested offset
+        args = ctx.raw_action.get('args', {})
+        requested_offset = args.get('offset', 0)
+
+        # Get last known next_offset from pending_pagination
+        pending = ctx.shared.get('pending_pagination', {})
+        proj_pending = pending.get('Req_SearchProjects') or pending.get('projects_search')
+
+        if proj_pending:
+            expected_offset = proj_pending.get('next_offset', 0)
+            # If expected_offset is 0 or -1, pagination is complete - allow any offset
+            if expected_offset > 0 and requested_offset != expected_offset:
+                # Check if offset skips pages
+                if requested_offset > expected_offset:
+                    print(f"  {CLI_YELLOW}🛑 ProjectSearchOffsetGuard: offset={requested_offset} but expected {expected_offset}{CLI_CLR}")
+                    ctx.stop_execution = True
+                    ctx.results.append(
+                        f"⛔ WRONG OFFSET: You requested offset={requested_offset} but the next page starts at offset={expected_offset}!\n\n"
+                        f"**API page_size is 5** — offsets must be: 0, 5, 10, 15, 20...\n"
+                        f"You're skipping pages {expected_offset} to {requested_offset - self.PAGE_SIZE}!\n\n"
+                        f"**CORRECT**: Use offset={expected_offset} for the next page.\n"
+                        f"**OR**: Batch multiple sequential offsets in one action_queue:\n"
+                        f"  offset={expected_offset}, {expected_offset + 5}, {expected_offset + 10}..."
+                    )
+                    return
+
+        # For first call (offset=0), just let it through
+        # The response will set pending_pagination for future calls
+
+
 class CustomerContactPaginationMiddleware(Middleware):
     """
     Blocks customers_get when customers_list pagination is incomplete
