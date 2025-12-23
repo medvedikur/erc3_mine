@@ -21,6 +21,7 @@ from .middleware import (
     VagueQueryNotFoundGuard,
     # Pagination Guards
     PaginationEnforcementMiddleware,
+    CustomerContactPaginationMiddleware,
     # M&A Compliance
     CCCodeValidationGuard,
     JiraTicketRequirementGuard,
@@ -46,6 +47,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         VagueQueryNotFoundGuard(),                    # Blocks ok_not_found on vague queries (t005 fix)
         IncompletePaginationGuard(),                  # Blocks ok_answer when LIST query has unfetched pages
         PaginationEnforcementMiddleware(),            # Blocks analysis tools when pagination is incomplete
+        CustomerContactPaginationMiddleware(),        # t087: Blocks customers_get when customers_list incomplete
         NameResolutionGuard(),                        # Ensures human names resolved to IDs (t007, t008)
         OutcomeValidationMiddleware(),                # Validates denied outcomes (unsupported vs security)
         PublicUserSemanticGuard(),                    # Ensures guests use denied_security for internal data

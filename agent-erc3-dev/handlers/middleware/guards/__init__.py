@@ -56,6 +56,7 @@ from .name_resolution_guards import (
 
 from .pagination_guards import (
     PaginationEnforcementMiddleware,
+    CustomerContactPaginationMiddleware,
 )
 
 __all__ = [
@@ -67,6 +68,7 @@ __all__ = [
     'IncompletePaginationGuard',
     'VagueQueryNotFoundGuard',
     'PaginationEnforcementMiddleware',
+    'CustomerContactPaginationMiddleware',
     # Project Guards
     'ProjectSearchReminderMiddleware',
     'ProjectModificationClarificationGuard',

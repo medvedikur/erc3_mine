@@ -123,18 +123,15 @@ class TimeEntryUpdateStrategy(UpdateStrategy):
 
         # Try to fetch current time entry to preserve existing values
         try:
-            # Search for this specific entry
-            search_result = api.dispatch(client.Req_SearchTimeEntries(
-                employee=None,
-                limit=100  # Should find our entry
-            ))
+            # AICODE-NOTE: t101 FIX - Use Req_GetTimeEntry directly instead of search
+            # Search has limit=5 constraint and may not find our entry
+            get_result = api.dispatch(client.Req_GetTimeEntry(id=entry_id))
 
             current_entry = None
-            if hasattr(search_result, 'entries') and search_result.entries:
-                for entry in search_result.entries:
-                    if entry.id == entry_id:
-                        current_entry = entry
-                        break
+            if hasattr(get_result, 'entry') and get_result.entry:
+                current_entry = get_result.entry
+            elif hasattr(get_result, 'found') and get_result.found:
+                current_entry = get_result
 
             if current_entry:
                 # Save project/employee for auto-linking (time_entry is not a valid link kind!)

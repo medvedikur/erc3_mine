@@ -59,6 +59,11 @@ class AgentTurnState:
     # LLM may corrupt Unicode when copying content; we use original instead
     loaded_wiki_content: Dict[str, str] = field(default_factory=dict)
 
+    # AICODE-NOTE: t087 FIX - Track customer contact info for link extraction
+    # When customers_get returns contact info, store it so response parser
+    # can link customer when contact email/name is mentioned in response
+    customer_contacts: Dict[str, Dict[str, str]] = field(default_factory=dict)
+
     # Loop detection
     action_history: List[Any] = field(default_factory=list)
 
@@ -123,6 +128,8 @@ class AgentTurnState:
             'deleted_wiki_files': self.deleted_wiki_files,
             # AICODE-NOTE: t067 FIX - Pass loaded wiki content for rename operations
             '_loaded_wiki_content': self.loaded_wiki_content,
+            # AICODE-NOTE: t087 FIX - Pass customer contacts for link extraction
+            'customer_contacts': self.customer_contacts,
         }
 
     def clear_turn_aggregators(self) -> None:
@@ -187,6 +194,12 @@ class AgentTurnState:
         loaded_content = ctx.shared.get('_loaded_wiki_content')
         if loaded_content:
             self.loaded_wiki_content.update(loaded_content)
+
+        # AICODE-NOTE: t087 FIX - Sync customer contacts for link extraction
+        # Pipeline stores contact info from customers_get; response parser needs it
+        customer_contacts = ctx.shared.get('customer_contacts')
+        if customer_contacts:
+            self.customer_contacts.update(customer_contacts)
 
         # Note: had_mutations, mutation_entities, search_entities are
         # updated directly in the main loop after successful actions

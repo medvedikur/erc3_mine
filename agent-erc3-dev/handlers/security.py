@@ -116,6 +116,7 @@ class SecurityManager:
         # External department has limited access but IS authenticated (not Guest!)
         # AICODE-NOTE: Critical for t062 - External dept CAN read wiki!
         # AICODE-NOTE: t011 fix - External cannot access ANY time summaries, including own dept
+        # AICODE-NOTE: t037 fix - External cannot update ANY employee records, even their own!
         if 'external' in dept_lower:
             return (
                 "⚠️ EXTERNAL DEPARTMENT - You are an AUTHENTICATED user (NOT a guest):\n"
@@ -125,6 +126,8 @@ class SecurityManager:
                 "❌ No access to other employees' salaries\n"
                 "❌ No access to time summaries (ANY department, including your own!)\n"
                 "❌ Cannot view customer contact details (unless you are their Account Manager)\n"
+                "❌ CANNOT update employee records (including your own notes, skills, wills)!\n"
+                "⚠️ If asked to update employee data → use `denied_security` with `denial_basis: \"identity_restriction\"`\n"
                 "⚠️ If asked about workload/time summaries → use `denied_security` with `denial_basis: \"identity_restriction\"`"
             )
 

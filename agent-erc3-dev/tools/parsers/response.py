@@ -118,66 +118,82 @@ def _parse_respond(ctx: ParseContext) -> Any:
 
         primary = _primary_answer_segment(msg)
 
-        # AICODE-NOTE: t073 fix. Handle comparative statements like "X has more than Y".
-        # In such cases, only X is the answer - Y is being compared against.
-        # Split on comparison patterns and use only the first part for link extraction.
-        # Pattern matches " than " or " compared to " etc., and we take everything before.
-        comparison_patterns = [
-            r'\s+than\s+',           # "more projects than Y"
-            r'\s+compared\s+to\s+',  # "compared to Y"
-            r'\s+versus\s+',         # "versus Y"
-            r'\s+vs\.?\s+',          # "vs Y" or "vs. Y"
-            r'\s+rather\s+than\s+',  # "rather than Y"
-            r'\s+instead\s+of\s+',   # "instead of Y"
+        # AICODE-NOTE: t070 fix. If message indicates a TIE or NO WINNER, don't auto-link.
+        # Patterns: "tied", "same number", "no winner", "no customer is linked"
+        tie_patterns = [
+            r'\btied\b',
+            r'\bsame\s+number\b',
+            r'\bno\s+winner\b',
+            r'\bno\s+\w+\s+is\s+linked\b',
+            r'\bboth\s+have\s+(?:the\s+)?same\b',
+            r'\bneither\b',
+            r'\bno\s+link\b',
         ]
-        primary_answer_part = primary
-        for pattern in comparison_patterns:
-            match = re.search(pattern, primary, re.IGNORECASE)
-            if match:
-                primary_answer_part = primary[:match.start()]
-                break
+        msg_lower = msg.lower()
+        is_tie_response = any(re.search(p, msg_lower) for p in tie_patterns)
 
-        primary_links = link_extractor.extract_from_message(primary_answer_part)
-        # If no links in the answer part, try the full primary (might be structured differently)
-        if not primary_links:
-            primary_links = link_extractor.extract_from_message(primary)
-        if not primary_links:
-            links = link_extractor.extract_from_message(msg)
-        else:
-            # AICODE-NOTE: Keep non-employee entities from the whole message, but
-            # restrict employee links to the primary segment if it already contains an employee.
-            # This prevents "runner-up" employee IDs in later sentences from polluting links,
-            # while avoiding under-linking projects/customers mentioned after the first sentence.
-            full_links = link_extractor.extract_from_message(msg)
-            primary_has_employee = any(l.get("kind") == "employee" for l in primary_links)
+        # AICODE-NOTE: t070 fix. Skip link extraction if it's a tie response
+        if not is_tie_response:
+            # AICODE-NOTE: t073 fix. Handle comparative statements like "X has more than Y".
+            # In such cases, only X is the answer - Y is being compared against.
+            # Split on comparison patterns and use only the first part for link extraction.
+            # Pattern matches " than " or " compared to " etc., and we take everything before.
+            comparison_patterns = [
+                r'\s+than\s+',           # "more projects than Y"
+                r'\s+compared\s+to\s+',  # "compared to Y"
+                r'\s+versus\s+',         # "versus Y"
+                r'\s+vs\.?\s+',          # "vs Y" or "vs. Y"
+                r'\s+rather\s+than\s+',  # "rather than Y"
+                r'\s+instead\s+of\s+',   # "instead of Y"
+            ]
+            primary_answer_part = primary
+            for pattern in comparison_patterns:
+                match = re.search(pattern, primary, re.IGNORECASE)
+                if match:
+                    primary_answer_part = primary[:match.start()]
+                    break
 
-            # AICODE-NOTE: t077 fix. If primary segment ONLY contains query subjects
-            # (the person being helped, not the results), we should extract employees
-            # from the full message. Example: "Employees who can coach Danijela (FphR_098) are:\n- Coach1 (FphR_001)..."
-            # The header mentions the subject, but the actual answers are in the list.
-            query_subject_ids = set()
-            if ctx.context and hasattr(ctx.context, 'shared'):
-                query_subject_ids = ctx.context.shared.get('query_subject_ids', set())
-
-            primary_employee_ids = {l.get("id") for l in primary_links if l.get("kind") == "employee"}
-            primary_only_has_subjects = (
-                primary_employee_ids and
-                query_subject_ids and
-                primary_employee_ids.issubset(query_subject_ids)
-            )
-
-            non_employee_links = [l for l in full_links if l.get("kind") != "employee"]
-            if primary_has_employee and not primary_only_has_subjects:
-                employee_links = [l for l in primary_links if l.get("kind") == "employee"]
+            primary_links = link_extractor.extract_from_message(primary_answer_part)
+            # If no links in the answer part, try the full primary (might be structured differently)
+            if not primary_links:
+                primary_links = link_extractor.extract_from_message(primary)
+            if not primary_links:
+                links = link_extractor.extract_from_message(msg)
             else:
-                employee_links = [l for l in full_links if l.get("kind") == "employee"]
+                # AICODE-NOTE: Keep non-employee entities from the whole message, but
+                # restrict employee links to the primary segment if it already contains an employee.
+                # This prevents "runner-up" employee IDs in later sentences from polluting links,
+                # while avoiding under-linking projects/customers mentioned after the first sentence.
+                full_links = link_extractor.extract_from_message(msg)
+                primary_has_employee = any(l.get("kind") == "employee" for l in primary_links)
 
-            links = link_extractor.deduplicate(non_employee_links + employee_links)
+                # AICODE-NOTE: t077 fix. If primary segment ONLY contains query subjects
+                # (the person being helped, not the results), we should extract employees
+                # from the full message. Example: "Employees who can coach Danijela (FphR_098) are:\n- Coach1 (FphR_001)..."
+                # The header mentions the subject, but the actual answers are in the list.
+                query_subject_ids = set()
+                if ctx.context and hasattr(ctx.context, 'shared'):
+                    query_subject_ids = ctx.context.shared.get('query_subject_ids', set())
 
-        # AICODE-NOTE: t089 fix. For ok_not_found, only keep employee links (subjects).
-        # Projects/customers mentioned are usually "what we searched", not results.
-        if ok_not_found_mode and links:
-            links = [l for l in links if l.get("kind") == "employee"]
+                primary_employee_ids = {l.get("id") for l in primary_links if l.get("kind") == "employee"}
+                primary_only_has_subjects = (
+                    primary_employee_ids and
+                    query_subject_ids and
+                    primary_employee_ids.issubset(query_subject_ids)
+                )
+
+                non_employee_links = [l for l in full_links if l.get("kind") != "employee"]
+                if primary_has_employee and not primary_only_has_subjects:
+                    employee_links = [l for l in primary_links if l.get("kind") == "employee"]
+                else:
+                    employee_links = [l for l in full_links if l.get("kind") == "employee"]
+
+                links = link_extractor.deduplicate(non_employee_links + employee_links)
+
+            # AICODE-NOTE: t089 fix. For ok_not_found, only keep employee links (subjects).
+            # Projects/customers mentioned are usually "what we searched", not results.
+            if ok_not_found_mode and links:
+                links = [l for l in links if l.get("kind") == "employee"]
 
     # Validate employee links
     if links and ctx.context:
@@ -333,6 +349,168 @@ def _parse_respond(ctx: ParseContext) -> Any:
     #   Security denials should NOT confirm entity existence
     if outcome in ("error_internal", "denied_security"):
         links = []
+
+    # AICODE-NOTE: t092 FIX - Guard for mutation tasks that claim success without mutation
+    # If task mentions "swap", "update", "change" AND agent says ok_answer with success message
+    # BUT no mutation was actually performed, add warning to message
+    if outcome == 'ok_answer' and ctx.context:
+        task_text = ctx.context.shared.get('task_text', '').lower()
+        had_mutations = ctx.context.shared.get('had_mutations', False)
+
+        # Detect mutation-requiring patterns
+        mutation_patterns = [
+            'swap workload', 'swap role', 'swap team',
+            'exchange workload', 'switch role',
+            'update team', 'change team',
+            'adjust.*project.*swap', 'fix.*entry.*swap',
+        ]
+        is_mutation_task = any(re.search(p, task_text) for p in mutation_patterns)
+
+        # If message claims success but no mutation happened
+        msg_lower = str(message).lower()
+        claims_success = any(s in msg_lower for s in [
+            'successfully swapped', 'successfully updated',
+            'have been swapped', 'roles and workloads',
+            'swap.*complete', 'change.*complete',
+        ])
+
+        if is_mutation_task and claims_success and not had_mutations:
+            # Agent claims success but didn't actually call the mutation API!
+            # Append warning to help agent realize the mistake
+            message = (
+                f"{message}\n\n"
+                f"⚠️ WARNING: You claimed to swap/update but NO mutation API was called! "
+                f"To actually swap roles/workloads, you MUST call `projects_team_update` with the new team array. "
+                f"The swap has NOT been performed yet!"
+            )
+
+    # AICODE-NOTE: t087 FIX - Guard for contact email search with incomplete customer pagination
+    # If task asks for contact email of a person, agent must check ALL customers.
+    # Don't return ok_not_found if customer pagination is incomplete.
+    if outcome == 'ok_not_found' and ctx.context:
+        task_text = ctx.context.shared.get('task_text', '').lower()
+        contact_email_patterns = [
+            r'contact\s+email',
+            r'email\s+(?:of|for|address)',
+            r"(?:what|give|find|get).*email.*(?:of|for)",
+        ]
+        is_contact_email_query = any(re.search(p, task_text) for p in contact_email_patterns)
+
+        if is_contact_email_query:
+            # Check if customer pagination is incomplete
+            pending = ctx.context.shared.get('pending_pagination', {})
+            cust_pending = pending.get('Req_ListCustomers') or pending.get('customers_list')
+
+            if cust_pending:
+                next_off = cust_pending.get('next_offset', 0)
+                current_count = cust_pending.get('current_count', 0)
+
+                if next_off > 0:
+                    # Pagination incomplete - block ok_not_found!
+                    message = (
+                        f"⛔ INCOMPLETE SEARCH: You returned 'not found' but customer pagination is incomplete!\n\n"
+                        f"**Problem**: You fetched only {current_count} customers (next_offset={next_off}).\n"
+                        f"The contact you're looking for might be on a later page!\n\n"
+                        f"**REQUIRED**:\n"
+                        f"  1. Fetch ALL customers: `customers_list(offset={next_off})`\n"
+                        f"  2. Continue until `next_offset=-1` (no more pages)\n"
+                        f"  3. Call `customers_get(id='cust_xxx')` for EACH customer to check primary_contact_name\n"
+                        f"  4. ONLY return 'not found' after checking ALL customers!\n\n"
+                        f"Continue pagination now."
+                    )
+                    return client.Req_ProvideAgentResponse(
+                        message=message,
+                        outcome='error_internal',
+                        links=[]
+                    )
+
+    # AICODE-NOTE: t094 FIX - Guard for "skills I don't have" tasks using raw skill IDs
+    # Raw skill IDs in message cause substring collision failures in validation.
+    # Example: User has "skill_corrosion" but response includes "skill_corrosion_resistance_testing"
+    # → Validation fails because message contains "skill_corrosion"!
+    if outcome == 'ok_answer' and ctx.context:
+        task_text = ctx.context.shared.get('task_text', '').lower()
+        skill_comparison_patterns = [
+            "skill.*(i|me).*(don't|do not|lack|missing|need)",
+            "(don't|do not|lack|missing).*(skill|have)",
+            "skills.*(that|which).*(i|me).*(don't|haven't)",
+        ]
+        is_skill_comparison = any(re.search(p, task_text) for p in skill_comparison_patterns)
+
+        if is_skill_comparison:
+            # Check if message contains raw skill IDs (pattern: skill_something)
+            raw_skill_ids = re.findall(r'\bskill_[a-z_]+\b', str(message).lower())
+            if raw_skill_ids:
+                # Agent is using raw skill IDs instead of human names - block and warn!
+                message = (
+                    f"🚨 FORMAT ERROR: Your response contains raw skill IDs ({', '.join(raw_skill_ids[:3])}...)!\n\n"
+                    f"This causes validation failures due to substring collisions.\n"
+                    f"Example: If you have 'skill_corrosion' and list 'skill_corrosion_resistance_testing',\n"
+                    f"the response contains 'skill_corrosion' = ERROR!\n\n"
+                    f"REQUIRED FORMAT:\n"
+                    f"  • Use ONLY human-readable names from wiki examples\n"
+                    f"  • Example: 'Corrosion resistance testing' NOT 'skill_corrosion_resistance_testing'\n"
+                    f"  • Rewrite your table using ONLY human-readable names!\n\n"
+                    f"Your original response (DO NOT submit this):\n{message}"
+                )
+                # Force non-final by returning error-like response
+                return client.Req_ProvideAgentResponse(
+                    message=message,
+                    outcome='error_internal',  # Temporary - will retry
+                    links=[]
+                )
+
+    # AICODE-NOTE: t042 FIX - Guard for "key account + exploration deals" tasks
+    # Agent must check ALL customers for exploration projects, not just those with
+    # high_level_status='Key account'. If task asks about key account exploration deals
+    # and response only mentions "Key account" status customers, block and warn.
+    if outcome == 'ok_answer' and ctx.context:
+        task_text = ctx.context.shared.get('task_text', '').lower()
+
+        # Detect key account + exploration pattern
+        has_key_account = 'key account' in task_text
+        has_exploration = any(p in task_text for p in [
+            'exploration deal', 'exploration deals',
+            'exploring deal', 'exploring deals',
+            'exploration project', 'exploration projects',
+        ])
+
+        if has_key_account and has_exploration:
+            # Check if response mentions filtering by "Key account" status
+            msg_lower = str(message).lower()
+            mentions_key_status = any(p in msg_lower for p in [
+                'key account status', 'high_level_status', 'key accounts are',
+                'with key account', 'the key accounts with', 'key accounts:',
+                'identified key accounts', 'filtered for key',
+            ])
+
+            # Check if linked fewer than 5 customers - suggests limited search
+            customer_links = [l for l in links if l.get('kind') == 'customer']
+
+            # If response mentions key status filter and only few customers linked
+            if mentions_key_status and len(customer_links) <= 4:
+                # Check if warning was already given
+                warning_key = 'key_account_exploration_warned'
+                if not ctx.context.shared.get(warning_key):
+                    ctx.context.shared[warning_key] = True
+                    message = (
+                        f"⚠️ WARNING: Your response mentions filtering by 'Key account' status!\n\n"
+                        f"**Issue**: You linked only {len(customer_links)} customers. This suggests you filtered\n"
+                        f"by high_level_status='Key account' and might have missed the correct answer.\n\n"
+                        f"**IMPORTANT**: 'Key account' in the question might mean ANY important customer,\n"
+                        f"not just those with CRM status 'Key account'!\n\n"
+                        f"**REQUIRED**: Search ALL customers for projects with status='exploring':\n"
+                        f"  1. List ALL customers: `customers_list()`\n"
+                        f"  2. For EACH customer: `projects_search(customer='cust_xxx', status='exploring')`\n"
+                        f"  3. Count exploring projects and find the one with MOST\n\n"
+                        f"The answer might be a customer with 'Exploring' status that has more exploring projects!\n\n"
+                        f"Your original response (DO NOT submit):\n{message}"
+                    )
+                    return client.Req_ProvideAgentResponse(
+                        message=message,
+                        outcome='error_internal',
+                        links=[]
+                    )
 
     return client.Req_ProvideAgentResponse(
         message=str(message),

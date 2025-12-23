@@ -27,13 +27,19 @@ def extract_learning_from_error(error: Exception, request: Any) -> Optional[str]
         if isinstance(request, client.Req_GetCustomer):
             customer_id = getattr(request, 'id', '') or ''
             if 'internal' in customer_id.lower() or 'bellini_internal' in customer_id.lower():
+                # AICODE-NOTE: t041 FIX - don't blindly suggest none_unsupported!
+                # User might ask about Lead + account manager. Lead exists and IS the answer.
+                # Only suggest none_unsupported for PURELY contact/account manager queries.
                 return (
                     f"⚠️ INTERNAL PROJECT: Customer '{customer_id}' is an INTERNAL entity.\n"
-                    f"Internal projects do NOT have customer contact emails - this is by design.\n"
-                    f"If user is asking for contact info of an internal project:\n"
-                    f"  → Respond with `outcome: 'none_unsupported'`\n"
-                    f"  → Explain that internal projects don't have external customer contacts.\n"
-                    f"Do NOT use 'ok_not_found' - the data isn't missing, it simply doesn't apply!"
+                    f"Internal projects do NOT have account managers or customer contact emails.\n"
+                    f"\n"
+                    f"HOW TO RESPOND:\n"
+                    f"  - If user ALSO asked about project Lead/team → use `outcome: 'ok_answer'`\n"
+                    f"    Include Lead info + note that account manager doesn't apply to internal projects.\n"
+                    f"  - If user ONLY asked about account manager/contact → use `outcome: 'none_unsupported'`\n"
+                    f"\n"
+                    f"IMPORTANT: Always include project team members (Lead, etc.) in links if they ARE the answer!"
                 )
 
         # Time logging with invalid customer

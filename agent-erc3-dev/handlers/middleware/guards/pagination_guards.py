@@ -143,3 +143,91 @@ class PaginationEnforcementMiddleware(Middleware):
         ctx.results.append(block_msg)
         return True
 
+
+class CustomerContactPaginationMiddleware(Middleware):
+    """
+    Blocks customers_get when customers_list pagination is incomplete
+    for contact email searches.
+
+    Problem (t087): Agent is asked for contact email of "Erik Larsen".
+    Agent does customers_list (gets 15 customers), then immediately starts
+    doing customers_get for those 15, IGNORING next_offset=15 which means
+    more customers exist. Erik Larsen is on page 2.
+
+    Solution:
+    1. Detect contact email queries.
+    2. Block customers_get if customers_list pagination is pending.
+    3. Force agent to finish customers_list pagination first.
+    """
+
+    # AICODE-NOTE: t087 fix - detect contact email search patterns
+    CONTACT_EMAIL_PATTERNS = [
+        r'contact\s+email',
+        r'email\s+(?:of|for|address)',
+        r"(?:what|give|find|get).*email.*(?:of|for)",
+    ]
+
+    def __init__(self):
+        self._contact_email_re = re.compile(
+            '|'.join(self.CONTACT_EMAIL_PATTERNS), re.IGNORECASE
+        )
+
+    def process(self, ctx: ToolContext) -> None:
+        tool_name = ctx.raw_action.get('tool', '')
+
+        # Only intercept customers_get when searching for contacts
+        if tool_name != 'customers_get':
+            return
+
+        task_text = get_task_text(ctx)
+        if not task_text:
+            return
+
+        # Check if task asks for contact email
+        if not self._contact_email_re.search(task_text):
+            return
+
+        # Check for pending customer pagination
+        pending = ctx.shared.get('pending_pagination', {})
+        cust_pending = pending.get('Req_ListCustomers') or pending.get('customers_list')
+
+        if not cust_pending:
+            return
+
+        next_off = cust_pending.get('next_offset', 0)
+        current_count = cust_pending.get('current_count', 0)
+
+        # Only block if there are actually more pages
+        if next_off > 0:
+            block_msg = (
+                f"⛔ PREMATURE ANALYSIS: You're calling `customers_get` to check contact details, "
+                f"but you haven't finished listing ALL customers!\n\n"
+                f"**Pending Pagination:**\n"
+                f"  • customers_list: fetched {current_count}, next_offset={next_off}\n\n"
+                f"**Problem**: The contact you're looking for might be on a later page!\n"
+                f"If you check only the first {current_count} customers and the person is on page 2+, "
+                f"you'll incorrectly report 'not found'.\n\n"
+                f"**REQUIRED**:\n"
+                f"  1. FIRST finish listing ALL customers: `customers_list(offset={next_off})`\n"
+                f"  2. Continue until `next_offset=-1` (no more pages)\n"
+                f"  3. THEN check each customer with `customers_get`"
+            )
+
+            self._soft_block(
+                ctx,
+                warning_key='customer_pagination_warned',
+                log_msg=f"CustomerContactPagination: Blocking customers_get due to incomplete customers_list",
+                block_msg=block_msg
+            )
+
+    def _soft_block(self, ctx: ToolContext, warning_key: str, log_msg: str, block_msg: str) -> bool:
+        """Block first time, allow on repeat."""
+        if ctx.shared.get(warning_key):
+            return False
+
+        print(f"  {CLI_YELLOW}🛑 {log_msg}{CLI_CLR}")
+        ctx.shared[warning_key] = True
+        ctx.stop_execution = True
+        ctx.results.append(block_msg)
+        return True
+

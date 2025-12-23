@@ -38,6 +38,7 @@ from .guards import (
     NameResolutionGuard,
     # Pagination Guards
     PaginationEnforcementMiddleware,
+    CustomerContactPaginationMiddleware,
 )
 
 from .membership import ProjectMembershipMiddleware
@@ -56,6 +57,7 @@ __all__ = [
     'IncompletePaginationGuard',
     'VagueQueryNotFoundGuard',
     'PaginationEnforcementMiddleware',
+    'CustomerContactPaginationMiddleware',
     # Project Guards
     'ProjectSearchReminderMiddleware',
     'ProjectModificationClarificationGuard',

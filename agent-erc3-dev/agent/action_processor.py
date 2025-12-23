@@ -245,6 +245,8 @@ class ActionProcessor:
             initial_shared = state.to_shared_dict()
             initial_shared['failure_logger'] = self.failure_logger
             initial_shared['task_id'] = self.task.task_id
+            # AICODE-NOTE: t094 FIX - Add task_text for guards that need to check task patterns
+            initial_shared['task_text'] = self.task.task if hasattr(self.task, 'task') else ''
 
             if hasattr(parse_ctx, 'shared') and 'query_specificity' in parse_ctx.shared:
                 initial_shared['query_specificity'] = parse_ctx.shared['query_specificity']

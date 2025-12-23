@@ -28,7 +28,8 @@ from ..enrichers import (
     SkillSearchStrategyHintEnricher, EmployeeNameResolutionHintEnricher,
     SkillComparisonHintEnricher, QuerySubjectHintEnricher, TieBreakerHintEnricher,
     RecommendationQueryHintEnricher, TimeSummaryFallbackHintEnricher,
-    ProjectTeamNameResolutionHintEnricher,
+    ProjectTeamNameResolutionHintEnricher, ProjectSkillsHintEnricher,
+    SwapWorkloadsHintEnricher, KeyAccountExplorationHintEnricher,
 )
 from utils import CLI_BLUE, CLI_GREEN, CLI_YELLOW, CLI_CLR
 
@@ -89,6 +90,9 @@ class ActionPipeline:
         self._recommendation_hints = RecommendationQueryHintEnricher()
         self._time_summary_fallback_hints = TimeSummaryFallbackHintEnricher()
         self._project_team_name_hints = ProjectTeamNameResolutionHintEnricher()
+        self._project_skills_hints = ProjectSkillsHintEnricher()
+        self._swap_workloads_hints = SwapWorkloadsHintEnricher()
+        self._key_account_exploration_hints = KeyAccountExplorationHintEnricher()
 
         # Error/Success handling
         self._error_handler = ErrorHandler()
@@ -221,6 +225,13 @@ class ActionPipeline:
         if hint:
             ctx.results.append(hint)
 
+        # Key account + exploration deals hints (t042)
+        hint = self._key_account_exploration_hints.maybe_hint_key_account_exploration(
+            ctx.model, result, task_text
+        )
+        if hint:
+            ctx.results.append(hint)
+
         # Employee search hints
         hint = self._employee_hints.maybe_hint_empty_employees(ctx.model, result)
         if hint:
@@ -298,6 +309,22 @@ class ActionPipeline:
         # Project team name resolution hints (t081)
         if isinstance(ctx.model, client.Req_GetProject):
             hint = self._project_team_name_hints.maybe_hint_team_name_resolution(
+                ctx.model, result, task_text
+            )
+            if hint:
+                ctx.results.append(hint)
+
+        # Project skills hints (t096)
+        if isinstance(ctx.model, client.Req_GetProject):
+            hint = self._project_skills_hints.maybe_hint_project_skills(
+                ctx.model, result, task_text
+            )
+            if hint:
+                ctx.results.append(hint)
+
+        # Swap workloads hints (t097) - explain time_slice swap via projects_team_update
+        if isinstance(ctx.model, client.Req_GetProject):
+            hint = self._swap_workloads_hints.maybe_hint_swap_workloads(
                 ctx.model, result, task_text
             )
             if hint:
