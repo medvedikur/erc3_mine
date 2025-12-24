@@ -39,6 +39,11 @@ class AgentTurnState:
     # When task asks to create wiki pages for leads, we validate all were created.
     found_project_leads: Set[str] = field(default_factory=set)
 
+    # AICODE-NOTE: t016 FIX - Track salary of employees fetched via employees_get.
+    # For "project leads with salary > X" queries, we validate all matching leads are in links.
+    # Format: {employee_id: salary}
+    fetched_employee_salaries: Dict[str, int] = field(default_factory=dict)
+
     # Validation tracking
     missing_tools: List[str] = field(default_factory=list)
     action_types_executed: Set[str] = field(default_factory=set)
@@ -143,6 +148,8 @@ class AgentTurnState:
             '_loaded_wiki_content_api': self.loaded_wiki_content_api,
             # AICODE-NOTE: t069 FIX - Pass found project leads for wiki creation guard
             'found_project_leads': self.found_project_leads,
+            # AICODE-NOTE: t016 FIX - Pass fetched employee salaries for lead salary guard
+            'fetched_employee_salaries': self.fetched_employee_salaries,
             # AICODE-NOTE: t087 FIX - Pass customer contacts for link extraction
             'customer_contacts': self.customer_contacts,
             # AICODE-NOTE: t069 FIX - Pass accumulated project IDs for summary hint

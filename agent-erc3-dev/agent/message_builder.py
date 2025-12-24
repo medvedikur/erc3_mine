@@ -45,6 +45,23 @@ Your action_queue may have had:
 
 Please retry with correct syntax."""
 
+# AICODE-NOTE: t012 FIX - Message for empty action_queue without is_final
+EMPTY_ACTIONS_MSG = """[SYSTEM ERROR]: Empty action_queue but is_final=false!
+
+You returned no actions but claim the task is not done. You MUST either:
+
+1. **TAKE ACTION**: Add tools to action_queue to continue:
+   {"action_queue": [{"tool": "respond", "args": {...}}], "is_final": true}
+
+2. **USE DATA YOU HAVE**: You already collected data - analyze it NOW and respond:
+   - For "busiest/most" queries: find MAX from collected workload data
+   - For "least" queries: find MIN from collected data
+   - Include the employee/entity in your response
+
+3. **RESPOND**: If you have the answer, call respond immediately.
+
+DO NOT return empty action_queue again - you will run out of turns!"""
+
 
 class MessageBuilder:
     """
@@ -119,6 +136,10 @@ class MessageBuilder:
     def build_no_actions_message(self) -> HumanMessage:
         """Build message for no actions executed."""
         return HumanMessage(content=NO_ACTIONS_MSG)
+
+    def build_empty_actions_message(self) -> HumanMessage:
+        """Build message for empty action_queue without is_final (agent stuck)."""
+        return HumanMessage(content=EMPTY_ACTIONS_MSG)
 
     def build_malformed_actions_message(
         self,

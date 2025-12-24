@@ -319,6 +319,16 @@ def _parse_respond(ctx: ParseContext) -> Any:
                     1 for e in fetched_entities if e.get("kind") == entity_kind
                 )
 
+                # AICODE-NOTE: t017 FIX - Don't auto-add current_user just because they're
+                # the only fetched employee. Agent often fetches themselves to check
+                # permissions/skills, not because they're the answer.
+                # Only add current_user if explicitly mentioned in message.
+                current_user = ctx.context.shared.get('current_user') if ctx.context else None
+                is_current_user = entity_kind == "employee" and entity_id == current_user
+                if is_current_user and not id_in_message:
+                    # current_user not mentioned in message - skip auto-add
+                    continue
+
                 # AICODE-NOTE: t087 FIX - Check if this entity's related info is in message
                 # For customers: if primary_contact_name or primary_contact_email appears,
                 # the customer should be linked even if cust_id isn't mentioned directly

@@ -40,6 +40,9 @@ from .security_guards import (
 from .response_guards import (
     ResponseValidationMiddleware,
     LeadWikiCreationGuard,
+    WorkloadFormatGuard,
+    ContactEmailResponseGuard,
+    ProjectLeadsSalaryComparisonGuard,
 )
 
 from .ma_compliance_guards import (
@@ -53,6 +56,7 @@ from .criteria_guards import (
 
 from .name_resolution_guards import (
     NameResolutionGuard,
+    MultipleMatchClarificationGuard,
 )
 
 from .pagination_guards import (
@@ -85,6 +89,9 @@ __all__ = [
     # Response Guards
     'ResponseValidationMiddleware',
     'LeadWikiCreationGuard',
+    'WorkloadFormatGuard',
+    'ContactEmailResponseGuard',
+    'ProjectLeadsSalaryComparisonGuard',
     # M&A Compliance Guards
     'CCCodeValidationGuard',
     'JiraTicketRequirementGuard',
@@ -92,4 +99,5 @@ __all__ = [
     'AddedCriteriaGuard',
     # Name Resolution Guards
     'NameResolutionGuard',
+    'MultipleMatchClarificationGuard',
 ]

@@ -511,6 +511,14 @@ class ActionProcessor:
                            for e in state.fetched_entities):
                     state.fetched_entities.append({"id": emp_id, "kind": "employee"})
 
+            # AICODE-NOTE: t016 FIX - Track employee salaries for lead salary comparison guard
+            api_result = ctx.shared.get('_last_api_result')
+            if api_result and hasattr(api_result, 'employee') and api_result.employee:
+                employee = api_result.employee
+                salary = getattr(employee, 'salary', None)
+                if emp_id and salary is not None:
+                    state.fetched_employee_salaries[emp_id] = salary
+
         # Track projects_get
         elif isinstance(action_model, client.Req_GetProject):
             proj_id = getattr(action_model, 'id', None)

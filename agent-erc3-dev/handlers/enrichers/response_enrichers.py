@@ -1209,13 +1209,15 @@ class QuerySubjectHintEnricher:
         # AICODE-NOTE: Patterns ordered by specificity - "coach X on" first to catch actual names,
         # avoiding false positives like "upskill an employee".
         # AICODE-NOTE: Use * instead of ? to capture 3+ word names like "De Santis Cristian".
+        # AICODE-NOTE: t077 fix #2 - Use \w+ to catch Unicode names (e.g., Petrović with ć)
         subject_patterns = [
             # "coach Rinaldi Giovanni on" - most specific, catches name before "on"
-            r'\b(?:coach|mentor|train)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+on\b',
+            # \w+ catches Unicode letters (including Petrović, Müller, etc.)
+            r'\b(?:coach|mentor|train)\s+(\w+(?:\s+\w+)*)\s+on\b',
             # "coaches for X" pattern
-            r'\b(?:coaches?|mentors?|trainers?)\s+for\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
+            r'\b(?:coaches?|mentors?|trainers?)\s+for\s+(\w+(?:\s+\w+)*)',
             # Fallback: "for X to/on/in" pattern
-            r'\bfor\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:to|on|in)\b',
+            r'\bfor\s+(\w+(?:\s+\w+)*)\s+(?:to|on|in)\b',
         ]
 
         # Generic words that are NOT names - skip these matches

@@ -8,6 +8,9 @@ from .middleware import (
     ProjectSearchReminderMiddleware,
     ResponseValidationMiddleware,
     LeadWikiCreationGuard,
+    WorkloadFormatGuard,
+    ContactEmailResponseGuard,
+    ProjectLeadsSalaryComparisonGuard,
     AmbiguityGuardMiddleware,
     TimeLoggingClarificationGuard,
     TimeLoggingAuthorizationGuard,
@@ -31,6 +34,7 @@ from .middleware import (
     AddedCriteriaGuard,
     # Name Resolution Guards
     NameResolutionGuard,
+    MultipleMatchClarificationGuard,
 )
 
 def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManager, task=None):
@@ -52,6 +56,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         CustomerContactPaginationMiddleware(),        # t087: Blocks customers_get when customers_list incomplete
         ProjectSearchOffsetGuard(),                   # t069: Validates sequential offsets for projects_search
         NameResolutionGuard(),                        # Ensures human names resolved to IDs (t007, t008)
+        MultipleMatchClarificationGuard(),            # t080: Requires clarification when multiple name matches
         OutcomeValidationMiddleware(),                # Validates denied outcomes (unsupported vs security)
         PublicUserSemanticGuard(),                    # Ensures guests use denied_security for internal data
         # M&A Compliance Guards
@@ -61,6 +66,9 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         AddedCriteriaGuard(),                         # Warns when agent adds criteria not in task
         ResponseValidationMiddleware(),               # Validates respond has proper message/links
         LeadWikiCreationGuard(),                      # t069: Validates all leads have wiki pages
+        WorkloadFormatGuard(),                        # t078: Auto-fix workload "0" -> "0.0"
+        ContactEmailResponseGuard(),                  # t087: Block internal email for contact email queries
+        ProjectLeadsSalaryComparisonGuard(),          # t016: Auto-add missing leads in salary comparison
     ]
     if security_manager:
         middleware.append(SecurityMiddleware(security_manager))

@@ -30,6 +30,9 @@ from .guards import (
     # Response Guards
     ResponseValidationMiddleware,
     LeadWikiCreationGuard,
+    WorkloadFormatGuard,
+    ContactEmailResponseGuard,
+    ProjectLeadsSalaryComparisonGuard,
     # M&A Compliance Guards
     CCCodeValidationGuard,
     JiraTicketRequirementGuard,
@@ -37,6 +40,7 @@ from .guards import (
     AddedCriteriaGuard,
     # Name Resolution Guards
     NameResolutionGuard,
+    MultipleMatchClarificationGuard,
     # Pagination Guards
     PaginationEnforcementMiddleware,
     CustomerContactPaginationMiddleware,
@@ -74,6 +78,9 @@ __all__ = [
     # Response Guards
     'ResponseValidationMiddleware',
     'LeadWikiCreationGuard',
+    'WorkloadFormatGuard',
+    'ContactEmailResponseGuard',
+    'ProjectLeadsSalaryComparisonGuard',
     # M&A Compliance Guards
     'CCCodeValidationGuard',
     'JiraTicketRequirementGuard',
@@ -81,6 +88,7 @@ __all__ = [
     'AddedCriteriaGuard',
     # Name Resolution Guards
     'NameResolutionGuard',
+    'MultipleMatchClarificationGuard',
     # Membership
     'ProjectMembershipMiddleware',
 ]
