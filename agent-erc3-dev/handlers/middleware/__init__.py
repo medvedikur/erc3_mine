@@ -33,6 +33,7 @@ from .guards import (
     WorkloadFormatGuard,
     ContactEmailResponseGuard,
     ProjectLeadsSalaryComparisonGuard,
+    SkillIdResponseGuard,
     # M&A Compliance Guards
     CCCodeValidationGuard,
     JiraTicketRequirementGuard,
@@ -81,6 +82,7 @@ __all__ = [
     'WorkloadFormatGuard',
     'ContactEmailResponseGuard',
     'ProjectLeadsSalaryComparisonGuard',
+    'SkillIdResponseGuard',
     # M&A Compliance Guards
     'CCCodeValidationGuard',
     'JiraTicketRequirementGuard',

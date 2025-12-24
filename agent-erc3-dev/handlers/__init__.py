@@ -11,6 +11,7 @@ from .middleware import (
     WorkloadFormatGuard,
     ContactEmailResponseGuard,
     ProjectLeadsSalaryComparisonGuard,
+    SkillIdResponseGuard,
     AmbiguityGuardMiddleware,
     TimeLoggingClarificationGuard,
     TimeLoggingAuthorizationGuard,
@@ -69,6 +70,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         WorkloadFormatGuard(),                        # t078: Auto-fix workload "0" -> "0.0"
         ContactEmailResponseGuard(),                  # t087: Block internal email for contact email queries
         ProjectLeadsSalaryComparisonGuard(),          # t016: Auto-add missing leads in salary comparison
+        SkillIdResponseGuard(),                       # t094: Block raw skill IDs in response
     ]
     if security_manager:
         middleware.append(SecurityMiddleware(security_manager))

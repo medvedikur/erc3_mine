@@ -139,6 +139,21 @@ def _parse_respond(ctx: ParseContext) -> Any:
         msg_lower = msg.lower()
         is_no_winner_response = any(re.search(p, msg_lower) for p in no_winner_patterns)
 
+        # AICODE-NOTE: t016 fix. For ok_not_found, detect "empty result" patterns.
+        # These indicate the query returned no matching entities, so links should be empty.
+        # Examples: "There are no project leads...", "No employees with salary higher than..."
+        # The entities mentioned (baseline for comparison) are NOT the answer.
+        empty_result_patterns = [
+            r'^there\s+are\s+no\b',           # "There are no X with..."
+            r'^no\s+[\w\s]+\s+with\b',         # "No employees with...", "No project leads with..."
+            r'^no\s+[\w\s]+\s+have\b',         # "No leads have...", "No project leads have..."
+            r'^no\s+[\w\s]+\s+has\b',          # "No employee has..."
+            r'^no\s+[\w\s]+\s+match',          # "No results match..."
+            r'\bcould\s+not\s+find\s+any\b',   # "Could not find any..."
+            r'\bno\s+matching\b',              # "No matching employees..."
+        ]
+        is_empty_result = any(re.search(p, msg_lower) for p in empty_result_patterns)
+
         # Get search_entities for validation
         search_entity_ids = set()
         if ctx.context and hasattr(ctx.context, 'shared'):
@@ -149,8 +164,14 @@ def _parse_respond(ctx: ParseContext) -> Any:
         # AICODE-NOTE: t009/t070 fix. Only skip link extraction if it's a "no winner"
         # response AND we can't find valid candidates from search results.
         # First, always try to extract links, then validate against search_entities.
+        #
+        # AICODE-NOTE: t016 fix. For ok_not_found with empty result patterns,
+        # ALWAYS skip link extraction - entities in message are baselines, not answers.
         should_extract_links = True
-        if is_no_winner_response and not search_entity_ids:
+        if ok_not_found_mode and is_empty_result:
+            # Empty result response → no links (entities are baselines)
+            should_extract_links = False
+        elif is_no_winner_response and not search_entity_ids:
             # No winner AND no search entities → definitely skip
             should_extract_links = False
 
@@ -225,6 +246,7 @@ def _parse_respond(ctx: ParseContext) -> Any:
     # 1. Don't add current_user unless they are the TARGET of the action (not just authorizer)
     # 2. Don't add search_entities for ok_not_found - those entities are NOT the answer
     # 3. For ok_not_found, only keep entities explicitly mentioned as "found" in message
+
     if ctx.context:
         had_mutations = ctx.context.shared.get('had_mutations', False)
         mutation_entities = ctx.context.shared.get('mutation_entities', [])

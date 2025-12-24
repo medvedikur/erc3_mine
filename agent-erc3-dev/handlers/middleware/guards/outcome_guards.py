@@ -36,15 +36,18 @@ class IncompletePaginationGuard(ResponseGuard):
     target_outcomes = {"ok_answer"}
 
     # Keywords indicating exhaustive list is expected
+    # AICODE-NOTE: t016 fix - added "leads?" to patterns
     LIST_KEYWORDS = [
-        r'\blist\s+(?:all\s+)?(?:employees?|projects?|customers?)\b',
-        r'\blist\s+(?:the\s+)?(?:employees?|people|staff)\b',
+        r'\blist\s+(?:all\s+)?(?:employees?|projects?|customers?|leads?)\b',
+        r'\blist\s+(?:the\s+)?(?:employees?|people|staff|leads?)\b',
+        r'\blist\s+(?:me\s+)?(?:project\s+)?leads?\b',  # "List me project leads"
         r'\bfind\s+all\b',
         r'\bget\s+all\b',
         r'\bhow\s+many\b',
-        r'\ball\s+(?:employees?|projects?|customers?)\s+(?:who|that|with|in)\b',
+        r'\ball\s+(?:employees?|projects?|customers?|leads?)\s+(?:who|that|with|in)\b',
         r'\bevery(?:one)?\s+(?:who|that|with|in)\b',
         r'\bwho\s+(?:all\s+)?(?:are|is|has|have|works?|can)\b',
+        r'\bproject\s+leads?\s+(?:that|who|with)\b',  # "project leads that have..."
     ]
 
     # Superlatives MUST be exhaustive (cannot sample)

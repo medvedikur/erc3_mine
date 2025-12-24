@@ -43,11 +43,18 @@ class RoleEnricher:
 
         lead_projects = []
         member_projects = []
+        # AICODE-NOTE: t002 fix. Track whether we have team data at all.
+        # projects_search does NOT return team, so we can't say "NOT a member"
+        # unless we actually have team data from projects_get.
+        has_team_data = False
 
         for proj in projects:
             proj_id = getattr(proj, 'id', None)
             proj_name = getattr(proj, 'name', proj_id)
             team = getattr(proj, 'team', None) or []
+
+            if team:
+                has_team_data = True
 
             user_role = None
             for member in team:
@@ -82,8 +89,9 @@ class RoleEnricher:
         elif member_projects:
             hints.append(f"YOUR_ROLE: You are a team member of {len(member_projects)} projects.")
 
-        if not hints:
-            # User is not in any of these projects - also useful info!
+        if not hints and has_team_data:
+            # AICODE-NOTE: t002 fix. Only show "NOT a member" if we have team data.
+            # If team data is missing (projects_search), suggest using projects_get.
             if len(projects) == 1:
                 hints.append(
                     f"YOUR_ROLE: You ({current_user}) are NOT a member of this project. "
@@ -91,6 +99,14 @@ class RoleEnricher:
                     f"  - Account Manager: `customers_get(id='cust_xxx')` to see if you manage the customer\n"
                     f"  - Direct Manager: `employees_search(manager='{current_user}')` to see if the employee reports to you"
                 )
+        elif not hints and not has_team_data and len(projects) == 1:
+            # No team data - suggest using projects_get to check role
+            proj = projects[0]
+            proj_id = getattr(proj, 'id', None)
+            hints.append(
+                f"📋 ROLE CHECK: To see your role on this project, call `projects_get(id='{proj_id}')` "
+                f"to retrieve the team array and check if you are a member."
+            )
 
         return "\n".join(hints) if hints else None
 

@@ -150,6 +150,61 @@ class ActionProcessor:
 
         return valid_actions, malformed_count, malformed_mutation_tools
 
+    def _merge_employee_updates(self, action_queue: List[dict]) -> List[dict]:
+        """
+        Merge consecutive employees_update calls for the same employee.
+
+        AICODE-NOTE: t048 FIX - Benchmark expects exactly ONE employees_update event
+        per employee. When agent sends skills and wills as separate calls,
+        merge them into a single call to avoid duplicate events.
+
+        Example:
+            [{'tool': 'employees_update', 'args': {'employee': 'X', 'skills': [...]}},
+             {'tool': 'employees_update', 'args': {'employee': 'X', 'wills': [...]}}]
+        Becomes:
+            [{'tool': 'employees_update', 'args': {'employee': 'X', 'skills': [...], 'wills': [...]}}]
+        """
+        if not action_queue:
+            return action_queue
+
+        result = []
+        # Group consecutive employees_update by employee_id
+        pending_update = None
+        pending_employee = None
+
+        for action in action_queue:
+            tool = action.get('tool', '')
+            args = action.get('args', {})
+
+            if tool == 'employees_update' and isinstance(args, dict):
+                emp_id = args.get('employee') or args.get('id')
+
+                if pending_update and pending_employee == emp_id:
+                    # Same employee - merge args
+                    for key, value in args.items():
+                        if key not in ('employee', 'id') and value is not None:
+                            pending_update['args'][key] = value
+                    print(f"  {CLI_YELLOW}Merged employees_update for {emp_id}{CLI_CLR}")
+                else:
+                    # Different employee or first update
+                    if pending_update:
+                        result.append(pending_update)
+                    pending_update = {'tool': 'employees_update', 'args': dict(args)}
+                    pending_employee = emp_id
+            else:
+                # Non-employees_update action - flush pending and add
+                if pending_update:
+                    result.append(pending_update)
+                    pending_update = None
+                    pending_employee = None
+                result.append(action)
+
+        # Flush remaining pending
+        if pending_update:
+            result.append(pending_update)
+
+        return result
+
     def process(
         self,
         action_queue: List[dict],
@@ -167,6 +222,9 @@ class ActionProcessor:
         Returns:
             ActionResult with execution results
         """
+        # AICODE-NOTE: t048 FIX - Merge consecutive employees_update for same employee
+        action_queue = self._merge_employee_updates(action_queue)
+
         results = []
         stop_execution = False
         had_errors = False
