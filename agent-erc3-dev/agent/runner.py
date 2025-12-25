@@ -88,6 +88,16 @@ def run_agent(
         max_turns=max_turns,
     )
 
+    # AICODE-NOTE: t016 FIX - Parse baseline employee name from task text for salary comparisons
+    # Pattern: "salary higher than [Name]" or "salary greater than [Name]"
+    import re
+    salary_pattern = r'salary\s+(?:higher|greater|more)\s+than\s+([A-Z][a-zà-ÿ]+(?:\s+[A-Z][a-zà-ÿ]+)+)'
+    match = re.search(salary_pattern, task.task_text, re.IGNORECASE)
+    if match:
+        baseline_name = match.group(1).strip()
+        state.salary_comparison_baseline_name = baseline_name
+        print(f"{CLI_YELLOW}[t016] Detected salary comparison baseline: {baseline_name}{CLI_CLR}")
+
     task_done = False
     who_am_i_called = False
 

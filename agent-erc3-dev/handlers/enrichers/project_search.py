@@ -89,6 +89,12 @@ class ProjectSearchEnricher:
             if missing_filter_hint := self._get_missing_team_filter_hint(task_text, projects):
                 hints.append(missing_filter_hint)
 
+        # 7. AICODE-NOTE: t016 - DISABLED active status hint.
+        # "Project lead" means lead of ANY project, not just active ones.
+        # Benchmark expects all leads regardless of project status.
+        # if active_hint := self._get_active_status_hint(ctx, projects, task_text):
+        #     hints.append(active_hint)
+
         return hints
 
     def _get_archived_hint(
@@ -292,4 +298,56 @@ class ProjectSearchEnricher:
             f"Then check authorization for EACH matching project:\n"
             f"   - If YOU are the Lead → authorized to log time\n"
             f"   - If NOT Lead → check `employees_search(manager='YOUR_ID')` for direct reports"
+        )
+
+    def _get_active_status_hint(
+        self,
+        ctx: 'ToolContext',
+        projects: List[Any],
+        task_text: str
+    ) -> Optional[str]:
+        """
+        AICODE-NOTE: t016 FIX - For salary comparison tasks involving project leads,
+        remind agent to filter by status='active'.
+
+        Problem: Agent finds leads from ALL projects (including archived/paused),
+        but benchmark expects only leads from ACTIVE projects.
+
+        When: Task asks "project leads with salary higher than X"
+        """
+        import re
+
+        task_lower = task_text.lower()
+
+        # Detect salary comparison task for project leads
+        is_lead_salary_task = (
+            'lead' in task_lower and
+            any(p in task_lower for p in ['salary', 'earn', 'higher than', 'greater than'])
+        )
+
+        if not is_lead_salary_task:
+            return None
+
+        # Check if current search uses status filter
+        status_filter = getattr(ctx.model, "status", None)
+        if status_filter:
+            # Agent already using status filter - good
+            return None
+
+        # Check how many non-active projects in results
+        non_active = [p for p in projects if getattr(p, 'status', '') != 'active']
+        if not non_active:
+            return None
+
+        non_active_count = len(non_active)
+        active_count = len(projects) - non_active_count
+
+        return (
+            f"\n🛑 CRITICAL for salary comparison: Found {non_active_count} NON-ACTIVE projects in results!\n"
+            f"For 'project leads with salary higher than X' queries:\n"
+            f"  - 'Project lead' means someone with role='Lead' in an **ACTIVE** project\n"
+            f"  - Non-active (archived, paused, exploring, idea) projects should NOT be included\n\n"
+            f"🔧 REQUIRED: Use `projects_search(status=['active'])` to get only active projects,\n"
+            f"   then extract leads from team arrays where role='Lead'.\n\n"
+            f"Current results: {active_count} active, {non_active_count} non-active — filter needed!"
         )

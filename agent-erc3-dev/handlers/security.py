@@ -120,22 +120,27 @@ class SecurityManager:
         # External department has limited access but IS authenticated (not Guest!)
         # AICODE-NOTE: Critical for t062 - External dept CAN read wiki!
         # AICODE-NOTE: t011 fix - External cannot access ANY time summaries, including own dept
-        # AICODE-NOTE: t037 fix - External cannot update ANY employee records, even their own!
+        # AICODE-NOTE: t037 fix - External cannot update OTHER employees' records (notes)
+        # AICODE-NOTE: t058 fix - External CAN update their OWN skills/wills (SkillWillReflect)!
         # AICODE-NOTE: t066 fix - External cannot update/delete wiki pages!
+        # AICODE-NOTE: t053 fix - External cannot change project status (pause, archive, etc)!
         if 'external' in dept_lower:
             return (
                 "⚠️ EXTERNAL DEPARTMENT - You are an AUTHENTICATED user (NOT a guest):\n"
                 "✅ CAN read wiki pages and internal documentation\n"
                 "✅ CAN search employees, projects, customers\n"
                 "✅ CAN log time on projects you are assigned to\n"
+                "✅ CAN update YOUR OWN skills and wills (SkillWillReflect)\n"
                 "❌ No access to other employees' salaries\n"
                 "❌ No access to time summaries (ANY department, including your own!)\n"
                 "❌ Cannot view customer contact details (unless you are their Account Manager)\n"
-                "❌ CANNOT update employee records (including your own notes, skills, wills)!\n"
+                "❌ CANNOT update OTHER employees' records (notes, skills, wills)!\n"
                 "❌ CANNOT update/delete wiki pages (wiki_update is restricted)!\n"
-                "⚠️ If asked to update employee data → use `denied_security` with `denial_basis: \"identity_restriction\"`\n"
+                "❌ CANNOT change project status (pause, archive, activate, etc.) - even if on team!\n"
+                "⚠️ If asked to update OTHER employee's data → use `denied_security` with `denial_basis: \"identity_restriction\"`\n"
                 "⚠️ If asked about workload/time summaries → use `denied_security` with `denial_basis: \"identity_restriction\"`\n"
-                "⚠️ If asked to update/delete wiki pages → use `denied_security` with `denial_basis: \"identity_restriction\"`"
+                "⚠️ If asked to update/delete wiki pages → use `denied_security` with `denial_basis: \"identity_restriction\"`\n"
+                "⚠️ If asked to change project status (pause/archive/etc) → use `denied_security` with `denial_basis: \"identity_restriction\"`"
             )
 
         return None

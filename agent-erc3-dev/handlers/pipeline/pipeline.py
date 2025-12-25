@@ -9,7 +9,7 @@ from typing import Any, List, TYPE_CHECKING
 from erc3.erc3 import client
 
 from .base import Preprocessor, PostProcessor
-from .preprocessors import EmployeeUpdatePreprocessor
+from .preprocessors import EmployeeUpdatePreprocessor, SkillNameCorrectionPreprocessor
 from .postprocessors import (
     IdentityPostProcessor,
     WikiSyncPostProcessor,
@@ -30,6 +30,8 @@ from ..enrichers import (
     RecommendationQueryHintEnricher, TimeSummaryFallbackHintEnricher,
     ProjectTeamNameResolutionHintEnricher, ProjectSkillsHintEnricher,
     SwapWorkloadsHintEnricher, KeyAccountExplorationHintEnricher,
+    LeadSalaryComparisonHintEnricher, BusiestEmployeeTimeSliceEnricher,
+    LeastBusyEmployeeTimeSliceEnricher,
 )
 from utils import CLI_BLUE, CLI_GREEN, CLI_YELLOW, CLI_CLR
 
@@ -54,6 +56,7 @@ class ActionPipeline:
         # Preprocessors (order matters)
         self._preprocessors: List[Preprocessor] = [
             EmployeeUpdatePreprocessor(),
+            SkillNameCorrectionPreprocessor(),  # t056 fix: auto-correct skill names
         ]
 
         # Executor
@@ -93,6 +96,9 @@ class ActionPipeline:
         self._project_skills_hints = ProjectSkillsHintEnricher()
         self._swap_workloads_hints = SwapWorkloadsHintEnricher()
         self._key_account_exploration_hints = KeyAccountExplorationHintEnricher()
+        self._lead_salary_hints = LeadSalaryComparisonHintEnricher()
+        self._busiest_time_slice_hints = BusiestEmployeeTimeSliceEnricher()
+        self._least_busy_time_slice_hints = LeastBusyEmployeeTimeSliceEnricher()
 
         # Error/Success handling
         self._error_handler = ErrorHandler()
@@ -370,6 +376,26 @@ class ActionPipeline:
             if hint:
                 ctx.results.append(hint)
 
+        # AICODE-NOTE: t012 FIX - Track time_slice for busiest employee calculation
+        # When agent fetches many projects via fallback (time_summary_employee returns None),
+        # we accumulate time_slice per employee and show summary when threshold reached.
+        if isinstance(ctx.model, client.Req_GetProject):
+            hint = self._busiest_time_slice_hints.maybe_accumulate_time_slice(
+                ctx.model, result, ctx.shared, task_text
+            )
+            if hint:
+                ctx.results.append(hint)
+
+        # AICODE-NOTE: t010 FIX - Track projects per employee for least busy calculation
+        # When agent uses projects_search(member=...) fallback to find least busy,
+        # we track all employees and show ALL with minimum workload (not just one).
+        if isinstance(ctx.model, client.Req_SearchProjects):
+            hint = self._least_busy_time_slice_hints.maybe_track_employee_projects(
+                ctx.model, result, ctx.shared, task_text
+            )
+            if hint:
+                ctx.results.append(hint)
+
         # AICODE-NOTE: t087 FIX - Track customer contact info for link extraction.
         # When customers_get returns contact info, store it for later lookup
         # so that response parser can link customer when contact email is mentioned.
@@ -456,6 +482,17 @@ class ActionPipeline:
             if hint:
                 ctx.results.append(hint)
 
+        # AICODE-NOTE: t016 FIX - Lead salary comparison calculation
+        # When fetching baseline employee for "project leads with salary > X" task,
+        # automatically calculate and return the complete answer
+        # Triggers on BOTH employees_get AND employees_search
+        if action_name in ('Req_GetEmployee', 'Req_SearchEmployees'):
+            hint = self._lead_salary_hints.maybe_calculate_leads_with_higher_salary(
+                ctx, ctx.model, result, task_text
+            )
+            if hint:
+                ctx.results.append(hint)
+
     def clear_task_caches(self) -> None:
         """
         Clear all per-task caches in enrichers.
@@ -472,3 +509,7 @@ class ActionPipeline:
 
         # Clear recommendation query accumulated results (t017 fix)
         self._recommendation_hints.clear_cache()
+
+        # Clear lead salary comparison cache (t016 fix)
+        self._lead_salary_hints._calculation_done = False
+        self._lead_salary_hints._result_cache = None

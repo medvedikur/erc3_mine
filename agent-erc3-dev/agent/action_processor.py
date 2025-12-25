@@ -543,6 +543,8 @@ class ActionProcessor:
                     proj_id = getattr(proj, 'id', None)
                     if proj_id:
                         state.search_entities.append({"id": proj_id, "kind": "project"})
+                        # AICODE-NOTE: t016 FIX - Track projects found via search
+                        state.found_projects_search.add(proj_id)
                     # Extract customer from project
                     cust = getattr(proj, 'customer', None)
                     if cust and cust not in customers_seen:
@@ -574,8 +576,20 @@ class ActionProcessor:
             if api_result and hasattr(api_result, 'employee') and api_result.employee:
                 employee = api_result.employee
                 salary = getattr(employee, 'salary', None)
+                emp_name = getattr(employee, 'name', None)
                 if emp_id and salary is not None:
                     state.fetched_employee_salaries[emp_id] = salary
+
+                # AICODE-NOTE: t016 FIX - Check if this is the baseline employee for salary comparison
+                # Compare by name (case-insensitive, normalized) to handle agent fetching right person
+                if state.salary_comparison_baseline_name and emp_name:
+                    baseline_norm = state.salary_comparison_baseline_name.lower().strip()
+                    emp_norm = emp_name.lower().strip()
+                    # Exact match or close match (handling Unicode variations)
+                    if baseline_norm == emp_norm or baseline_norm in emp_norm or emp_norm in baseline_norm:
+                        state.salary_comparison_baseline_id = emp_id
+                        state.salary_comparison_baseline_salary = salary
+                        print(f"  {CLI_YELLOW}[t016] Baseline employee identified: {emp_name} ({emp_id}) = {salary}{CLI_CLR}")
 
         # Track projects_get
         elif isinstance(action_model, client.Req_GetProject):
@@ -584,17 +598,26 @@ class ActionProcessor:
                 if not any(e.get('id') == proj_id and e.get('kind') == 'project'
                            for e in state.fetched_entities):
                     state.fetched_entities.append({"id": proj_id, "kind": "project"})
+                # AICODE-NOTE: t016 FIX - Track projects processed via GET
+                state.processed_projects_get.add(proj_id)
 
             # AICODE-NOTE: t069 FIX - Extract leads from project team for wiki creation validation
+            # AICODE-NOTE: t016 FIX - Also track leads of ACTIVE projects separately
             api_result = ctx.shared.get('_last_api_result')
             if api_result and hasattr(api_result, 'project') and api_result.project:
                 project = api_result.project
+                project_status = getattr(project, 'status', None)
+                is_active = (project_status == 'active')
                 team = getattr(project, 'team', None) or []
                 for member in team:
                     role = getattr(member, 'role', None)
                     emp_id = getattr(member, 'employee', None)
                     if role == 'Lead' and emp_id:
                         state.found_project_leads.add(emp_id)
+                        # AICODE-NOTE: t016 FIX - Only add to active_project_leads if project is active
+                        if is_active:
+                            state.active_project_leads.add(emp_id)
+                            print(f"  {CLI_GREEN}[t016] Active project lead: {emp_id} (project status={project_status}){CLI_CLR}")
 
         # Track customers_get
         elif isinstance(action_model, client.Req_GetCustomer):

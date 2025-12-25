@@ -44,6 +44,7 @@ from .response_guards import (
     ContactEmailResponseGuard,
     ProjectLeadsSalaryComparisonGuard,
     SkillIdResponseGuard,
+    ExternalProjectStatusGuard,
 )
 
 from .ma_compliance_guards import (
@@ -94,6 +95,7 @@ __all__ = [
     'ContactEmailResponseGuard',
     'ProjectLeadsSalaryComparisonGuard',
     'SkillIdResponseGuard',
+    'ExternalProjectStatusGuard',
     # M&A Compliance Guards
     'CCCodeValidationGuard',
     'JiraTicketRequirementGuard',

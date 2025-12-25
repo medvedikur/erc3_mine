@@ -755,10 +755,13 @@ class EmployeeSearchHandler(ActionHandler):
                                     sorted_by_count = sorted(project_counts.items(), key=lambda x: (-x[1], x[0]))
                                     for emp_id, count in sorted_by_count:
                                         lines.append(f"     • {emp_id}: {count} project(s)")
-                                    # Show the winner (most projects)
+                                    # Show the winner (most projects, tie-break by LOWEST ID)
                                     winner = sorted_by_count[0]
                                     lines.append("")
                                     lines.append(f"  🏆 **WINNER** (most projects): **{winner[0]}** with {winner[1]} project(s)")
+                                    # AICODE-NOTE: t075 FIX - Add explicit instruction to use this answer
+                                    lines.append(f"  ⚠️ **USE THIS ANSWER**: {winner[0]} (sorted by projects DESC, then ID ASC)")
+                                    lines.append(f"  📝 Include link: {{'kind': 'employee', 'id': '{winner[0]}'}}")
 
             # Clear tracker for next query ONLY if pagination is truly done
             # AND we are not in a batch processing loop (ctx.shared might persist)

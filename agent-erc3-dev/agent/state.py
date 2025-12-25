@@ -39,10 +39,29 @@ class AgentTurnState:
     # When task asks to create wiki pages for leads, we validate all were created.
     found_project_leads: Set[str] = field(default_factory=set)
 
+    # AICODE-NOTE: t016 FIX - Track leads of ACTIVE projects only.
+    # For salary comparison queries ("leads with salary > X"), only active project leads count.
+    # Format: Set of employee IDs who are leads of active projects
+    active_project_leads: Set[str] = field(default_factory=set)
+
     # AICODE-NOTE: t016 FIX - Track salary of employees fetched via employees_get.
     # For "project leads with salary > X" queries, we validate all matching leads are in links.
     # Format: {employee_id: salary}
     fetched_employee_salaries: Dict[str, int] = field(default_factory=dict)
+
+    # AICODE-NOTE: t016 FIX - Track projects found via projects_search but not yet processed.
+    # For comprehensive lead queries, agent must call projects_get for ALL found projects.
+    # Set of project IDs found through projects_search
+    found_projects_search: Set[str] = field(default_factory=set)
+    # Set of project IDs actually processed via projects_get
+    processed_projects_get: Set[str] = field(default_factory=set)
+
+    # AICODE-NOTE: t016 FIX - Track baseline employee for salary comparison queries.
+    # Extracted from task text: "salary higher than [Name]"
+    # This prevents agent from confusing similar names (e.g., Alessia vs Alessandro)
+    salary_comparison_baseline_name: Optional[str] = field(default=None)
+    salary_comparison_baseline_id: Optional[str] = field(default=None)
+    salary_comparison_baseline_salary: Optional[int] = field(default=None)
 
     # Validation tracking
     missing_tools: List[str] = field(default_factory=list)
@@ -87,6 +106,12 @@ class AgentTurnState:
 
     # AICODE-NOTE: t009 FIX - Global workload tracker for pagination
     global_workload_tracker: Dict[str, tuple] = field(default_factory=dict)
+
+    # AICODE-NOTE: t012 FIX - Global time_slice tracker from projects_get
+    # When agent fetches many projects to calculate "busiest" employee via time_slice,
+    # we accumulate: {employee_id: total_time_slice}
+    # and show summary hint when done
+    projects_get_time_slice_tracker: Dict[str, float] = field(default_factory=dict)
 
     # AICODE-NOTE: t076 FIX - Track pending pagination to block premature responses
     # Format: {action_name: {'next_offset': int, 'current_count': int}}
@@ -136,6 +161,8 @@ class AgentTurnState:
             '_global_skill_level_tracker': self.global_skill_level_tracker,
             # AICODE-NOTE: t009 FIX - Pass global workload tracker for batch pagination
             '_global_workload_tracker': self.global_workload_tracker,
+            # AICODE-NOTE: t012 FIX - Pass time_slice tracker for busiest employee calculation
+            '_projects_get_time_slice_tracker': self.projects_get_time_slice_tracker,
             # AICODE-NOTE: t076 FIX - Pass pending pagination for IncompletePaginationGuard
             'pending_pagination': self.pending_pagination,
             # AICODE-NOTE: t077 FIX - Pass query subject IDs for link filtering
@@ -148,12 +175,21 @@ class AgentTurnState:
             '_loaded_wiki_content_api': self.loaded_wiki_content_api,
             # AICODE-NOTE: t069 FIX - Pass found project leads for wiki creation guard
             'found_project_leads': self.found_project_leads,
+            # AICODE-NOTE: t016 FIX - Pass active project leads for salary comparison
+            'active_project_leads': self.active_project_leads,
             # AICODE-NOTE: t016 FIX - Pass fetched employee salaries for lead salary guard
             'fetched_employee_salaries': self.fetched_employee_salaries,
             # AICODE-NOTE: t087 FIX - Pass customer contacts for link extraction
             'customer_contacts': self.customer_contacts,
             # AICODE-NOTE: t069 FIX - Pass accumulated project IDs for summary hint
             'accumulated_project_ids': self.accumulated_project_ids,
+            # AICODE-NOTE: t016 FIX - Pass project tracking for comprehensive lead queries
+            'found_projects_search': self.found_projects_search,
+            'processed_projects_get': self.processed_projects_get,
+            # AICODE-NOTE: t016 FIX - Pass baseline employee for salary comparison
+            'salary_comparison_baseline_name': self.salary_comparison_baseline_name,
+            'salary_comparison_baseline_id': self.salary_comparison_baseline_id,
+            'salary_comparison_baseline_salary': self.salary_comparison_baseline_salary,
         }
 
     def clear_turn_aggregators(self) -> None:
@@ -194,6 +230,13 @@ class AgentTurnState:
         workload_tracker = ctx.shared.get('_global_workload_tracker')
         if workload_tracker:
             self.global_workload_tracker.update(workload_tracker)
+
+        # AICODE-NOTE: t012 FIX - Sync time_slice tracker for busiest employee
+        time_slice_tracker = ctx.shared.get('_projects_get_time_slice_tracker')
+        if time_slice_tracker:
+            # Merge by adding (employee may appear in multiple projects)
+            for emp_id, ts in time_slice_tracker.items():
+                self.projects_get_time_slice_tracker[emp_id] = self.projects_get_time_slice_tracker.get(emp_id, 0.0) + ts
 
         # AICODE-NOTE: t076 FIX - Sync pending pagination state
         # This is critical for IncompletePaginationGuard to work across actions

@@ -38,6 +38,9 @@ from .response_enrichers import (
     ProjectSkillsHintEnricher,
     SwapWorkloadsHintEnricher,
     KeyAccountExplorationHintEnricher,
+    LeadSalaryComparisonHintEnricher,
+    BusiestEmployeeTimeSliceEnricher,
+    LeastBusyEmployeeTimeSliceEnricher,
 )
 
 __all__ = [
@@ -68,4 +71,7 @@ __all__ = [
     'ProjectSkillsHintEnricher',
     'SwapWorkloadsHintEnricher',
     'KeyAccountExplorationHintEnricher',
+    'LeadSalaryComparisonHintEnricher',
+    'BusiestEmployeeTimeSliceEnricher',
+    'LeastBusyEmployeeTimeSliceEnricher',
 ]
