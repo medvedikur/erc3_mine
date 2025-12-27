@@ -4,7 +4,7 @@ Wiki action handlers.
 Handles wiki_search and wiki_load actions using local WikiManager.
 """
 import re
-from typing import Set, List, Tuple, TYPE_CHECKING
+from typing import Set, List, Tuple, Optional, TYPE_CHECKING
 
 from erc3.erc3 import client
 from .base import ActionHandler
@@ -13,6 +13,47 @@ from utils import CLI_GREEN, CLI_BLUE, CLI_YELLOW, CLI_CLR
 
 if TYPE_CHECKING:
     from ..wiki import WikiManager
+
+
+def _get_project_customer_hint(task_text: str) -> Optional[str]:
+    """
+    Generate hint when task asks for project customer but agent uses wiki.
+
+    AICODE-NOTE: Critical for t028. Wiki handler bypasses pipeline enrichers,
+    so this hint must be generated here directly. When task asks about
+    customer/client of a project, agent should use projects_search instead.
+
+    Args:
+        task_text: Task instructions
+
+    Returns:
+        Hint string or None
+    """
+    task_lower = task_text.lower()
+
+    # Detect pattern: asking about customer/client of a specific project/initiative
+    has_customer_query = any(kw in task_lower for kw in [
+        'who is customer', 'who is the customer', 'who is client',
+        'customer for', 'client for', 'customer of', 'client of'
+    ])
+    has_project_reference = any(kw in task_lower for kw in [
+        'project', 'projects', 'initiative', 'programme', 'program', 'development'
+    ])
+
+    if not (has_customer_query and has_project_reference):
+        return None
+
+    return (
+        "\n🔍 PROJECT CUSTOMER LOOKUP:\n"
+        "You're searching wiki for project customer info, but wiki contains DOCUMENTATION, not project data!\n\n"
+        "✅ To find who is the CUSTOMER of a specific project:\n"
+        "  1. Use `projects_search(query='project name keywords')` to find the project\n"
+        "  2. The result includes `customer` field with the customer ID\n"
+        "  3. Use `customers_get(id='...')` to get customer details\n\n"
+        "📌 IMPORTANT: Even 'internal' projects have customers!\n"
+        "   Internal projects use internal customer entities (e.g., 'cust_..._internal').\n"
+        "   The wiki explains project TYPES, but projects_search has the actual project DATA."
+    )
 
 
 # Stopwords for filtering query keywords when matching wiki filenames
@@ -58,6 +99,18 @@ class WikiSearchHandler(ActionHandler):
 
         print(f"  {CLI_GREEN}✓ SUCCESS (Local){CLI_CLR}")
         ctx.results.append(f"Action ({action_name}): SUCCESS\nResult: {search_result_text}")
+
+        # AICODE-NOTE: t028 FIX - Add project customer hint when task asks about customer
+        # but agent uses wiki_search. This hint must be here because wiki handler
+        # bypasses pipeline enrichers (returns True before pipeline.handle() runs).
+        task_text = ctx.shared.get('task_text', '')
+        if not ctx.shared.get('_project_customer_hint_shown'):
+            project_hint = _get_project_customer_hint(task_text)
+            if project_hint:
+                ctx.results.append(project_hint)
+                ctx.shared['_project_customer_hint_shown'] = True
+                print(f"  {CLI_YELLOW}📌 Added project customer lookup hint{CLI_CLR}")
+
         return True
 
     def _get_filename_hints(

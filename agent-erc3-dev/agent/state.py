@@ -79,6 +79,12 @@ class AgentTurnState:
     # AICODE-NOTE: t077 FIX - Track query subjects (coachees/mentees) to filter from links
     query_subject_ids: Set[str] = field(default_factory=set)
 
+    # AICODE-NOTE: t077 FIX - Track if coaching skill search was performed
+    # For coaching queries, agent MUST search for employees with high skill levels
+    # This flag is set when employees_search with skills filter returns results
+    coaching_skill_search_done: bool = False
+    coaching_skill_search_results: int = 0  # Count of potential coaches found
+
     # AICODE-NOTE: t067 FIX - Track wiki files "deleted" (content set to empty)
     # These should be filtered from links in rename operations
     deleted_wiki_files: Set[str] = field(default_factory=set)
@@ -93,6 +99,16 @@ class AgentTurnState:
     # When customers_get returns contact info, store it so response parser
     # can link customer when contact email/name is mentioned in response
     customer_contacts: Dict[str, Dict[str, str]] = field(default_factory=dict)
+
+    # AICODE-NOTE: t037 FIX - Track employee notes updated via employees_update
+    # For security guard to detect salary-related notes injection attacks
+    # Format: {employee_id: note_text}
+    employee_notes_updated: Dict[str, str] = field(default_factory=dict)
+
+    # AICODE-NOTE: t029 FIX - Track projects where current user is Lead
+    # "My projects" means projects where user is Lead, not just member
+    # Format: Set of project IDs where user has role='Lead'
+    user_lead_projects: Set[str] = field(default_factory=set)
 
     # Loop detection
     action_history: List[Any] = field(default_factory=list)
@@ -112,6 +128,8 @@ class AgentTurnState:
     # we accumulate: {employee_id: total_time_slice}
     # and show summary hint when done
     projects_get_time_slice_tracker: Dict[str, float] = field(default_factory=dict)
+    # AICODE-NOTE: t012 FIX - Track processed project IDs to avoid double-counting
+    projects_get_processed_ids: Set[str] = field(default_factory=set)
 
     # AICODE-NOTE: t076 FIX - Track pending pagination to block premature responses
     # Format: {action_name: {'next_offset': int, 'current_count': int}}
@@ -128,6 +146,13 @@ class AgentTurnState:
     # We accumulate IDs and show summary when pagination completes.
     accumulated_project_ids: List[str] = field(default_factory=list)
 
+    # AICODE-NOTE: t013 FIX - Track single-result-at-max-level skill searches
+    # Format: (skill_name, max_level, employee_id) or None
+    # When agent finds exactly 1 employee at min_level=10, we track it
+    # and require verification before allowing ok_answer
+    single_result_max_level_skill: Optional[tuple] = field(default=None)
+    skill_level_verification_done: bool = False
+
     # LLM response tracking (for criteria guards)
     last_thoughts: str = ""
 
@@ -140,8 +165,14 @@ class AgentTurnState:
         Convert state to shared dict format expected by middleware/tools.
         Used when creating context for parse_action and executor.
         """
+        # Get current_user from security_manager for guards
+        current_user = None
+        if self.security_manager:
+            current_user = getattr(self.security_manager, 'current_user', None)
+
         return {
             'security_manager': self.security_manager,
+            'current_user': current_user,  # AICODE-NOTE: t029 FIX - For "my projects" filtering
             'had_mutations': self.had_mutations,
             'mutation_entities': self.mutation_entities,
             'search_entities': self.search_entities,
@@ -163,6 +194,7 @@ class AgentTurnState:
             '_global_workload_tracker': self.global_workload_tracker,
             # AICODE-NOTE: t012 FIX - Pass time_slice tracker for busiest employee calculation
             '_projects_get_time_slice_tracker': self.projects_get_time_slice_tracker,
+            '_projects_get_processed_ids': self.projects_get_processed_ids,
             # AICODE-NOTE: t076 FIX - Pass pending pagination for IncompletePaginationGuard
             'pending_pagination': self.pending_pagination,
             # AICODE-NOTE: t077 FIX - Pass query subject IDs for link filtering
@@ -190,6 +222,13 @@ class AgentTurnState:
             'salary_comparison_baseline_name': self.salary_comparison_baseline_name,
             'salary_comparison_baseline_id': self.salary_comparison_baseline_id,
             'salary_comparison_baseline_salary': self.salary_comparison_baseline_salary,
+            # AICODE-NOTE: t037 FIX - Pass employee notes for salary injection guard
+            'employee_notes_updated': self.employee_notes_updated,
+            # AICODE-NOTE: t029 FIX - Pass user lead projects for "my projects" filtering
+            'user_lead_projects': self.user_lead_projects,
+            # AICODE-NOTE: t077 FIX - Pass coaching search tracking for CoachingSearchGuard
+            'coaching_skill_search_done': self.coaching_skill_search_done,
+            'coaching_skill_search_results': self.coaching_skill_search_results,
         }
 
     def clear_turn_aggregators(self) -> None:
@@ -232,11 +271,15 @@ class AgentTurnState:
             self.global_workload_tracker.update(workload_tracker)
 
         # AICODE-NOTE: t012 FIX - Sync time_slice tracker for busiest employee
+        # The tracker already accumulates in the enricher, just sync it back
         time_slice_tracker = ctx.shared.get('_projects_get_time_slice_tracker')
         if time_slice_tracker:
-            # Merge by adding (employee may appear in multiple projects)
-            for emp_id, ts in time_slice_tracker.items():
-                self.projects_get_time_slice_tracker[emp_id] = self.projects_get_time_slice_tracker.get(emp_id, 0.0) + ts
+            self.projects_get_time_slice_tracker = time_slice_tracker
+
+        # AICODE-NOTE: t012 FIX - Sync processed project IDs to avoid double-counting
+        processed_ids = ctx.shared.get('_projects_get_processed_ids')
+        if processed_ids:
+            self.projects_get_processed_ids = processed_ids
 
         # AICODE-NOTE: t076 FIX - Sync pending pagination state
         # This is critical for IncompletePaginationGuard to work across actions
@@ -280,6 +323,26 @@ class AgentTurnState:
             for pid in accumulated_project_ids:
                 if pid not in self.accumulated_project_ids:
                     self.accumulated_project_ids.append(pid)
+
+        # AICODE-NOTE: t037 FIX - Sync employee notes for salary injection guard
+        # Pipeline stores notes from employees_update; guard checks them
+        employee_notes_updated = ctx.shared.get('employee_notes_updated')
+        if employee_notes_updated:
+            self.employee_notes_updated.update(employee_notes_updated)
+
+        # AICODE-NOTE: t029 FIX - Sync user lead projects
+        # Pipeline/enricher adds project IDs where user is Lead
+        user_lead_projects = ctx.shared.get('user_lead_projects')
+        if user_lead_projects:
+            self.user_lead_projects.update(user_lead_projects)
+
+        # AICODE-NOTE: t077 FIX - Sync coaching skill search tracking
+        # Employee search handler sets this when skills filter returns results
+        if ctx.shared.get('coaching_skill_search_done'):
+            self.coaching_skill_search_done = True
+        coaching_results = ctx.shared.get('coaching_skill_search_results', 0)
+        if coaching_results:
+            self.coaching_skill_search_results += coaching_results
 
         # Note: had_mutations, mutation_entities, search_entities are
         # updated directly in the main loop after successful actions

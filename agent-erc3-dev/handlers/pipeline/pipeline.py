@@ -9,7 +9,7 @@ from typing import Any, List, TYPE_CHECKING
 from erc3.erc3 import client
 
 from .base import Preprocessor, PostProcessor
-from .preprocessors import EmployeeUpdatePreprocessor, SkillNameCorrectionPreprocessor
+from .preprocessors import EmployeeUpdatePreprocessor, SkillNameCorrectionPreprocessor, SendToLocationPreprocessor
 from .postprocessors import (
     IdentityPostProcessor,
     WikiSyncPostProcessor,
@@ -25,7 +25,8 @@ from ..enrichers import (
     CustomerSearchHintEnricher, EmployeeSearchHintEnricher, PaginationHintEnricher,
     CustomerProjectsHintEnricher, SearchResultExtractionHintEnricher,
     ProjectNameNormalizationHintEnricher, WorkloadHintEnricher,
-    SkillSearchStrategyHintEnricher, EmployeeNameResolutionHintEnricher,
+    SkillSearchStrategyHintEnricher, CombinedSkillWillHintEnricher, ProjectCustomerSearchHintEnricher,
+    EmployeeNameResolutionHintEnricher,
     SkillComparisonHintEnricher, QuerySubjectHintEnricher, TieBreakerHintEnricher,
     RecommendationQueryHintEnricher, TimeSummaryFallbackHintEnricher,
     ProjectTeamNameResolutionHintEnricher, ProjectSkillsHintEnricher,
@@ -57,6 +58,7 @@ class ActionPipeline:
         self._preprocessors: List[Preprocessor] = [
             EmployeeUpdatePreprocessor(),
             SkillNameCorrectionPreprocessor(),  # t056 fix: auto-correct skill names
+            SendToLocationPreprocessor(),  # t013 fix: warn about location filter with "send to"
         ]
 
         # Executor
@@ -99,6 +101,8 @@ class ActionPipeline:
         self._lead_salary_hints = LeadSalaryComparisonHintEnricher()
         self._busiest_time_slice_hints = BusiestEmployeeTimeSliceEnricher()
         self._least_busy_time_slice_hints = LeastBusyEmployeeTimeSliceEnricher()
+        self._combined_skill_will_hints = CombinedSkillWillHintEnricher()
+        self._project_customer_search_hints = ProjectCustomerSearchHintEnricher()
 
         # Error/Success handling
         self._error_handler = ErrorHandler()
@@ -204,7 +208,11 @@ class ActionPipeline:
         # Role hints for project responses
         if isinstance(ctx.model, (client.Req_SearchProjects, client.Req_GetProject)):
             if current_user:
-                hint = self._role_enricher.enrich_projects_with_user_role(result, current_user)
+                # AICODE-NOTE: t054 FIX - Pass shared to store user role for guards
+                # AICODE-NOTE: t051 FIX - Pass task_text to detect status change requests
+                hint = self._role_enricher.enrich_projects_with_user_role(
+                    result, current_user, ctx.shared, task_text
+                )
                 if hint:
                     ctx.results.append(hint)
 
@@ -255,6 +263,23 @@ class ActionPipeline:
                             f"Do NOT miss any project — copy this list to your action_queue."
                         )
 
+        # AICODE-NOTE: t026 FIX - Track when project has internal customer (cust_bellini_internal)
+        # This flag is used by InternalProjectContactGuard to block ok_answer for contact queries
+        if isinstance(ctx.model, client.Req_SearchProjects):
+            if hasattr(result, 'projects') and result.projects:
+                for proj in result.projects:
+                    customer = getattr(proj, 'customer', '') or ''
+                    if 'internal' in customer.lower() or 'bellini_internal' in customer.lower():
+                        ctx.shared['_internal_customer_contact_blocked'] = True
+                        break
+
+        if isinstance(ctx.model, client.Req_GetProject):
+            project = getattr(result, 'project', None)
+            if project:
+                customer = getattr(project, 'customer', '') or ''
+                if 'internal' in customer.lower() or 'bellini_internal' in customer.lower():
+                    ctx.shared['_internal_customer_contact_blocked'] = True
+
         # Archived project hints
         hint = self._archive_hints.maybe_hint_archived_logging(ctx.model, result, task_text)
         if hint:
@@ -304,7 +329,13 @@ class ActionPipeline:
             ctx.results.append(hint)
 
         # Skill search strategy hints (t013, t074)
-        hint = self._skill_strategy_hints.maybe_hint_skill_strategy(ctx.model, result, task_text)
+        # AICODE-NOTE: t013 FIX - pass shared context for state tracking
+        hint = self._skill_strategy_hints.maybe_hint_skill_strategy(ctx.model, result, task_text, ctx.shared)
+        if hint:
+            ctx.results.append(hint)
+
+        # Combined skill + will search hints (t056)
+        hint = self._combined_skill_will_hints.maybe_hint_combined_filter(ctx.model, result, task_text)
         if hint:
             ctx.results.append(hint)
 
@@ -320,10 +351,11 @@ class ActionPipeline:
 
         # Recommendation query hints (t017) - remind to return ALL qualifying employees
         # AICODE-NOTE: t017 FIX - now pass model for pagination tracking
+        # AICODE-NOTE: t056 FIX - pass shared context to store accumulated employee IDs
         if isinstance(ctx.model, client.Req_SearchEmployees):
             next_offset = getattr(result, 'next_offset', -1)
             hint = self._recommendation_hints.maybe_hint_recommendation_query(
-                result, task_text, next_offset, ctx.model
+                result, task_text, next_offset, ctx.model, ctx.shared
             )
             if hint:
                 ctx.results.append(hint)
@@ -368,10 +400,13 @@ class ActionPipeline:
             if hint:
                 ctx.results.append(hint)
 
-        # Swap workloads hints (t097) - explain time_slice swap via projects_team_update
+        # Swap workloads/roles hints (t092, t097) - explain time_slice/role swap via projects_team_update
+        # AICODE-NOTE: t092 FIX - Pass department to enricher for exec permission hint
         if isinstance(ctx.model, client.Req_GetProject):
+            security_manager = ctx.shared.get('security_manager')
+            department = getattr(security_manager, 'department', '') if security_manager else ''
             hint = self._swap_workloads_hints.maybe_hint_swap_workloads(
-                ctx.model, result, task_text
+                ctx.model, result, task_text, department=department
             )
             if hint:
                 ctx.results.append(hint)
@@ -413,6 +448,13 @@ class ActionPipeline:
                         'email': contact_email or ''
                     }
                     ctx.shared['customer_contacts'] = customer_contacts
+
+        # Project customer search hints on wiki_search (t028)
+        hint = self._project_customer_search_hints.maybe_hint_project_customer_search(
+            ctx.model, result, task_text
+        )
+        if hint:
+            ctx.results.append(hint)
 
         # Wiki file hints on wiki_list
         wiki_manager = ctx.shared.get('wiki_manager')
@@ -513,3 +555,9 @@ class ActionPipeline:
         # Clear lead salary comparison cache (t016 fix)
         self._lead_salary_hints._calculation_done = False
         self._lead_salary_hints._result_cache = None
+
+        # Clear combined skill+will hint cache (t056 fix)
+        self._combined_skill_will_hints._hint_shown = False
+
+        # Clear project customer search hint cache (t028 fix)
+        self._project_customer_search_hints._hint_shown = False

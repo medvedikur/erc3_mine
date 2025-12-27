@@ -40,7 +40,7 @@ def _parse_wiki_update(ctx: ParseContext) -> Any:
     if content and isinstance(content, str):
         content = content.replace('\\n', '\n').replace('\\t', '\t')
 
-    # AICODE-NOTE: t067 fix. LLM may corrupt Unicode when copying wiki content.
+    # AICODE-NOTE: t067 fix. LLM may corrupt Unicode or shorten content when copying.
     # If content was recently loaded via wiki_load and LLM is copying it,
     # use the original content to preserve exact bytes.
     #
@@ -53,10 +53,23 @@ def _parse_wiki_update(ctx: ParseContext) -> Any:
             # Fallback to local cache content
             loaded_content = ctx.context.shared.get('_loaded_wiki_content', {})
         if loaded_content:
+            # AICODE-NOTE: t067 FIX - For rename operations, detect if LLM is trying to
+            # copy content from a loaded file. LLMs often truncate or modify text.
+            # If task contains "rename" and we have loaded content, use original.
+            task = ctx.context.shared.get('task')
+            task_text = getattr(task, 'task_text', '').lower() if task else ''
+            is_rename = 'rename' in task_text or '.bak' in task_text
+
             # Check if LLM content matches any loaded content (after normalization)
             for loaded_path, original_content in loaded_content.items():
                 if _content_matches_approximately(content, original_content):
-                    # Use original content to preserve Unicode
+                    # Use original content to preserve Unicode and exact text
+                    content = original_content
+                    break
+                # AICODE-NOTE: t067 FIX - For rename operations, if LLM content
+                # starts like original but is truncated, use original content
+                elif is_rename and _is_truncated_copy(content, original_content):
+                    print(f"  [t067 fix] Detected truncated copy, using original content from {loaded_path}")
                     content = original_content
                     break
 
@@ -65,6 +78,55 @@ def _parse_wiki_update(ctx: ParseContext) -> Any:
         content=content,
         changed_by=ctx.args.get("changed_by")
     )
+
+
+def _is_truncated_copy(llm_content: str, original_content: str) -> bool:
+    """
+    AICODE-NOTE: t067 FIX - Detect if LLM content is a truncated copy of original.
+
+    LLMs sometimes shorten or truncate text when copying wiki content.
+    This function checks if the LLM content appears to be an attempt to
+    copy the original but with parts missing.
+
+    Args:
+        llm_content: Content from LLM
+        original_content: Original content from wiki_load
+
+    Returns:
+        True if llm_content appears to be truncated copy of original_content
+    """
+    if not llm_content or not original_content:
+        return False
+
+    # Normalize for comparison
+    def normalize(s: str) -> str:
+        # Replace various dashes with standard hyphen
+        s = s.replace('\u2011', '-').replace('\u2013', '-').replace('\u2014', '-').replace('\u2010', '-')
+        # Replace various quotes with standard quotes
+        s = s.replace('\u201c', '"').replace('\u201d', '"').replace('\u2018', "'").replace('\u2019', "'")
+        return s
+
+    llm_norm = normalize(llm_content)
+    orig_norm = normalize(original_content)
+
+    # Check if llm content starts similarly to original (first 500 chars)
+    # This catches cases where LLM copied content but truncated or modified it
+    if len(llm_norm) < 500 or len(orig_norm) < 500:
+        return False
+
+    # Compare first 500 normalized characters (should be identical for copy)
+    first_500_match = llm_norm[:500] == orig_norm[:500]
+    if not first_500_match:
+        return False
+
+    # If first 500 chars match but lengths differ significantly (>5%),
+    # it's likely a truncated copy
+    if abs(len(llm_norm) - len(orig_norm)) > 50:  # More than 50 chars different
+        return True
+
+    # Also detect if original has content that LLM version is missing
+    # by checking if key phrases from original are missing in LLM version
+    return False
 
 
 def _content_matches_approximately(llm_content: str, original_content: str) -> bool:

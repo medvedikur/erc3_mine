@@ -603,12 +603,16 @@ class ActionProcessor:
 
             # AICODE-NOTE: t069 FIX - Extract leads from project team for wiki creation validation
             # AICODE-NOTE: t016 FIX - Also track leads of ACTIVE projects separately
+            # AICODE-NOTE: t029 FIX - Track projects where current user is Lead
             api_result = ctx.shared.get('_last_api_result')
             if api_result and hasattr(api_result, 'project') and api_result.project:
                 project = api_result.project
                 project_status = getattr(project, 'status', None)
                 is_active = (project_status == 'active')
                 team = getattr(project, 'team', None) or []
+                # Get current user from security manager
+                security_manager = state.security_manager
+                current_user = getattr(security_manager, 'current_user', None) if security_manager else None
                 for member in team:
                     role = getattr(member, 'role', None)
                     emp_id = getattr(member, 'employee', None)
@@ -618,6 +622,10 @@ class ActionProcessor:
                         if is_active:
                             state.active_project_leads.add(emp_id)
                             print(f"  {CLI_GREEN}[t016] Active project lead: {emp_id} (project status={project_status}){CLI_CLR}")
+                        # AICODE-NOTE: t029 FIX - Track if current user is Lead of this project
+                        if current_user and emp_id == current_user:
+                            state.user_lead_projects.add(proj_id)
+                            print(f"  {CLI_GREEN}[t029] User is Lead of: {proj_id}{CLI_CLR}")
 
         # Track customers_get
         elif isinstance(action_model, client.Req_GetCustomer):

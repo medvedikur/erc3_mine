@@ -37,6 +37,7 @@ class IncompletePaginationGuard(ResponseGuard):
 
     # Keywords indicating exhaustive list is expected
     # AICODE-NOTE: t016 fix - added "leads?" to patterns
+    # AICODE-NOTE: t017 fix - added recommendation patterns (must list ALL qualifying candidates)
     LIST_KEYWORDS = [
         r'\blist\s+(?:all\s+)?(?:employees?|projects?|customers?|leads?)\b',
         r'\blist\s+(?:the\s+)?(?:employees?|people|staff|leads?)\b',
@@ -48,6 +49,9 @@ class IncompletePaginationGuard(ResponseGuard):
         r'\bevery(?:one)?\s+(?:who|that|with|in)\b',
         r'\bwho\s+(?:all\s+)?(?:are|is|has|have|works?|can)\b',
         r'\bproject\s+leads?\s+(?:that|who|with)\b',  # "project leads that have..."
+        # AICODE-NOTE: t017 fix - recommendation queries need ALL qualifying candidates
+        r'\bwho\s+(?:would\s+you\s+)?recommend\b',  # "Who would you recommend..."
+        r'\brecommend\s+(?:as|for)\b',  # "recommend as trainer"
     ]
 
     # Superlatives MUST be exhaustive (cannot sample)
@@ -152,10 +156,14 @@ class AmbiguityGuardMiddleware(ResponseGuard):
         r'\bemployee\b', r'\bperson\b', r'\bwho\s+(?:is|works|did)\b',
         r'\b(?:ana|jonas|elena|marko|sofia|felix|mira|helene)\b',
     ]
+    # AICODE-NOTE: t081 FIX - "role of X at Y" pattern indicates project role query
+    # e.g., "What is the role of Brands at Fast-cure floor system" = project team query
+    ROLE_AT_PROJECT_PATTERN = r'\brole\s+of\s+\w+\s+(?:at|in|on)\s+'
 
     def __init__(self):
         self._project_re = re.compile('|'.join(self.PROJECT_KEYWORDS), re.IGNORECASE)
         self._employee_re = re.compile('|'.join(self.EMPLOYEE_KEYWORDS), re.IGNORECASE)
+        self._role_at_project_re = re.compile(self.ROLE_AT_PROJECT_PATTERN, re.IGNORECASE)
 
     def _check(self, ctx: ToolContext, outcome: str) -> None:
         task_text = get_task_text(ctx)
@@ -173,6 +181,10 @@ class AmbiguityGuardMiddleware(ResponseGuard):
         # Detect what the task is about
         mentions_project = bool(self._project_re.search(task_text))
         mentions_employee = bool(self._employee_re.search(task_text))
+        # AICODE-NOTE: t081 FIX - "role of X at Y" is almost always a project role query
+        is_role_at_project = bool(self._role_at_project_re.search(task_text))
+        if is_role_at_project:
+            mentions_project = True
 
         # Soft BLOCK if task is about projects but no projects_search
         if mentions_project and not searched_projects:

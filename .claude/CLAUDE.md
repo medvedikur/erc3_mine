@@ -97,6 +97,26 @@ Discover: `grep "AICODE-" -R agent-erc3-dev/`
 - **Logs**: `logs/parallel_<timestamp>/<spec_id>.log`
 - **Config**: `config.py`, CLI overrides: `-benchmark`, `-threads`, `-task`
 
+### Benchmark Strategy (IMPORTANT)
+
+**Full benchmark (`-benchmark erc3-prod -threads 20`) is EXPENSIVE!** Use sparingly.
+
+1. **For debugging/fixing specific tests**: Run isolated tests first
+   ```bash
+   ./venv-erc3/bin/python main.py -benchmark erc3-prod -task t081   # Single test
+   ./venv-erc3/bin/python main.py -benchmark erc3-prod -task t081,t097,t056  # Few tests
+   ```
+
+2. **For regression checking**: Run a small batch (3-5 tests)
+   ```bash
+   ./venv-erc3/bin/python main.py -benchmark erc3-prod -threads 3 -task t009,t010,t012
+   ```
+
+3. **Full benchmark**: Only when you expect 103/103!
+   - Before running full benchmark, verify fixes with isolated tests
+   - Run single problematic tests 3-5 times to confirm stability
+   - Full run should be reserved for final validation
+
 ---
 
 ## 8. Code Quality

@@ -25,6 +25,7 @@ from .project_guards import (
     ProjectSearchReminderMiddleware,
     ProjectModificationClarificationGuard,
     ProjectTeamModAuthorizationGuard,
+    ProjectStatusChangeAuthGuard,
 )
 
 from .time_guards import (
@@ -45,6 +46,14 @@ from .response_guards import (
     ProjectLeadsSalaryComparisonGuard,
     SkillIdResponseGuard,
     ExternalProjectStatusGuard,
+    SalaryNoteInjectionGuard,
+    InternalProjectContactGuard,
+    RecommendationLinksGuard,
+    TieBreakerWinnerGuard,
+    SingularProjectQueryGuard,
+    SkillsIDontHaveGuard,
+    MostSkilledVerificationGuard,
+    CoachingSearchGuard,
 )
 
 from .ma_compliance_guards import (
@@ -65,6 +74,7 @@ from .pagination_guards import (
     PaginationEnforcementMiddleware,
     CustomerContactPaginationMiddleware,
     ProjectSearchOffsetGuard,
+    CoachingTimeoutGuard,
 )
 
 __all__ = [
@@ -78,10 +88,12 @@ __all__ = [
     'PaginationEnforcementMiddleware',
     'CustomerContactPaginationMiddleware',
     'ProjectSearchOffsetGuard',
+    'CoachingTimeoutGuard',
     # Project Guards
     'ProjectSearchReminderMiddleware',
     'ProjectModificationClarificationGuard',
     'ProjectTeamModAuthorizationGuard',
+    'ProjectStatusChangeAuthGuard',
     # Time Guards
     'TimeLoggingClarificationGuard',
     'TimeLoggingAuthorizationGuard',
@@ -96,6 +108,14 @@ __all__ = [
     'ProjectLeadsSalaryComparisonGuard',
     'SkillIdResponseGuard',
     'ExternalProjectStatusGuard',
+    'SalaryNoteInjectionGuard',
+    'InternalProjectContactGuard',
+    'RecommendationLinksGuard',
+    'TieBreakerWinnerGuard',
+    'SingularProjectQueryGuard',
+    'SkillsIDontHaveGuard',
+    'MostSkilledVerificationGuard',
+    'CoachingSearchGuard',
     # M&A Compliance Guards
     'CCCodeValidationGuard',
     'JiraTicketRequirementGuard',

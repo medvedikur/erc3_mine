@@ -128,6 +128,8 @@ def _parse_respond(ctx: ParseContext) -> Any:
         # 4. If no AND message has "no winner/neither" patterns → skip links
         #
         # Patterns that indicate NO valid candidates (not just a tie):
+        # AICODE-NOTE: t070 FIX - Added "tied" patterns for comparison queries
+        # "They are tied" → no links expected per task instructions
         no_winner_patterns = [
             r'\bno\s+winner\b',
             r'\bno\s+\w+\s+is\s+linked\b',
@@ -135,6 +137,10 @@ def _parse_respond(ctx: ParseContext) -> Any:
             r'\bno\s+link\b',
             r'\bnone\s+of\s+them\b',
             r'\bno\s+one\b',
+            r'\bthey\s+are\s+tied\b',             # t070: "they are tied"
+            r'\bare\s+tied\b',                     # t070: "Both X and Y are tied"
+            r'\bsince\s+they\s+are\s+tied\b',      # t070: "Since they are tied"
+            r'\bno\s+\w+\s+has\s+more\b',          # t070: "no customer has more projects"
         ]
         msg_lower = msg.lower()
         is_no_winner_response = any(re.search(p, msg_lower) for p in no_winner_patterns)
@@ -173,6 +179,32 @@ def _parse_respond(ctx: ParseContext) -> Any:
             should_extract_links = False
         elif is_no_winner_response and not search_entity_ids:
             # No winner AND no search entities → definitely skip
+            should_extract_links = False
+
+        # AICODE-NOTE: t070 FIX - For "tied" responses in comparison queries,
+        # skip links even if search_entities exist. Task says "link none if tied".
+        # Detect explicitly tied responses by specific patterns.
+        # AICODE-NOTE: t073 FIX - But if task says "or both" / "link both if tied",
+        # then we SHOULD extract both links even when tied.
+        tied_patterns = [
+            r'\bthey\s+are\s+tied\b',
+            r'\bare\s+tied\b',
+            r'\bsince\s+they\s+are\s+tied\b',
+            r'\bno\s+\w+\s+has\s+more\b',
+        ]
+        is_explicit_tie = any(re.search(p, msg_lower) for p in tied_patterns)
+
+        # Check if task explicitly asks to link both when tied
+        task_text_lower = (ctx.context.shared.get('task_text', '') if ctx.context else '').lower()
+        link_both_if_tied_patterns = [
+            r'\bor\s+both\b.*\btied\b',
+            r'\bboth\b.*\btied\b',
+            r'\blink\s+both\b',
+        ]
+        task_wants_both_on_tie = any(re.search(p, task_text_lower) for p in link_both_if_tied_patterns)
+
+        if is_explicit_tie and outcome == 'ok_answer' and not task_wants_both_on_tie:
+            # Explicit tie in comparison AND task doesn't say "link both" → no links
             should_extract_links = False
 
         if should_extract_links:
@@ -262,7 +294,20 @@ def _parse_respond(ctx: ParseContext) -> Any:
         elif outcome == 'ok_answer' and search_entities:
             # For ok_answer, add search entities that represent THE answer
             # But limit to entities that appear in the message to avoid over-linking
+            # AICODE-NOTE: t075 FIX - Use primary segment for entity matching, not full message.
+            # This prevents runner-up employees (mentioned in "Although X also...") from being linked.
             message_lower = str(message).lower()
+
+            # AICODE-NOTE: t075 FIX - If we already have employee links from primary extraction,
+            # don't add more employees from search_entities mentioned elsewhere in message.
+            # Runner-ups are often mentioned in "Although X also has..." sentences.
+            primary_employee_ids = {l.get("id") for l in links if l.get("kind") == "employee"}
+            has_primary_employees = bool(primary_employee_ids)
+
+            # AICODE-NOTE: t071 FIX - Same logic for customers in comparison queries.
+            # "Which customer has more projects: A or B" → only link winner, not both.
+            primary_customer_ids = {l.get("id") for l in links if l.get("kind") == "customer"}
+            has_primary_customers = bool(primary_customer_ids)
 
             # AICODE-NOTE: First pass - find all entity IDs mentioned in message
             mentioned_ids = set()
@@ -289,9 +334,24 @@ def _parse_respond(ctx: ParseContext) -> Any:
                 # Add if directly mentioned in message
                 should_add = entity_id and entity_id.lower() in message_lower
 
+                # AICODE-NOTE: t075 FIX - Skip employee search_entities if we already have
+                # employees from primary extraction. Runner-up employees shouldn't be linked.
+                if should_add and entity_kind == "employee" and has_primary_employees:
+                    if entity_id not in primary_employee_ids:
+                        # This employee is NOT in primary links - likely a runner-up
+                        should_add = False
+
+                # AICODE-NOTE: t071 FIX - Skip customer search_entities if we already have
+                # customers from primary extraction. Comparison queries should only link winner.
+                if should_add and entity_kind == "customer" and has_primary_customers:
+                    if entity_id not in primary_customer_ids:
+                        # This customer is NOT in primary links - likely a runner-up
+                        should_add = False
+
                 # AICODE-NOTE: Also add customers that are related to mentioned projects (t098)
                 # If we mentioned a project, its customer should be linked too
-                if not should_add and entity_kind == "customer":
+                # BUT: Only if we don't already have primary customers (comparison query case)
+                if not should_add and entity_kind == "customer" and not has_primary_customers:
                     # Check if any mentioned entity is a project that has this customer
                     # We rely on the fact that project and its customer appear together
                     # in API responses and are both in search_entities

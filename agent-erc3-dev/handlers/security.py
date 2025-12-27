@@ -114,7 +114,9 @@ class SecurityManager:
                 "- ✅ Full access to salary information\n"
                 "- ✅ Can approve salary changes\n"
                 "- ✅ Can modify project statuses\n"
-                "- ✅ Can grant bonuses to any employee"
+                "- ✅ Can modify project teams (add/remove members, change roles, swap workloads)\n"
+                "- ✅ Can grant bonuses to any employee\n"
+                "⚠️ You have FULL authority to modify ANY project, even if you are not the Lead!"
             )
 
         # External department has limited access but IS authenticated (not Guest!)

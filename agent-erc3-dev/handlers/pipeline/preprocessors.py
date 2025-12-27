@@ -3,7 +3,7 @@ Request preprocessors.
 
 Prepare and normalize requests before API execution.
 """
-
+import re
 from typing import TYPE_CHECKING
 
 from erc3.erc3 import client
@@ -50,6 +50,17 @@ class EmployeeUpdatePreprocessor(Preprocessor):
             current_user = self._get_current_user(ctx)
             if current_user:
                 model.changed_by = current_user
+
+        # AICODE-NOTE: t037 FIX - Track notes for salary injection guard
+        # Store employee ID and notes text so guard can detect salary-related notes
+        # AICODE-NOTE: Req_UpdateEmployeeInfo uses 'employee' field, not 'id'
+        notes = getattr(model, 'notes', None)
+        if notes:
+            employee_id = getattr(model, 'employee', None)
+            if employee_id:
+                employee_notes_updated = ctx.shared.get('employee_notes_updated', {})
+                employee_notes_updated[employee_id] = notes
+                ctx.shared['employee_notes_updated'] = employee_notes_updated
 
         # Clear fields based on intent
         self._clear_fields(model, salary_only)
@@ -147,3 +158,62 @@ class SkillNameCorrectionPreprocessor(Preprocessor):
                     return correct_skill
 
         return skill_name
+
+
+class SendToLocationPreprocessor(Preprocessor):
+    """
+    AICODE-NOTE: t013 FIX - Warn when agent uses location filter with "send to" pattern.
+
+    Problem: Task says "send employee to Milano" and agent filters by location='HQ – Italy'
+    thinking employees must BE in Milano. But "send TO" means DESTINATION, not current location.
+
+    Solution: When task contains "send to [location]"/"assign to [location]" patterns AND
+    agent uses location filter in employees_search → add warning hint.
+    """
+
+    # Patterns indicating destination, not current location
+    SEND_TO_PATTERNS = [
+        re.compile(r'\bsend\s+(?:\w+\s+)?to\s+(\w+)', re.IGNORECASE),
+        re.compile(r'\bassign\s+(?:\w+\s+)?to\s+(\w+)', re.IGNORECASE),
+        re.compile(r'\bdispatch\s+(?:\w+\s+)?to\s+(\w+)', re.IGNORECASE),
+        re.compile(r'\btravel\s+to\s+(\w+)', re.IGNORECASE),
+    ]
+
+    def can_process(self, ctx: 'ToolContext') -> bool:
+        """Process only employee search requests with location filter."""
+        if not isinstance(ctx.model, client.Req_SearchEmployees):
+            return False
+        # Check if location filter is being used
+        return getattr(ctx.model, 'location', None) is not None
+
+    def process(self, ctx: 'ToolContext') -> None:
+        """Check for send-to pattern and warn about location filter misuse."""
+        task_text = self._get_task_text(ctx)
+        if not task_text:
+            return
+
+        # Check if task has "send to" pattern
+        for pattern in self.SEND_TO_PATTERNS:
+            match = pattern.search(task_text)
+            if match:
+                destination = match.group(1)
+                location_filter = ctx.model.location
+
+                # Add warning to results
+                warning = (
+                    f"\n⚠️ **LOCATION FILTER WARNING** (t013 fix):\n"
+                    f"Task says 'send/assign to {destination}' - this is a DESTINATION, not current location!\n"
+                    f"You are filtering by location='{location_filter}', which may EXCLUDE valid candidates.\n\n"
+                    f"🔴 **REMOVE location filter!** Search ALL employees, not just those at {location_filter}.\n"
+                    f"   Correct: employees_search(skills=[...]) WITHOUT location filter\n"
+                    f"   Wrong: employees_search(skills=[...], location='{location_filter}')\n\n"
+                    f"The employee will be SENT to {destination}, they don't need to be there NOW."
+                )
+                ctx.results.append(warning)
+                print(f"  ⚠️ [t013 fix] Warning: location filter with 'send to' pattern detected")
+                return
+
+    def _get_task_text(self, ctx: 'ToolContext') -> str:
+        """Extract task text from context."""
+        task = ctx.shared.get("task")
+        return getattr(task, "task_text", "") or ""

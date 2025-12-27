@@ -13,6 +13,14 @@ from .middleware import (
     ProjectLeadsSalaryComparisonGuard,
     SkillIdResponseGuard,
     ExternalProjectStatusGuard,
+    SalaryNoteInjectionGuard,
+    InternalProjectContactGuard,
+    RecommendationLinksGuard,
+    TieBreakerWinnerGuard,
+    SingularProjectQueryGuard,
+    SkillsIDontHaveGuard,
+    MostSkilledVerificationGuard,
+    CoachingSearchGuard,
     AmbiguityGuardMiddleware,
     TimeLoggingClarificationGuard,
     TimeLoggingAuthorizationGuard,
@@ -22,6 +30,7 @@ from .middleware import (
     BasicLookupDenialGuard,
     ProjectModificationClarificationGuard,
     ProjectTeamModAuthorizationGuard,
+    ProjectStatusChangeAuthGuard,
     SubjectiveQueryGuard,
     IncompletePaginationGuard,
     VagueQueryNotFoundGuard,
@@ -29,6 +38,7 @@ from .middleware import (
     PaginationEnforcementMiddleware,
     CustomerContactPaginationMiddleware,
     ProjectSearchOffsetGuard,
+    CoachingTimeoutGuard,
     # M&A Compliance
     CCCodeValidationGuard,
     JiraTicketRequirementGuard,
@@ -57,6 +67,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         PaginationEnforcementMiddleware(),            # Blocks analysis tools when pagination is incomplete
         CustomerContactPaginationMiddleware(),        # t087: Blocks customers_get when customers_list incomplete
         ProjectSearchOffsetGuard(),                   # t069: Validates sequential offsets for projects_search
+        CoachingTimeoutGuard(),                       # t077: Force respond on last turns for coaching queries
         NameResolutionGuard(),                        # Ensures human names resolved to IDs (t007, t008)
         MultipleMatchClarificationGuard(),            # t080: Requires clarification when multiple name matches
         OutcomeValidationMiddleware(),                # Validates denied outcomes (unsupported vs security)
@@ -72,7 +83,16 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         ContactEmailResponseGuard(),                  # t087: Block internal email for contact email queries
         ProjectLeadsSalaryComparisonGuard(),          # t016: Auto-add missing leads in salary comparison
         SkillIdResponseGuard(),                       # t094: Block raw skill IDs in response
+        SkillsIDontHaveGuard(),                       # t094: Force ok_answer for 'skills I don't have' queries
+        MostSkilledVerificationGuard(),               # t013: Force verification when single result at max level
+        CoachingSearchGuard(),                        # t077: Require skill search before coaching response
         ExternalProjectStatusGuard(),                 # t053: Block project status change from External dept
+        SalaryNoteInjectionGuard(),                   # t037: Block salary-related notes from non-executives
+        InternalProjectContactGuard(),                # t026: Block ok_answer for internal project contact queries
+        RecommendationLinksGuard(),                   # t056: Auto-add missing employee links in list queries
+        TieBreakerWinnerGuard(),                      # t075: Auto-correct employee link to calculated winner
+        ProjectStatusChangeAuthGuard(),               # t054: Block ok_answer for status change without auth
+        SingularProjectQueryGuard(),                  # t029: Force single project for singular queries
     ]
     if security_manager:
         middleware.append(SecurityMiddleware(security_manager))

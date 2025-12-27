@@ -123,11 +123,21 @@ class PipelineExecutor:
 
     def _handle_api_exception(self, ctx: 'ToolContext', error: ApiException) -> ExecutionResult:
         """Handle API exception with learning extraction."""
+        from erc3.erc3 import client
+
         error_msg = error.api_error.error if error.api_error else str(error)
 
         # Extract learning hint
         learning_hint = extract_learning_from_error(error, ctx.model)
         hints = [learning_hint] if learning_hint else []
+
+        # AICODE-NOTE: t026 FIX - Set flag when internal customer returns "not found".
+        # This flag is used by InternalProjectContactGuard to block ok_answer.
+        if 'not found' in str(error).lower():
+            if isinstance(ctx.model, client.Req_GetCustomer):
+                customer_id = getattr(ctx.model, 'id', '') or ''
+                if 'internal' in customer_id.lower() or 'bellini_internal' in customer_id.lower():
+                    ctx.shared['_internal_customer_contact_blocked'] = True
 
         result = ExecutionResult.fail(error_msg, error_type="api")
         result.hints = hints

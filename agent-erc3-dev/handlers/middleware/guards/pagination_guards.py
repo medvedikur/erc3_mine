@@ -3,6 +3,9 @@ Pagination Guards - enforce pagination completeness.
 
 Guards:
 - PaginationEnforcementMiddleware: Blocks analysis tools when pagination is incomplete
+- ProjectSearchOffsetGuard: Validates sequential offsets for projects_search
+- CustomerContactPaginationMiddleware: Blocks customers_get when customers_list incomplete
+- CoachingTimeoutGuard: Forces respond on last turns for coaching queries
 """
 import re
 from typing import Set
@@ -294,3 +297,86 @@ class CustomerContactPaginationMiddleware(Middleware):
         ctx.results.append(block_msg)
         return True
 
+
+class CoachingTimeoutGuard(Middleware):
+    """
+    AICODE-NOTE: t077 FIX - Forces respond on last turns for coaching queries.
+
+    Problem: Agent gets coaching query (find coaches for X), starts searching
+    for employees with skill level >= 7 across 15 skills. This requires many
+    pagination calls. Agent runs out of turns doing pagination and never responds.
+
+    Root cause: LLM sometimes generates malformed JSON with 15 action items,
+    parser fails, action_queue becomes empty, agent wastes turn(s), then
+    restarts pagination from scratch. By turn 17-20, still paginating.
+
+    Solution: If coaching query AND remaining turns <= 2 AND we have coaching
+    search results → block further employees_search and force respond.
+
+    This is a HARD block (no repeat allowed) because on last turns we MUST respond.
+    """
+
+    COACHING_PATTERNS = [
+        r'\bcoach\b',
+        r'\bmentor\b',
+        r'\bupskill\b',
+        r'\bimprove\s+(?:his|her|their)?\s*skills?\b',
+    ]
+
+    def __init__(self):
+        self._coaching_re = re.compile(
+            '|'.join(self.COACHING_PATTERNS), re.IGNORECASE
+        )
+
+    def process(self, ctx: ToolContext) -> None:
+        tool_name = ctx.raw_action.get('tool', '')
+
+        # Only intercept employees_search when doing coaching
+        if tool_name != 'employees_search':
+            return
+
+        task_text = get_task_text(ctx)
+        if not task_text:
+            return
+
+        # Check if this is a coaching query
+        if not self._coaching_re.search(task_text):
+            return
+
+        # Check turn budget
+        current_turn = ctx.shared.get('current_turn', 0)
+        max_turns = ctx.shared.get('max_turns', 20)
+        remaining_turns = max_turns - current_turn - 1
+
+        # Only block on last 2 turns
+        if remaining_turns > 2:
+            return
+
+        # Check if we have coaching search results
+        coaching_results = ctx.shared.get('coaching_skill_search_results', 0)
+        query_subject_ids = ctx.shared.get('query_subject_ids', set())
+
+        # Need to have found coachee AND some coaches
+        if not query_subject_ids or coaching_results < 5:
+            # Not enough data yet - let it continue
+            return
+
+        # HARD BLOCK - force respond now
+        from utils import CLI_RED
+        coachee_list = ', '.join(sorted(query_subject_ids)[:3])
+
+        print(f"  {CLI_RED}🛑 CoachingTimeoutGuard: Blocking search - must respond now!{CLI_CLR}")
+        ctx.stop_execution = True
+        ctx.results.append(
+            f"⛔ TIME LIMIT REACHED - RESPOND NOW!\n\n"
+            f"You have only {remaining_turns} turns left. You MUST respond immediately.\n\n"
+            f"**Data collected so far:**\n"
+            f"  • Coachee: {coachee_list}\n"
+            f"  • Potential coaches found: {coaching_results}+\n\n"
+            f"**REQUIRED ACTION:**\n"
+            f"Use `respond` tool NOW with:\n"
+            f"  • outcome: \"ok_answer\"\n"
+            f"  • message: List all employees found as potential coaches\n"
+            f"  • links: Include ALL employee IDs you found with level >= 7\n\n"
+            f"⚠️ DO NOT call employees_search again. Respond with what you have!"
+        )
