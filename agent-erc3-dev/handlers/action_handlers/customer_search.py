@@ -75,7 +75,11 @@ class CustomerSearchHandler(ActionHandler):
                 if len(w) >= 3 and w not in self.STOP_WORDS
             ]
 
-            if len(keywords) > 1:
+            # AICODE-NOTE: t071 FIX - Try keyword fallback even with single keyword
+            # if exact match returned 0 results. Example: "FerroRail Group" →
+            # 'group' is stop word, so only 'ferrorail' remains. If exact "FerroRail Group"
+            # failed, we should try just 'ferrorail'.
+            if len(keywords) >= 1 and len(customers_map) == 0:
                 print(f"  {CLI_BLUE}🔍 Smart Search: Executing keyword fallback for customers{CLI_CLR}")
 
                 for kw in keywords:

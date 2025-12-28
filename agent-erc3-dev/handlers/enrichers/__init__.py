@@ -43,6 +43,8 @@ from .response_enrichers import (
     LeadSalaryComparisonHintEnricher,
     BusiestEmployeeTimeSliceEnricher,
     LeastBusyEmployeeTimeSliceEnricher,
+    SendToLocationHintEnricher,
+    CoachingWillHintEnricher,
 )
 
 __all__ = [
@@ -78,4 +80,6 @@ __all__ = [
     'LeadSalaryComparisonHintEnricher',
     'BusiestEmployeeTimeSliceEnricher',
     'LeastBusyEmployeeTimeSliceEnricher',
+    'SendToLocationHintEnricher',
+    'CoachingWillHintEnricher',
 ]

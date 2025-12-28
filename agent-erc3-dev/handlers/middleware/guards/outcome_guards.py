@@ -136,6 +136,44 @@ class IncompletePaginationGuard(ResponseGuard):
             )
 
 
+class YesNoGuard(ResponseGuard):
+    """
+    AICODE-NOTE: t022 FIX - Ensures Yes/No questions get English "Yes"/"No" in response.
+    Problem: Agent responds in Russian "Да" when question is in Russian, but benchmark expects "Yes".
+    Solution: If task ends with (Yes/No) or asks for yes/no, force English keywords.
+    """
+    target_outcomes = {"ok_answer"}
+    
+    def _check(self, ctx: ToolContext, outcome: str) -> None:
+        task_text = get_task_text(ctx)
+        if not task_text:
+            return
+            
+        # Check if task explicitly asks for Yes/No (case insensitive)
+        if "(yes/no)" in task_text.lower() or "yes or no" in task_text.lower():
+            message = ctx.model.message or ""
+            msg_lower = message.lower()
+            
+            # Check if English Yes/No is missing
+            has_yes = "yes" in msg_lower
+            has_no = "no" in msg_lower
+            
+            if not (has_yes or has_no):
+                # Check for Russian equivalents
+                if "да" in msg_lower:
+                    ctx.model.message = f"Yes (Да). {message}"
+                    print(f"  {CLI_GREEN}✓ YesNoGuard: Added English 'Yes' to response{CLI_CLR}")
+                elif "нет" in msg_lower:
+                    ctx.model.message = f"No (Нет). {message}"
+                    print(f"  {CLI_GREEN}✓ YesNoGuard: Added English 'No' to response{CLI_CLR}")
+                else:
+                    # Ambiguous - warn
+                    ctx.results.append(
+                        "⚠️ FORMAT WARNING: Task asks for (Yes/No) but your response doesn't contain 'Yes' or 'No'.\n"
+                        "Please include the English word 'Yes' or 'No' clearly."
+                    )
+
+
 class AmbiguityGuardMiddleware(ResponseGuard):
     """
     Guard for ok_not_found responses without database search.

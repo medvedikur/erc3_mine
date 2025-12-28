@@ -39,6 +39,19 @@ class ProjectMembershipMiddleware(Middleware):
                 is_authorized = False
                 auth_reason = None
 
+                # AICODE-NOTE: t034 FIX - Only draft entries can be logged for others.
+                # Project leads may log DRAFT entries for team members, but cannot approve/submit.
+                status = (getattr(ctx.model, 'status', None) or 'draft').lower()
+                if status != 'draft':
+                    print(f"  {CLI_RED}⛔ Authorization Denied: Non-draft time log for another employee{CLI_CLR}")
+                    ctx.stop_execution = True
+                    ctx.results.append(
+                        f"AUTHORIZATION ERROR: You cannot log time with status '{status}' for another employee. "
+                        f"Only **draft** entries can be logged on behalf of others, and approvals must be done by "
+                        f"the proper reviewer. Use `denied_security` for this request."
+                    )
+                    return
+
                 try:
                     # 1. Check if current_user is Direct Manager of target employee
                     target_employee = ctx.api.dispatch(client.Req_GetEmployee(id=employee_id))

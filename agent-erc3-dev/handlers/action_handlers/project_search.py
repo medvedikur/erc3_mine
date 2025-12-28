@@ -8,7 +8,8 @@ This handler implements intelligent project search that:
 4. Merges all results and returns unique projects
 """
 import copy
-from typing import Any
+
+from typing import Any, Optional
 from erc3.erc3 import client
 from .base import ActionHandler
 from ..base import ToolContext
@@ -42,6 +43,18 @@ class ProjectSearchHandler(ActionHandler):
         projects_map = {}
         exact_error = None
         res_exact = None
+
+        # AICODE-NOTE: t000/t070 FIX - Resolve customer name to ID for projects_search.
+        # API expects customer_id; passing a customer name returns no results.
+        customer_id = getattr(ctx.model, 'customer_id', None)
+        if customer_id and isinstance(customer_id, str) and not customer_id.startswith('cust_'):
+            print(f"  {CLI_BLUE}🔍 Attempting to resolve customer: '{customer_id}'{CLI_CLR}")
+            resolved = self._resolve_customer_id(ctx, customer_id)
+            if resolved:
+                ctx.model.customer_id = resolved
+                print(f"  {CLI_GREEN}✓ Resolved customer '{customer_id}' → {resolved}{CLI_CLR}")
+            else:
+                print(f"  {CLI_YELLOW}⚠ Could not resolve customer '{customer_id}'{CLI_CLR}")
 
         # 1. Exact Match (Original Request)
         try:
@@ -121,3 +134,43 @@ class ProjectSearchHandler(ActionHandler):
         # Store result in context for DefaultActionHandler enrichments
         ctx.shared['_project_search_result'] = result
         return False  # Let default handler continue with enrichments
+
+    def _resolve_customer_id(self, ctx: ToolContext, customer_ref: str) -> Optional[str]:
+        """Resolve a customer name to a customer ID via customers_search."""
+        try:
+            # AICODE-NOTE: t070 FIX - Req_SearchCustomers requires offset and limit
+            res = ctx.api.dispatch(client.Req_SearchCustomers(
+                query=customer_ref,
+                offset=0,
+                limit=5
+            ))
+        except Exception as e:
+            print(f"  {CLI_YELLOW}⚠ Customer search failed: {e}{CLI_CLR}")
+            return None
+
+        companies = getattr(res, 'companies', None) or getattr(res, 'customers', None) or []
+        if not companies:
+            print(f"  {CLI_YELLOW}⚠ No customers found for '{customer_ref}'{CLI_CLR}")
+            return None
+
+        # AICODE-NOTE: t070 FIX - Improved matching: fuzzy match on partial name
+        ref_lower = customer_ref.strip().lower()
+
+        # First try exact match
+        exact = [c for c in companies if getattr(c, 'name', '').strip().lower() == ref_lower]
+        if len(exact) == 1:
+            return getattr(exact[0], 'id', None)
+
+        # Try partial match (customer name contains query or vice versa)
+        partial = [c for c in companies
+                   if ref_lower in getattr(c, 'name', '').strip().lower()
+                   or getattr(c, 'name', '').strip().lower() in ref_lower]
+        if len(partial) == 1:
+            return getattr(partial[0], 'id', None)
+
+        # If only one result, use it
+        if len(companies) == 1:
+            return getattr(companies[0], 'id', None)
+
+        print(f"  {CLI_YELLOW}⚠ Multiple customers match '{customer_ref}': {[getattr(c, 'name', '?') for c in companies[:3]]}{CLI_CLR}")
+        return None

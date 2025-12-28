@@ -9,7 +9,12 @@ from typing import Any, List, TYPE_CHECKING
 from erc3.erc3 import client
 
 from .base import Preprocessor, PostProcessor
-from .preprocessors import EmployeeUpdatePreprocessor, SkillNameCorrectionPreprocessor, SendToLocationPreprocessor
+from .preprocessors import (
+    EmployeeUpdatePreprocessor,
+    SkillNameCorrectionPreprocessor,
+    SendToLocationPreprocessor,
+    LocationNameCorrectionPreprocessor,
+)
 from .postprocessors import (
     IdentityPostProcessor,
     WikiSyncPostProcessor,
@@ -32,7 +37,8 @@ from ..enrichers import (
     ProjectTeamNameResolutionHintEnricher, ProjectSkillsHintEnricher,
     SwapWorkloadsHintEnricher, KeyAccountExplorationHintEnricher,
     LeadSalaryComparisonHintEnricher, BusiestEmployeeTimeSliceEnricher,
-    LeastBusyEmployeeTimeSliceEnricher,
+    LeastBusyEmployeeTimeSliceEnricher, SendToLocationHintEnricher,
+    CoachingWillHintEnricher,
 )
 from utils import CLI_BLUE, CLI_GREEN, CLI_YELLOW, CLI_CLR
 
@@ -58,6 +64,7 @@ class ActionPipeline:
         self._preprocessors: List[Preprocessor] = [
             EmployeeUpdatePreprocessor(),
             SkillNameCorrectionPreprocessor(),  # t056 fix: auto-correct skill names
+            LocationNameCorrectionPreprocessor(),  # t012/t086: "City (Country)" -> "City Office – Country"
             SendToLocationPreprocessor(),  # t013 fix: warn about location filter with "send to"
         ]
 
@@ -101,6 +108,8 @@ class ActionPipeline:
         self._lead_salary_hints = LeadSalaryComparisonHintEnricher()
         self._busiest_time_slice_hints = BusiestEmployeeTimeSliceEnricher()
         self._least_busy_time_slice_hints = LeastBusyEmployeeTimeSliceEnricher()
+        self._send_to_hints = SendToLocationHintEnricher()
+        self._coaching_will_hints = CoachingWillHintEnricher()
         self._combined_skill_will_hints = CombinedSkillWillHintEnricher()
         self._project_customer_search_hints = ProjectCustomerSearchHintEnricher()
 
@@ -157,11 +166,18 @@ class ActionPipeline:
         if next_offset > 0:
             pending = ctx.shared.get('pending_pagination', {})
             action_name = type(ctx.model).__name__
+            # AICODE-NOTE: t087 FIX - customers_list returns `companies`, not `customers`.
+            # Keep this generic so pagination guards can show correct fetched counts.
+            page_items = (
+                getattr(result, 'employees', None) or
+                getattr(result, 'projects', None) or
+                getattr(result, 'customers', None) or
+                getattr(result, 'companies', None) or
+                []
+            )
             pending[action_name] = {
                 'next_offset': next_offset,
-                'current_count': len(getattr(result, 'employees', []) or
-                                    getattr(result, 'projects', []) or
-                                    getattr(result, 'customers', []) or [])
+                'current_count': len(page_items or [])
             }
             ctx.shared['pending_pagination'] = pending
         elif next_offset == -1:
@@ -171,6 +187,38 @@ class ActionPipeline:
             if action_name in pending:
                 del pending[action_name]
                 ctx.shared['pending_pagination'] = pending
+
+        # AICODE-NOTE: t087 FIX - Track ALL customer IDs seen via customers_list for later validation.
+        # This enables response guards to ensure exhaustive scanning before concluding ok_not_found.
+        if isinstance(ctx.model, client.Req_ListCustomers):
+            companies = getattr(result, 'companies', None) or []
+            seen_ids = ctx.shared.get('_customers_list_ids', set())
+            if not isinstance(seen_ids, set):
+                try:
+                    seen_ids = set(seen_ids)  # type: ignore[arg-type]
+                except Exception:
+                    seen_ids = set()
+            for comp in companies:
+                comp_id = comp.get('id') if isinstance(comp, dict) else getattr(comp, 'id', None)
+                if comp_id:
+                    seen_ids.add(comp_id)
+            ctx.shared['_customers_list_ids'] = seen_ids
+
+            # Track completion explicitly for easier guard checks
+            ctx.shared['_customers_list_complete'] = (next_offset == -1)
+
+        # AICODE-NOTE: t087 FIX - Track which customers were actually checked via customers_get.
+        if isinstance(ctx.model, client.Req_GetCustomer):
+            cust_id = getattr(ctx.model, 'id', None)
+            if cust_id:
+                checked = ctx.shared.get('_customers_get_checked_ids', set())
+                if not isinstance(checked, set):
+                    try:
+                        checked = set(checked)  # type: ignore[arg-type]
+                    except Exception:
+                        checked = set()
+                checked.add(cust_id)
+                ctx.shared['_customers_get_checked_ids'] = checked
 
         # 4. Run postprocessors
         result = self._run_postprocessors(ctx, result)
@@ -332,6 +380,18 @@ class ActionPipeline:
         # AICODE-NOTE: t013 FIX - pass shared context for state tracking
         hint = self._skill_strategy_hints.maybe_hint_skill_strategy(ctx.model, result, task_text, ctx.shared)
         if hint:
+            ctx.results.append(hint)
+
+        # AICODE-NOTE: t013 FIX - Show hint for "send to" location mismatch
+        if hint := self._send_to_hints.maybe_hint_location_check(
+            ctx.model, result, task_text
+        ):
+            ctx.results.append(hint)
+
+        # AICODE-NOTE: t077 FIX - Clarify valid coaching wills
+        if hint := self._coaching_will_hints.maybe_hint_coaching_wills(
+            ctx.model, task_text
+        ):
             ctx.results.append(hint)
 
         # Combined skill + will search hints (t056)

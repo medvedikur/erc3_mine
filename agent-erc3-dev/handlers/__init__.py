@@ -16,7 +16,9 @@ from .middleware import (
     SalaryNoteInjectionGuard,
     InternalProjectContactGuard,
     RecommendationLinksGuard,
+    ComparisonTieLinksGuard,
     TieBreakerWinnerGuard,
+    WorkloadExtremaLinksGuard,
     SingularProjectQueryGuard,
     SkillsIDontHaveGuard,
     MostSkilledVerificationGuard,
@@ -34,6 +36,7 @@ from .middleware import (
     SubjectiveQueryGuard,
     IncompletePaginationGuard,
     VagueQueryNotFoundGuard,
+    YesNoGuard,
     # Pagination Guards
     PaginationEnforcementMiddleware,
     CustomerContactPaginationMiddleware,
@@ -47,6 +50,8 @@ from .middleware import (
     # Name Resolution Guards
     NameResolutionGuard,
     MultipleMatchClarificationGuard,
+    LocationExclusionGuard,
+    ProjectLeadLinkGuard,
 )
 
 def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManager, task=None):
@@ -63,6 +68,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         BasicLookupDenialGuard(),                     # Catches denied_security for basic org-chart lookups
         SubjectiveQueryGuard(),                       # Blocks ok_answer on subjective queries (cool, best, that)
         VagueQueryNotFoundGuard(),                    # Blocks ok_not_found on vague queries (t005 fix)
+        YesNoGuard(),                                 # t022: Enforce English Yes/No
         IncompletePaginationGuard(),                  # Blocks ok_answer when LIST query has unfetched pages
         PaginationEnforcementMiddleware(),            # Blocks analysis tools when pagination is incomplete
         CustomerContactPaginationMiddleware(),        # t087: Blocks customers_get when customers_list incomplete
@@ -90,9 +96,13 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         SalaryNoteInjectionGuard(),                   # t037: Block salary-related notes from non-executives
         InternalProjectContactGuard(),                # t026: Block ok_answer for internal project contact queries
         RecommendationLinksGuard(),                   # t056: Auto-add missing employee links in list queries
+        ComparisonTieLinksGuard(),                    # t073: Ensure links on tie when task says "both if tied"
         TieBreakerWinnerGuard(),                      # t075: Auto-correct employee link to calculated winner
+        WorkloadExtremaLinksGuard(),                  # t012: Enforce busiest/least-busy employee links from workload enrichment
         ProjectStatusChangeAuthGuard(),               # t054: Block ok_answer for status change without auth
         SingularProjectQueryGuard(),                  # t029: Force single project for singular queries
+        LocationExclusionGuard(),                     # t013: Hint to exclude employees in target location for 'send to' tasks
+        ProjectLeadLinkGuard(),                       # t000: Auto-add employee link for "who is lead" queries
     ]
     if security_manager:
         middleware.append(SecurityMiddleware(security_manager))

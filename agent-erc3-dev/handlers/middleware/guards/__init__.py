@@ -19,6 +19,7 @@ from .outcome_guards import (
     SubjectiveQueryGuard,
     IncompletePaginationGuard,
     VagueQueryNotFoundGuard,
+    YesNoGuard,
 )
 
 from .project_guards import (
@@ -49,11 +50,15 @@ from .response_guards import (
     SalaryNoteInjectionGuard,
     InternalProjectContactGuard,
     RecommendationLinksGuard,
+    ComparisonTieLinksGuard,
     TieBreakerWinnerGuard,
+    WorkloadExtremaLinksGuard,
     SingularProjectQueryGuard,
     SkillsIDontHaveGuard,
     MostSkilledVerificationGuard,
     CoachingSearchGuard,
+    LocationExclusionGuard,
+    ProjectLeadLinkGuard,
 )
 
 from .ma_compliance_guards import (
@@ -85,6 +90,7 @@ __all__ = [
     'SubjectiveQueryGuard',
     'IncompletePaginationGuard',
     'VagueQueryNotFoundGuard',
+    'YesNoGuard',
     'PaginationEnforcementMiddleware',
     'CustomerContactPaginationMiddleware',
     'ProjectSearchOffsetGuard',
@@ -111,11 +117,15 @@ __all__ = [
     'SalaryNoteInjectionGuard',
     'InternalProjectContactGuard',
     'RecommendationLinksGuard',
+    'ComparisonTieLinksGuard',
     'TieBreakerWinnerGuard',
+    'WorkloadExtremaLinksGuard',
     'SingularProjectQueryGuard',
     'SkillsIDontHaveGuard',
     'MostSkilledVerificationGuard',
     'CoachingSearchGuard',
+    'LocationExclusionGuard',
+    'ProjectLeadLinkGuard',
     # M&A Compliance Guards
     'CCCodeValidationGuard',
     'JiraTicketRequirementGuard',

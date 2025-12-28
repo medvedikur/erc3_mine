@@ -292,14 +292,33 @@ class MultipleMatchClarificationGuard(ResponseGuard):
             )
 
     def _extract_standalone_name(self, text: str) -> Optional[str]:
-        """Extract a standalone first name from task text."""
-        # Common patterns: "of Iva", "about Iva", "for Iva", "is Iva"
+        """Extract a standalone first name from task text.
+
+        AICODE-NOTE: t044 FIX - Only return name if it's truly standalone (no last name follows).
+        "of Sanna Alberto" -> None (full name)
+        "of Sanna?" -> "Sanna" (standalone)
+        """
+        # First check: if there's a full name pattern (First Last), don't extract
+        # Match "of/about/for FirstName LastName" - indicates full name, not standalone
+        full_name_patterns = [
+            r'\bof\s+[A-Z][a-z]{1,15}\s+[A-Z][a-z]{1,20}',  # "of Sanna Alberto"
+            r'\babout\s+[A-Z][a-z]{1,15}\s+[A-Z][a-z]{1,20}',
+            r'\bfor\s+[A-Z][a-z]{1,15}\s+[A-Z][a-z]{1,20}',
+            r'[A-Z][a-z]{1,15}\s+[A-Z][a-z]{1,20}\s*[?.]?\s*$',  # "Sanna Alberto?" at end
+        ]
+
+        for pattern in full_name_patterns:
+            if re.search(pattern, text):
+                # Full name detected, not a standalone first name
+                return None
+
+        # Now check for standalone first name patterns
         patterns = [
             r'\bof\s+([A-Z][a-z]{1,15})\b(?!\s+[A-Z])',  # "of Iva" but not "of Iva Vidović"
             r'\babout\s+([A-Z][a-z]{1,15})\b(?!\s+[A-Z])',
             r'\bfor\s+([A-Z][a-z]{1,15})\b(?!\s+[A-Z])',
             r'\bis\s+([A-Z][a-z]{1,15})\b(?!\s+[A-Z])',
-            r'\b([A-Z][a-z]{1,15})\s*$',  # Name at end of sentence
+            r'\b([A-Z][a-z]{1,15})\s*[?]?\s*$',  # Name at end of sentence (before ? or end)
         ]
 
         for pattern in patterns:

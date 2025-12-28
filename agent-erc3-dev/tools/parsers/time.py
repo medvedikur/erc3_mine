@@ -177,8 +177,8 @@ def _parse_time_summary_by_employee(ctx: ParseContext) -> Any:
         customers = [customers]
 
     # Get date range - these are required fields
-    date_from = ctx.args.get("date_from")
-    date_to = ctx.args.get("date_to")
+    date_from = ctx.args.get("date_from") or ctx.args.get("from_date") or ctx.args.get("from")
+    date_to = ctx.args.get("date_to") or ctx.args.get("to_date") or ctx.args.get("to")
 
     # If dates not provided, use sensible defaults
     if not date_from or not date_to:

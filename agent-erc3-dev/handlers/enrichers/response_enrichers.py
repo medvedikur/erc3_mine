@@ -1103,6 +1103,38 @@ class SkillSearchStrategyHintEnricher:
         return None
 
 
+class CoachingWillHintEnricher:
+    """
+    AICODE-NOTE: t077 FIX - Clarify valid coaching/mentoring wills.
+    Agent often treats 'will_people_management' as coaching interest, but it means
+    career ambition (wanting to be a manager). Real coaching wills are 'will_mentor_...'.
+    """
+
+    def maybe_hint_coaching_wills(
+        self,
+        model: Any,
+        task_text: str
+    ) -> Optional[str]:
+        # Only relevant for employees_get (checking profile) or employees_search
+        if not isinstance(model, (client.Req_GetEmployee, client.Req_SearchEmployees)):
+            return None
+
+        task_lower = task_text.lower()
+        # AICODE-NOTE: t017 FIX (over-filtering)
+        # Only trigger mentoring/coaching will guidance when the task EXPLICITLY asks for it.
+        # "trainer/training" alone should NOT force checking will_mentor_* (optional unless requested).
+        if not any(kw in task_lower for kw in ['coach', 'mentor', 'upskill']):
+            return None
+            
+        return (
+            "💡 COACHING CRITERIA: When checking if an employee can be a coach/mentor:\n"
+            "  ✅ Look for `will_mentor_juniors` or `will_sharing_knowledge` (>= 7)\n"
+            "  ❌ `will_people_management` means 'wants to be a manager/boss' (career ambition)\n"
+            "  ❌ `will_process_improvement` is about efficiency, not people\n"
+            "  👉 A good coach must have the SKILL (level >= 7) AND the WILL to mentor!\n"
+            "  ⚠️ EXCLUDE employees who lack mentoring wills, even if they have high skills."
+        )
+
 class CombinedSkillWillHintEnricher:
     """
     Provides hints when task requires both skill AND will filtering.
@@ -1416,6 +1448,125 @@ class ProjectNameNormalizationHintEnricher:
                 f"  - Try without special chars: search for key words separately"
             )
 
+        return None
+
+
+class SendToLocationHintEnricher:
+    """
+    AICODE-NOTE: t013 FIX - Hints to check if candidate is already in destination.
+    When task says "send to X", prefer candidates NOT in X.
+    """
+    
+    # Patterns indicating destination
+    SEND_TO_PATTERNS = [
+        re.compile(r'\bsend\s+(?:\w+\s+)?to\s+(\w+)', re.IGNORECASE),
+        re.compile(r'\bassign\s+(?:\w+\s+)?to\s+(\w+)', re.IGNORECASE),
+        re.compile(r'\bdispatch\s+(?:\w+\s+)?to\s+(\w+)', re.IGNORECASE),
+        re.compile(r'\btravel\s+to\s+(\w+)', re.IGNORECASE),
+    ]
+
+    def maybe_hint_location_check(
+        self,
+        model: Any,
+        result: Any,
+        task_text: str
+    ) -> Optional[str]:
+        if not isinstance(model, client.Req_SearchEmployees):
+            return None
+            
+        employees = getattr(result, 'employees', []) or []
+        if not employees:
+            return None
+            
+        # Check for destination
+        destination = None
+        for pattern in self.SEND_TO_PATTERNS:
+            match = pattern.search(task_text)
+            if match:
+                destination = match.group(1)
+                break
+        
+        if not destination:
+            return None
+            
+        # Check if found employees are in destination
+        in_destination = []
+        for emp in employees:
+            loc = getattr(emp, 'location', '')
+            if destination.lower() in loc.lower():
+                in_destination.append(getattr(emp, 'id', ''))
+                
+        if in_destination and len(in_destination) < len(employees):
+            # Mixed results (some in, some out) - no hint needed, agent can choose
+            return None
+            
+        if in_destination and len(in_destination) == len(employees):
+            # ALL found employees are already in the destination!
+            return (
+                f"⚠️ LOCATION CHECK: You found {len(employees)} employees, but they are ALL already in '{destination}'.\n"
+                f"Task asks to 'send to {destination}' - usually implying travel for someone NOT currently there.\n"
+                f"Consider searching for candidates in OTHER locations if possible."
+            )
+            
+        return None
+
+class SendToLocationHintEnricher:
+    """
+    AICODE-NOTE: t013 FIX - Hints to check if candidate is already in destination.
+    When task says "send to X", prefer candidates NOT in X.
+    """
+    
+    # Patterns indicating destination
+    SEND_TO_PATTERNS = [
+        re.compile(r'\bsend\s+(?:\w+\s+)?to\s+(\w+)', re.IGNORECASE),
+        re.compile(r'\bassign\s+(?:\w+\s+)?to\s+(\w+)', re.IGNORECASE),
+        re.compile(r'\bdispatch\s+(?:\w+\s+)?to\s+(\w+)', re.IGNORECASE),
+        re.compile(r'\btravel\s+to\s+(\w+)', re.IGNORECASE),
+    ]
+
+    def maybe_hint_location_check(
+        self,
+        model: Any,
+        result: Any,
+        task_text: str
+    ) -> Optional[str]:
+        if not isinstance(model, client.Req_SearchEmployees):
+            return None
+            
+        employees = getattr(result, 'employees', []) or []
+        if not employees:
+            return None
+            
+        # Check for destination
+        destination = None
+        for pattern in self.SEND_TO_PATTERNS:
+            match = pattern.search(task_text)
+            if match:
+                destination = match.group(1)
+                break
+        
+        if not destination:
+            return None
+            
+        # Check if found employees are in destination
+        in_destination = []
+        for emp in employees:
+            loc = getattr(emp, 'location', '')
+            if destination.lower() in loc.lower():
+                in_destination.append(getattr(emp, 'id', ''))
+                
+        if in_destination and len(in_destination) < len(employees):
+            # Mixed results (some in, some out) - no hint needed, agent can choose
+            return None
+            
+        if in_destination and len(in_destination) == len(employees):
+            # ALL found employees are already in the destination!
+            return (
+                f"⚠️ LOCATION CHECK: You found {len(employees)} employees, but they are ALL already in '{destination}'.\n"
+                f"Task asks to 'send to {destination}' - usually implying travel for someone NOT currently there.\n"
+                f"Consider searching for candidates in OTHER locations if possible."
+            )
+            
         return None
 
 
@@ -2721,8 +2872,10 @@ class BusiestEmployeeTimeSliceEnricher:
             if emp_id and time_slice > 0:
                 tracker[emp_id] = tracker.get(emp_id, 0.0) + time_slice
 
-        # Show summary after processing many projects (threshold: 10+)
-        if len(processed) >= 10 and len(tracker) >= 5:
+        # Show summary after processing enough projects (threshold: 3+)
+        # AICODE-NOTE: t012 fix - Lowered threshold from 10 to 3 to ensure hint shows up
+        # even for employees with few projects (e.g. in smaller locations like Novi Sad).
+        if len(processed) >= 3 and len(tracker) >= 2:
             # Sort by total time_slice descending
             sorted_by_ts = sorted(tracker.items(), key=lambda x: (-x[1], x[0]))
 
@@ -2834,8 +2987,10 @@ class LeastBusyEmployeeTimeSliceEnricher:
             'time_slice': total_time_slice
         }
 
-        # Show summary after tracking 10+ employees
-        if len(tracker) >= 10:
+        # Show summary after tracking 3+ employees (lowered from 10)
+        # AICODE-NOTE: t010 FIX - Lowered threshold to 3 to ensure hint shows for smaller locations.
+        # Also lowered processed count check.
+        if len(tracker) >= 3:
             # AICODE-NOTE: t010 FIX - Use project count as fallback when time_slice unavailable
             # projects_search doesn't return team/time_slice data, only project count
             all_time_slices_zero = all(e['time_slice'] == 0 for e in tracker.values())

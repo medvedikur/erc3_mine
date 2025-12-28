@@ -238,6 +238,13 @@ class ActionProcessor:
 
             parse_ctx = state.create_context()
 
+            # AICODE-NOTE: t094 FIX - Add task_text to parse context BEFORE parsing.
+            # Guards in response.py need task_text to detect patterns like "skills I don't have".
+            # Previously task_text was only added to initial_shared AFTER parsing, which was too late.
+            task_text_for_parse = getattr(self.task, 'task', '') or getattr(self.task, 'task_text', '') or str(self.task)
+            if hasattr(parse_ctx, 'shared'):
+                parse_ctx.shared['task_text'] = task_text_for_parse
+
             # Parse action
             try:
                 action_model = parse_action(action_dict, context=parse_ctx)
@@ -304,7 +311,9 @@ class ActionProcessor:
             initial_shared['failure_logger'] = self.failure_logger
             initial_shared['task_id'] = self.task.task_id
             # AICODE-NOTE: t094 FIX - Add task_text for guards that need to check task patterns
-            initial_shared['task_text'] = self.task.task_text if hasattr(self.task, 'task_text') else ''
+            # Handle both .task (TaskInfo) and .task_text (legacy)
+            task_text = getattr(self.task, 'task', '') or getattr(self.task, 'task_text', '') or str(self.task)
+            initial_shared['task_text'] = task_text
             # AICODE-NOTE: t069 FIX - Pass state reference so guards can read live mutation state
             # Guards need to see mutations from CURRENT turn, not snapshot from start of queue
             initial_shared['_state_ref'] = state
@@ -336,6 +345,12 @@ class ActionProcessor:
             self._track_mutation(action_model, state, ctx)
             self._track_search(action_model, state, ctx)
             self._track_fetched(action_model, state, ctx)  # t003 fix
+            
+            # AICODE-NOTE: t013 FIX - Capture entity locations from ALL API results
+            # This ensures LocationExclusionGuard has data to work with
+            api_result = ctx.shared.get('_last_api_result')
+            if api_result:
+                self._capture_locations(api_result, state)
 
             if ctx.stop_execution:
                 stop_execution = True
@@ -371,6 +386,42 @@ class ActionProcessor:
             malformed_count=0,
             malformed_mutation_tools=[]
         )
+
+    def _capture_locations(self, api_result: Any, state: AgentTurnState):
+        """Capture locations from API results for LocationExclusionGuard."""
+        # Check employees
+        employees = getattr(api_result, 'employees', None)
+        if employees:
+            for emp in employees:
+                eid = getattr(emp, 'id', None)
+                loc = getattr(emp, 'location', None)
+                if eid and loc:
+                    state.entity_locations[eid] = loc
+        
+        # Check single employee
+        employee = getattr(api_result, 'employee', None)
+        if employee:
+            eid = getattr(employee, 'id', None)
+            loc = getattr(employee, 'location', None)
+            if eid and loc:
+                state.entity_locations[eid] = loc
+                
+        # Check customers
+        companies = getattr(api_result, 'companies', None)
+        if companies:
+            for cust in companies:
+                cid = getattr(cust, 'id', None)
+                loc = getattr(cust, 'location', None)
+                if cid and loc:
+                    state.entity_locations[cid] = loc
+                    
+        # Check single customer
+        customer = getattr(api_result, 'customer', None)
+        if customer:
+            cid = getattr(customer, 'id', None)
+            loc = getattr(customer, 'location', None)
+            if cid and loc:
+                state.entity_locations[cid] = loc
 
     def _track_missing_tool(
         self,
@@ -477,11 +528,9 @@ class ActionProcessor:
             # with non-empty content should be linked.
             if hasattr(action_model, 'file') and action_model.file:
                 content = getattr(action_model, 'content', '')
-                print(f"  [DEBUG mutation] wiki file={action_model.file}, content={repr(content)[:50]}, has_content={bool(content and content.strip())}")
                 if content and content.strip():
                     # Non-empty content = creation/update → add to mutation_entities
                     state.mutation_entities.append({"id": action_model.file, "kind": "wiki"})
-                    print(f"  [DEBUG mutation] Added wiki mutation, total={len(state.mutation_entities)}")
                 else:
                     # Empty content = deletion → track for exclusion from links
                     # AICODE-NOTE: Write directly to state, not ctx.shared, because

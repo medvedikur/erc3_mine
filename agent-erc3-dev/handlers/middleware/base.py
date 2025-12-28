@@ -15,8 +15,22 @@ from utils import CLI_YELLOW, CLI_GREEN, CLI_CLR
 
 def get_task_text(ctx: ToolContext) -> str:
     """Extract task text from context."""
+    shared_text = ctx.shared.get('task_text')
+    if shared_text:
+        return str(shared_text)
+
     task = ctx.shared.get('task')
-    return getattr(task, 'task_text', '') if task else ''
+    if not task:
+        return ''
+
+    # AICODE-NOTE: Some TaskInfo objects use .task instead of .task_text (t010 guard reliability).
+    task_text = (
+        getattr(task, 'task_text', None)
+        or getattr(task, 'task', None)
+        or getattr(task, 'question', None)
+        or getattr(task, 'text', None)
+    )
+    return str(task_text) if task_text else ''
 
 
 def is_public_user(ctx: ToolContext) -> bool:

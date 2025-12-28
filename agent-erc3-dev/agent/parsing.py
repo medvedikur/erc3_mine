@@ -71,6 +71,27 @@ def extract_json(content: str) -> Dict[str, Any]:
         except json.JSONDecodeError:
             pass
 
+    # AICODE-NOTE: t087 FIX - Some models occasionally emit customer IDs as tool names in action_queue,
+    # e.g. {"tool": "cust_freshfoods"}} instead of a proper customers_get call.
+    # This breaks JSON parsing and results in empty action_queue. We repair this into:
+    #   {"tool": "customers_get", "args": {"id": "cust_freshfoods"}}
+    repaired = _try_fix_customer_id_as_tool(content)
+    if repaired and repaired != content:
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            pass
+
+    # AICODE-NOTE: t067 FIX - Try to fix missing closing braces in action_queue
+    # LLM sometimes drops closing } for action objects when content is very long.
+    # Must run BEFORE multi-JSON detection which would find small valid objects inside.
+    repaired = _try_fix_action_queue_braces(content)
+    if repaired and repaired != content:
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            pass
+
     # Try multi-JSON detection
     json_objects = _find_all_json_objects(content)
     if json_objects:
@@ -88,6 +109,97 @@ def extract_json(content: str) -> Dict[str, Any]:
 
     # Give up - raise the original error
     return json.loads(content)
+
+
+def _try_fix_action_queue_braces(content: str) -> str | None:
+    """
+    AICODE-NOTE: t067 FIX - Repair missing closing braces in action_queue.
+
+    When LLM generates very long content (e.g., wiki file content ~9KB),
+    it sometimes drops closing } for action objects.
+
+    Example broken structure:
+        "action_queue": [
+            {
+                "tool": "wiki_update",
+                "args": {
+                    "file": "...",
+                    "content": "...very long..."
+                }           <-- closes args
+            }               <-- MISSING! closes action object
+        ],
+
+    This function finds action_queue, counts braces, and inserts missing ones.
+    """
+    if '"action_queue"' not in content:
+        return None
+
+    # Find action_queue section
+    aq_start = content.find('"action_queue"')
+    if aq_start == -1:
+        return None
+
+    # Find opening [ after action_queue
+    bracket_start = content.find('[', aq_start)
+    if bracket_start == -1:
+        return None
+
+    # Find closing ] for action_queue by looking for pattern ],\n..."is_final"
+    is_final_match = re.search(r'\],\s*\n\s*"is_final"', content)
+    if not is_final_match:
+        return None
+
+    bracket_end = is_final_match.start() + 1  # position after ]
+
+    aq_content = content[bracket_start:bracket_end + 1]
+
+    # Count braces inside action_queue
+    aq_open = aq_content.count('{')
+    aq_close = aq_content.count('}')
+
+    if aq_open <= aq_close:
+        return None  # No missing braces
+
+    missing = aq_open - aq_close
+
+    # Find last } before ] and insert missing braces after it
+    last_close = aq_content.rfind('}')
+    if last_close == -1:
+        return None
+
+    fixed_aq = aq_content[:last_close + 1] + '\n    ' + '}' * missing + aq_content[last_close + 1:]
+
+    return content[:bracket_start] + fixed_aq + content[bracket_end + 1:]
+
+
+def _try_fix_customer_id_as_tool(content: str) -> str | None:
+    """
+    Repair malformed action items where a customer ID is used as a tool name.
+
+    Examples seen in logs:
+      {"tool": "cust_freshfoods"}}
+
+    We convert them into a valid customers_get tool call:
+      {"tool": "customers_get", "args": {"id": "cust_freshfoods"}}
+    """
+    if '"action_queue"' not in content:
+        return None
+
+    # Match: {"tool": "cust_xxx"} or {"tool": "cust_xxx"}} with optional trailing comma
+    pattern = re.compile(
+        r'\{\s*"tool"\s*:\s*"(?P<cust>cust_[a-z0-9_]+)"\s*\}\s*(?P<extra>\})?\s*(?P<trailing_comma>,?)',
+        flags=re.IGNORECASE
+    )
+
+    def _repl(m: re.Match) -> str:
+        cust = m.group('cust')
+        trailing = m.group('trailing_comma') or ''
+        return f'{{"tool": "customers_get", "args": {{"id": "{cust}"}}}}{trailing}'
+
+    fixed, n = pattern.subn(_repl, content)
+    if n <= 0:
+        return None
+    return fixed
 
 
 def _try_fix_plan_step_status(content: str) -> str | None:

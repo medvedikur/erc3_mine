@@ -113,6 +113,12 @@ class PaginationEnforcementMiddleware(Middleware):
                     f"  • The TIE-BREAKER (most project work) if multiple match\n"
                     f"  • The correct answer to respond with"
                 )
+                # AICODE-NOTE: t076 FIX - For most/least queries, respond must be HARD blocked
+                # until next_offset == -1 (except on the last turn safety escape above).
+                print(f"  {CLI_YELLOW}🛑 PaginationEnforcement: HARD blocking respond until employee pagination complete{CLI_CLR}")
+                ctx.stop_execution = True
+                ctx.results.append(block_msg)
+                return
             else:
                 block_msg = (
                     f"⛔ PREMATURE ANALYSIS: You are switching to `{tool_name}` to analyze candidates, "
@@ -265,26 +271,19 @@ class CustomerContactPaginationMiddleware(Middleware):
 
         # Only block if there are actually more pages
         if next_off > 0:
-            block_msg = (
-                f"⛔ PREMATURE ANALYSIS: You're calling `customers_get` to check contact details, "
-                f"but you haven't finished listing ALL customers!\n\n"
-                f"**Pending Pagination:**\n"
-                f"  • customers_list: fetched {current_count}, next_offset={next_off}\n\n"
-                f"**Problem**: The contact you're looking for might be on a later page!\n"
-                f"If you check only the first {current_count} customers and the person is on page 2+, "
-                f"you'll incorrectly report 'not found'.\n\n"
-                f"**REQUIRED**:\n"
-                f"  1. FIRST finish listing ALL customers: `customers_list(offset={next_off})`\n"
-                f"  2. Continue until `next_offset=-1` (no more pages)\n"
-                f"  3. THEN check each customer with `customers_get`"
-            )
-
-            self._soft_block(
-                ctx,
-                warning_key='customer_pagination_warned',
-                log_msg=f"CustomerContactPagination: Blocking customers_get due to incomplete customers_list",
-                block_msg=block_msg
-            )
+            # AICODE-NOTE: t087 FIX - Do NOT block customers_get.
+            # Blocking here caused the agent to defer all customers_get into a huge batch,
+            # increasing malformed JSON risk and wasting turns. We instead enforce correctness
+            # at response time (see contact-email response guards).
+            if not ctx.shared.get('customer_pagination_hint_shown'):
+                ctx.shared['customer_pagination_hint_shown'] = True
+                hint_msg = (
+                    f"💡 CONTACT SEARCH NOTE: customers_list has MORE pages (next_offset={next_off}).\n"
+                    f"You MAY start checking customers_get for already listed customers, but:\n"
+                    f"  - Do NOT conclude 'not found' until customers_list pagination reaches next_offset=-1\n"
+                    f"  - Ensure you also check customers from later pages"
+                )
+                ctx.results.append(hint_msg)
 
     def _soft_block(self, ctx: ToolContext, warning_key: str, log_msg: str, block_msg: str) -> bool:
         """Block first time, allow on repeat."""
