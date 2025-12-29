@@ -52,6 +52,7 @@ from .middleware import (
     MultipleMatchClarificationGuard,
     LocationExclusionGuard,
     ProjectLeadLinkGuard,
+    AuthDenialOutcomeGuard,
 )
 
 def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManager, task=None):
@@ -103,6 +104,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         SingularProjectQueryGuard(),                  # t029: Force single project for singular queries
         LocationExclusionGuard(),                     # t013: Hint to exclude employees in target location for 'send to' tasks
         ProjectLeadLinkGuard(),                       # t000: Auto-add employee link for "who is lead" queries
+        AuthDenialOutcomeGuard(),                     # t034: Auto-convert none_clarification_needed -> denied_security after auth error
     ]
     if security_manager:
         middleware.append(SecurityMiddleware(security_manager))

@@ -1592,3 +1592,19 @@ class ProjectLeadLinkGuard(ResponseGuard):
                     new_links.append({'kind': 'employee', 'id': emp_id})
             ctx.model.links = new_links
             print(f"  {CLI_GREEN}✓ ProjectLeadLinkGuard: Extracted lead from message: {emp_ids[0]}{CLI_CLR}")
+
+
+class AuthDenialOutcomeGuard(ResponseGuard):
+    """
+    AICODE-NOTE: t034 FIX - Auto-convert none_clarification_needed -> denied_security
+    when message explains authorization denial.
+    """
+
+    target_outcomes = {"none_clarification_needed"}
+
+    def _check(self, ctx: ToolContext, outcome: str) -> None:
+        message = (ctx.model.message or "").lower()
+        # Check if message explains auth denial
+        if re.search(r'(not|cannot).*(authorized|approv)|authorization.*(error|denied)', message):
+            ctx.model.outcome = 'denied_security'
+            print(f"  {CLI_GREEN}✓ AuthDenialOutcomeGuard: Converted to denied_security{CLI_CLR}")

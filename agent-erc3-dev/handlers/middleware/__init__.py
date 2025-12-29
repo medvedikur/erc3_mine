@@ -49,6 +49,7 @@ from .guards import (
     CoachingSearchGuard,
     LocationExclusionGuard,
     ProjectLeadLinkGuard,
+    AuthDenialOutcomeGuard,
     # M&A Compliance Guards
     CCCodeValidationGuard,
     JiraTicketRequirementGuard,
@@ -115,6 +116,7 @@ __all__ = [
     'CoachingSearchGuard',
     'LocationExclusionGuard',
     'ProjectLeadLinkGuard',
+    'AuthDenialOutcomeGuard',
     # M&A Compliance Guards
     'CCCodeValidationGuard',
     'JiraTicketRequirementGuard',

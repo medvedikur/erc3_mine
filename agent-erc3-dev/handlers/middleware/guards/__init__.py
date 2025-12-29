@@ -59,6 +59,7 @@ from .response_guards import (
     CoachingSearchGuard,
     LocationExclusionGuard,
     ProjectLeadLinkGuard,
+    AuthDenialOutcomeGuard,
 )
 
 from .ma_compliance_guards import (
@@ -126,6 +127,7 @@ __all__ = [
     'CoachingSearchGuard',
     'LocationExclusionGuard',
     'ProjectLeadLinkGuard',
+    'AuthDenialOutcomeGuard',
     # M&A Compliance Guards
     'CCCodeValidationGuard',
     'JiraTicketRequirementGuard',
