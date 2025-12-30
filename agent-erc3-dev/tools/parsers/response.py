@@ -654,8 +654,15 @@ def _parse_respond(ctx: ParseContext) -> Any:
         is_skill_comparison = any(re.search(p, task_text) for p in skill_comparison_patterns)
 
         if is_skill_comparison:
-            # Check if message contains raw skill IDs (pattern: skill_something)
-            raw_skill_ids = re.findall(r'\bskill_[a-z_]+\b', str(message).lower())
+            msg_str = str(message).lower()
+
+            # AICODE-NOTE: Remove quoted text to avoid false positives on examples like
+            # "e.g., 'skill_corrosion' vs 'skill_corrosion_resistance_testing'"
+            # Agent often uses skill IDs in explanatory notes, not in actual answer.
+            msg_without_quotes = re.sub(r"['\"]skill_[a-z_]+['\"]", "", msg_str)
+
+            # Check if message contains raw skill IDs outside quotes
+            raw_skill_ids = re.findall(r'\bskill_[a-z_]+\b', msg_without_quotes)
             if raw_skill_ids:
                 # Agent is using raw skill IDs instead of human names - block and warn!
                 message = (

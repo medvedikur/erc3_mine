@@ -212,13 +212,16 @@ class SendToLocationPreprocessor(Preprocessor):
     """
 
     # Patterns indicating destination, not current location
-    # Capture multi-word destinations like "Novi Sad" and stop before a second "to ..." clause.
-    _DEST_RE = r'([A-Za-z][A-Za-z\s\-]+?)(?=\s+to\b|[.,!?]|$)'
+    # AICODE-NOTE: t013 FIX - Capture destination after "send/assign/dispatch to"
+    # Pattern must handle: "send an employee to Milano", "send someone to Novi Sad"
+    # Key insight: match any words between verb and "to [destination]"
+    # Destination: one or more words (A-Za-z + spaces/hyphens), stop at next "to" or punctuation
     SEND_TO_PATTERNS = [
-        re.compile(rf'\bsend\s+(?:\w+\s+)?to\s+{_DEST_RE}', re.IGNORECASE),
-        re.compile(rf'\bassign\s+(?:\w+\s+)?to\s+{_DEST_RE}', re.IGNORECASE),
-        re.compile(rf'\bdispatch\s+(?:\w+\s+)?to\s+{_DEST_RE}', re.IGNORECASE),
-        re.compile(rf'\btravel\s+to\s+{_DEST_RE}', re.IGNORECASE),
+        # Match: send [anything] to [destination] where destination is 1-3 words
+        re.compile(r'\bsend\s+.*?\s+to\s+([A-Za-z][A-Za-z\s\-]{0,20}?)(?=\s+to\b|[.,!?]|$)', re.IGNORECASE),
+        re.compile(r'\bassign\s+.*?\s+to\s+([A-Za-z][A-Za-z\s\-]{0,20}?)(?=\s+to\b|[.,!?]|$)', re.IGNORECASE),
+        re.compile(r'\bdispatch\s+.*?\s+to\s+([A-Za-z][A-Za-z\s\-]{0,20}?)(?=\s+to\b|[.,!?]|$)', re.IGNORECASE),
+        re.compile(r'\btravel\s+to\s+([A-Za-z][A-Za-z\s\-]{0,20}?)(?=\s+to\b|[.,!?]|$)', re.IGNORECASE),
     ]
 
     def can_process(self, ctx: 'ToolContext') -> bool:

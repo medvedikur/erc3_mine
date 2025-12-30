@@ -1215,6 +1215,14 @@ class MostSkilledVerificationGuard(ResponseGuard):
         if not self._most_skilled_re.search(task_text):
             return
 
+        # AICODE-NOTE: t013 FIX - Don't block on last turn (0 or 1 remaining)
+        # Otherwise agent has no chance to respond and gets "0 responses" failure
+        current_turn = ctx.shared.get('current_turn', 0)
+        max_turns = ctx.shared.get('max_turns', 20)
+        remaining_turns = max_turns - current_turn - 1
+        if remaining_turns <= 1:
+            return
+
         # Get skill search tracking from state
         state = ctx.shared.get('_state_ref')
         if not state:

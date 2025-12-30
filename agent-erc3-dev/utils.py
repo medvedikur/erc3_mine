@@ -13,14 +13,15 @@ __all__ = [
 
 # === Genesis Nodes for Gonka Network ===
 GENESIS_NODES = [
-    "http://node1.gonka.ai:8000",
-    "http://node2.gonka.ai:8000", 
-    #"http://node3.gonka.ai:8000",
     "http://185.216.21.98:8000",
+    "http://36.189.234.197:18026",
+    "http://36.189.234.237:17241",
+    "http://node1.gonka.ai:8000",
+    "http://node2.gonka.ai:8000",
+    "http://node3.gonka.ai:8000",
     "http://47.236.26.199:8000",
-    #"http://47.236.19.22:18000",
+    "http://47.236.19.22:18000",
     "http://gonka.spv.re:8000",
-    "http://85.234.91.172:8000",
 ]
 
 class CLI:

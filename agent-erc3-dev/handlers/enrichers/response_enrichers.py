@@ -1014,23 +1014,32 @@ class SkillSearchStrategyHintEnricher:
 
         # CASE 2: "most skilled" query with low min_level - inefficient!
         # AICODE-NOTE: t013 FIX - Show hint even on first page
-        if is_superlative and max_min_level < 9 and not self._superlative_hint_shown:
-            self._superlative_hint_shown = True
-            return (
-                "🚨 CRITICAL 'MOST SKILLED' STRATEGY:\n\n"
-                f"⚠️ WARNING: `employees_search` does NOT return actual skill levels!\n"
-                f"The API only shows that employees HAVE the skill at level >= min_level.\n"
-                f"You CANNOT see their real level from search results - don't hallucinate levels!\n\n"
-                f"CORRECT APPROACH:\n"
-                f"1. Use `min_level=10` to find employees at MAXIMUM level directly\n"
-                f"2. If results found → they ALL have level 10 (the max)\n"
-                f"3. Return ALL employees from the min_level=10 search (not just one!)\n"
-                f"4. If min_level=10 returns 0 results → try min_level=9, then 8, etc.\n\n"
-                f"🔴 MANDATORY: For 'most skilled' queries, return ALL employees with the maximum level!\n"
-                f"   - If 10 employees have level 10, return ALL 10\n"
-                f"   - Do NOT pick just one person\n"
-                f"   - Do NOT paginate with min_level=1 (wastes turns, can't see levels)"
-            )
+        # AICODE-NOTE: t013 FIX #2 - Track if first search had more pages (for later verification)
+        if is_superlative and max_min_level < 9:
+            # Track if there are more pages for this skill
+            if next_offset > 0 and shared:
+                state = shared.get('_state_ref')
+                if state and not getattr(state, 'first_superlative_skill_search_had_more', False):
+                    state.first_superlative_skill_search_had_more = True
+                    print(f"  [t013 FIX] First superlative skill search has more pages (next_offset={next_offset})")
+
+            if not self._superlative_hint_shown:
+                self._superlative_hint_shown = True
+                return (
+                    "🚨 CRITICAL 'MOST SKILLED' STRATEGY:\n\n"
+                    f"⚠️ WARNING: `employees_search` does NOT return actual skill levels!\n"
+                    f"The API only shows that employees HAVE the skill at level >= min_level.\n"
+                    f"You CANNOT see their real level from search results - don't hallucinate levels!\n\n"
+                    f"CORRECT APPROACH:\n"
+                    f"1. Use `min_level=10` to find employees at MAXIMUM level directly\n"
+                    f"2. If results found → they ALL have level 10 (the max)\n"
+                    f"3. Return ALL employees from the min_level=10 search (not just one!)\n"
+                    f"4. If min_level=10 returns 0 results → try min_level=9, then 8, etc.\n\n"
+                    f"🔴 MANDATORY: For 'most skilled' queries, return ALL employees with the maximum level!\n"
+                    f"   - If 10 employees have level 10, return ALL 10\n"
+                    f"   - Do NOT pick just one person\n"
+                    f"   - Do NOT paginate with min_level=1 (wastes turns, can't see levels)"
+                )
 
         # CASE 3: "most skilled" with high min_level but multiple results - check for ties
         # AICODE-NOTE: Critical for t013. If multiple results at level 10, return ALL
@@ -1046,7 +1055,33 @@ class SkillSearchStrategyHintEnricher:
                     if max_min_level < original_level:
                         # Agent searched with lower min_level - this IS the verification
                         is_verification_search = True
-                        # Still 1 result? That means they're truly the only one!
+
+                        # AICODE-NOTE: t013 FIX #2 - Check if first search had more pages!
+                        # API sorts by ID, not skill level. If first search (min_level=1) had next_offset > 0,
+                        # employees with level 10 may exist on later ID-pages (Bhwa_006+, etc.)
+                        # We CANNOT trust verification with min_level=9 if first search had more pages.
+                        first_search_had_more = getattr(state, 'first_superlative_skill_search_had_more', False)
+
+                        if first_search_had_more and len(employees) == 1:
+                            # CRITICAL: First search had more pages, but we found only 1 employee!
+                            # There might be employees with level 10 on ID-pages 2+.
+                            # Require full pagination instead of marking as done.
+                            skill_name = skills[0].name if skills else 'unknown_skill'
+                            print(f"  [t013 FIX] Verification incomplete - first search had more pages")
+                            return (
+                                f"🚨 VERIFICATION INCOMPLETE: You found 1 employee at {skill_name} level {max_min_level}, "
+                                f"but the FIRST search had MORE PAGES that weren't fully checked!\n\n"
+                                f"⚠️ CRITICAL: API returns employees sorted by ID, NOT by skill level!\n"
+                                f"   Employees with level 10 may exist on ID-pages 2, 3, etc. (Bhwa_006+, Bhwa_011+, etc.)\n"
+                                f"   Your min_level={max_min_level} search only checked the first IDs.\n\n"
+                                f"**REQUIRED**: Paginate through ALL pages with `min_level=1`:\n"
+                                f"  `employees_search(skills=[{{name: '{skill_name}', min_level: 1}}], offset=5)`\n"
+                                f"  Continue with offset=10, 15, 20... until next_offset=-1.\n"
+                                f"  Check GLOBAL MAX in tracker for ALL employees with maximum level.\n\n"
+                                f"⛔ Do NOT respond until ALL pages are checked!"
+                            )
+
+                        # First search had no more pages OR we found multiple employees - verification complete
                         state.skill_level_verification_done = True
                         state.single_result_max_level_skill = None
                         print(f"  [t013 FIX] Verification search detected: min_level={max_min_level} < original={original_level}, marking as done")
@@ -2404,6 +2439,56 @@ class SwapWorkloadsHintEnricher:
             f"{swap_instruction}\n\n"
             f"Example: If A has 0.3 and B has 0.4, after swap A should have 0.4 and B should have 0.3."
             f"{permission_hint}{identical_values_warning}"
+        )
+
+    def maybe_hint_swap_wrong_tool(
+        self,
+        model: Any,
+        result: Any,
+        task_text: str
+    ) -> Optional[str]:
+        """
+        Generate hint when agent uses time_search for "swap workloads" task.
+
+        AICODE-NOTE: t097 FIX - Agent often confuses "workload" with "time entries".
+        In project team context, "workload" = time_slice (% allocation), not time entries.
+        When agent calls time_search and task says "swap workloads", we must redirect
+        to projects_get → projects_team_update.
+
+        Args:
+            model: The request model (should be Req_SearchTimeEntries)
+            result: API response
+            task_text: Task instructions
+
+        Returns:
+            Hint string if wrong tool used, or None
+        """
+        if not isinstance(model, client.Req_SearchTimeEntries):
+            return None
+
+        task_lower = task_text.lower()
+
+        # Only trigger for swap workload tasks
+        swap_workload_patterns = [
+            r'swap\s+(?:the\s+)?workloads?\b',
+            r'exchange\s+(?:the\s+)?workloads?\b',
+            r'switch\s+(?:the\s+)?workloads?\b',
+            r'workloads?\s+(?:should\s+be\s+)?swap',
+        ]
+
+        if not any(re.search(p, task_lower) for p in swap_workload_patterns):
+            return None
+
+        return (
+            "🚨 **WRONG TOOL for 'swap workloads'!**\n\n"
+            "⚠️ In project team context, 'workload' means `time_slice` (% allocation), "
+            "NOT time entries!\n\n"
+            "**CORRECT APPROACH:**\n"
+            "  1. Call `projects_get(id='proj_xxx')` to get the team array with time_slice values\n"
+            "  2. Find both employees in the team array\n"
+            "  3. Call `projects_team_update` with swapped time_slice values\n\n"
+            "**DO NOT use time_search/time_log for 'swap workloads'!**\n"
+            "Time entries are individual work logs; time_slice is project allocation."
         )
 
 

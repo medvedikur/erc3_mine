@@ -167,6 +167,12 @@ class AgentTurnState:
     single_result_max_level_skill: Optional[tuple] = field(default=None)
     skill_level_verification_done: bool = False
 
+    # AICODE-NOTE: t013 FIX #2 - Track if first skill search had more pages
+    # When first superlative skill search returns next_offset > 0, we set this flag.
+    # This is preserved even after later searches with min_level=10 return next_offset=-1.
+    # Used to force full pagination for 'most skilled' queries.
+    first_superlative_skill_search_had_more: bool = False
+
     # LLM response tracking (for criteria guards)
     last_thoughts: str = ""
 

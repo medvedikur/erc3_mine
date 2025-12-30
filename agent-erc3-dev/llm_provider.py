@@ -28,17 +28,20 @@ class GonkaChatModel(BaseChatModel):
     max_retries_per_node: int = 3
     max_node_switches: int = 10
     request_timeout: int = 60
-    
+
     _client: Optional[GonkaOpenAI] = PrivateAttr(default=None)
     _current_node: Optional[str] = PrivateAttr(default=None)
-    _tried_nodes: Optional[set] = PrivateAttr(default=None)
-    
+    _tried_nodes: set = PrivateAttr(default_factory=set)
+
     # Class-level cache for persistence across instances
+    # AICODE-NOTE: Must be a plain string, not a Pydantic object - used across thread instances
     _last_successful_node: Optional[str] = None
-    
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._tried_nodes = set()  # Initialize here to avoid Pydantic issues
+        # Ensure _tried_nodes is always a set (defensive against Pydantic edge cases)
+        if not isinstance(self._tried_nodes, set):
+            self._tried_nodes = set()
 
     def _extract_hint_url(self, error_msg: str) -> Optional[str]:
         """Extract URL from 'Try another TA from <url>' error message"""
@@ -70,7 +73,7 @@ class GonkaChatModel(BaseChatModel):
             try:
                 response = self._call_with_retry(openai_messages, stop, **kwargs)
                 
-                if self._current_node:
+                if self._current_node and isinstance(self._current_node, str):
                     GonkaChatModel._last_successful_node = self._current_node
 
                 message_content = response.choices[0].message.content
@@ -174,16 +177,17 @@ class GonkaChatModel(BaseChatModel):
             self._current_node = fixed_node
             return
 
-        if GonkaChatModel._last_successful_node:
-            node = GonkaChatModel._last_successful_node
+        cached_node = GonkaChatModel._last_successful_node
+        if cached_node and isinstance(cached_node, str):
             try:
-                print(f"{CLI_CYAN}🔗 Reusing last successful node: {node}{CLI_CLR}")
-                self._client = GonkaOpenAI(gonka_private_key=self.gonka_private_key, source_url=node)
-                self._current_node = node
-                self._tried_nodes.add(node)
+                print(f"{CLI_CYAN}🔗 Reusing last successful node: {cached_node}{CLI_CLR}")
+                self._client = GonkaOpenAI(gonka_private_key=self.gonka_private_key, source_url=cached_node)
+                self._current_node = cached_node
+                self._tried_nodes.add(cached_node)
                 return
             except Exception as e:
-                print(f"{CLI_YELLOW}⚠ Last successful node {node} failed: {e}{CLI_CLR}")
+                print(f"{CLI_YELLOW}⚠ Last successful node {cached_node} failed: {e}{CLI_CLR}")
+                GonkaChatModel._last_successful_node = None  # Clear invalid cache
 
         nodes = get_available_nodes()
         for node in nodes[:3]:

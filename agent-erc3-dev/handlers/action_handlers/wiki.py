@@ -56,6 +56,104 @@ def _get_project_customer_hint(task_text: str) -> Optional[str]:
     )
 
 
+def _get_location_search_hint(
+    task_text: str,
+    search_query: str,
+    search_result: str,
+    wiki_manager: 'WikiManager'
+) -> Optional[str]:
+    """
+    Generate hint when task asks about office locations but search doesn't find them.
+
+    AICODE-NOTE: Critical for t019/t020/t022/t023. When task asks "do you operate in X?"
+    but agent searches with generic query like "office locations", the specific city
+    chunk may not appear in top-K results. This hint tells agent to search specifically
+    for the city name.
+
+    Args:
+        task_text: Task instructions (e.g., "Do you operate in Vienna Office – Austria?")
+        search_query: The query agent used for wiki_search
+        search_result: The search results text
+        wiki_manager: WikiManager instance for checking actual locations
+
+    Returns:
+        Hint string or None
+    """
+    task_lower = task_text.lower()
+
+    # Detect location-related questions
+    location_patterns = [
+        r'\boperate\s+in\b',
+        r'\bhave\s+(?:an?\s+)?office\s+in\b',
+        r'\boffice\s+in\b',
+        r'有办公室',  # Chinese: have office
+        r'办公室吗',  # Chinese: office?
+    ]
+    is_location_query = any(re.search(p, task_lower) for p in location_patterns)
+    if not is_location_query:
+        return None
+
+    # Extract city names from task that might not be in search results
+    # Common city name patterns: "Vienna", "Rotterdam", "Wien", "Beijing"
+    # Also handle format "City Office – Country"
+    city_pattern = r'(?:in|at)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*(?:Office|office)?'
+    cities_in_task = re.findall(city_pattern, task_text)
+
+    # Also extract from "City Office – Country" format
+    office_pattern = r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+Office\s*[–-]\s*([A-Z][a-z]+)'
+    office_matches = re.findall(office_pattern, task_text)
+    for city, country in office_matches:
+        if city not in cities_in_task:
+            cities_in_task.append(city)
+
+    # Handle Chinese city names
+    chinese_cities = {
+        '鹿特丹': 'Rotterdam',
+        '维也纳': 'Vienna',
+        '巴塞罗那': 'Barcelona',
+        '北京': 'Beijing',
+        '慕尼黑': 'Munich',
+        '巴黎': 'Paris',
+    }
+    for cn, en in chinese_cities.items():
+        if cn in task_text:
+            cities_in_task.append(en)
+
+    if not cities_in_task:
+        return None
+
+    # Check if cities are already mentioned in search results
+    result_lower = search_result.lower()
+    missing_cities = [c for c in cities_in_task if c.lower() not in result_lower]
+
+    if not missing_cities:
+        return None  # Cities were found, no hint needed
+
+    # Check if location file has these cities (to avoid false hints)
+    locations_content = ""
+    for path in wiki_manager.pages:
+        if 'location' in path.lower():
+            locations_content = wiki_manager.pages.get(path, "").lower()
+            break
+
+    # Only hint if cities actually exist in wiki
+    existing_missing = [c for c in missing_cities if c.lower() in locations_content]
+
+    if not existing_missing:
+        return None  # Cities don't exist, agent is correct to say No
+
+    # Generate hint to search for specific city
+    city_to_search = existing_missing[0]
+    return (
+        f"\n📍 LOCATION SEARCH HINT:\n"
+        f"Your search didn't return results for '{city_to_search}'.\n"
+        f"The locations document lists MULTIPLE offices. Your generic search may have missed it.\n\n"
+        f"✅ TRY: `wiki_search(query='{city_to_search}')`\n"
+        f"   or: `wiki_load('company/locations_and_sites.md')` to see ALL office locations.\n\n"
+        f"⚠️ Don't conclude 'No' until you've searched for the SPECIFIC city name!"
+    )
+
+
 # Stopwords for filtering query keywords when matching wiki filenames
 _STOPWORDS: Set[str] = {
     'the', 'a', 'an', 'is', 'are', 'what', 'how', 'to', 'for', 'of', 'in',
@@ -110,6 +208,21 @@ class WikiSearchHandler(ActionHandler):
                 ctx.results.append(project_hint)
                 ctx.shared['_project_customer_hint_shown'] = True
                 print(f"  {CLI_YELLOW}📌 Added project customer lookup hint{CLI_CLR}")
+
+        # AICODE-NOTE: t019/t020/t022/t023 FIX - Add location search hint when task asks
+        # about office locations but the specific city wasn't found in search results.
+        # Agent may use generic query like "office locations" missing specific cities.
+        if not ctx.shared.get('_location_hint_shown'):
+            location_hint = _get_location_search_hint(
+                task_text,
+                ctx.model.query_regex,
+                search_result_text,
+                wiki_manager
+            )
+            if location_hint:
+                ctx.results.append(location_hint)
+                ctx.shared['_location_hint_shown'] = True
+                print(f"  {CLI_YELLOW}📍 Added location search hint{CLI_CLR}")
 
         return True
 
