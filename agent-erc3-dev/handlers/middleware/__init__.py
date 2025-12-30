@@ -32,6 +32,7 @@ from .guards import (
     # Response Guards
     ResponseValidationMiddleware,
     LeadWikiCreationGuard,
+    CustomerWikiCreationGuard,
     WorkloadFormatGuard,
     ContactEmailResponseGuard,
     ProjectLeadsSalaryComparisonGuard,
@@ -99,6 +100,7 @@ __all__ = [
     # Response Guards
     'ResponseValidationMiddleware',
     'LeadWikiCreationGuard',
+    'CustomerWikiCreationGuard',
     'WorkloadFormatGuard',
     'ContactEmailResponseGuard',
     'ProjectLeadsSalaryComparisonGuard',

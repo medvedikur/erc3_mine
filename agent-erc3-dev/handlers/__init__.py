@@ -8,6 +8,7 @@ from .middleware import (
     ProjectSearchReminderMiddleware,
     ResponseValidationMiddleware,
     LeadWikiCreationGuard,
+    CustomerWikiCreationGuard,
     WorkloadFormatGuard,
     ContactEmailResponseGuard,
     ProjectLeadsSalaryComparisonGuard,
@@ -86,6 +87,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         AddedCriteriaGuard(),                         # Warns when agent adds criteria not in task
         ResponseValidationMiddleware(),               # Validates respond has proper message/links
         LeadWikiCreationGuard(),                      # t069: Validates all leads have wiki pages
+        CustomerWikiCreationGuard(),                  # t068: Validates all customers have wiki pages
         WorkloadFormatGuard(),                        # t078: Auto-fix workload "0" -> "0.0"
         ContactEmailResponseGuard(),                  # t087: Block internal email for contact email queries
         ProjectLeadsSalaryComparisonGuard(),          # t016: Auto-add missing leads in salary comparison

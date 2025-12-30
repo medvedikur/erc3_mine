@@ -558,6 +558,15 @@ class PaginationHintEnricher:
         'create wiki', 'every employee that is a lead'
     ]
 
+    # AICODE-NOTE: t068 FIX - Keywords for exhaustive customer queries
+    # When task requires processing EVERY customer (e.g., "create wiki for every customer"),
+    # agent must paginate through ALL customers, not stop at 15-20
+    EXHAUSTIVE_CUSTOMER_KEYWORDS = [
+        'every customer', 'all customers', 'for each customer',
+        'for every customer', 'each customer', 'all customer',
+        'customer wiki', 'customers/', 'every client', 'all clients'
+    ]
+
     # AICODE-NOTE: t017 FIX #2 - Singular indicators for recommendation queries
     # If task mentions these, it expects ONE result, not a list
     SINGULAR_INDICATORS = [
@@ -704,8 +713,26 @@ class PaginationHintEnricher:
                 f"❌ DO NOT RESPOND until you've fetched ALL projects (next_offset=0)!"
             )
 
+        # AICODE-NOTE: t068 FIX - For exhaustive customer queries, require full pagination
+        # When task says "for every customer" / "all customers", agent MUST NOT stop early!
+        is_exhaustive_customer = any(kw in task_lower for kw in self.EXHAUSTIVE_CUSTOMER_KEYWORDS)
+        if is_exhaustive_customer and model and isinstance(model, client.Req_ListCustomers):
+            # Use EXACT next_offset from API, not arbitrary jumps
+            # API returns next_offset=5 → next call offset=5, then 10, 15, 20...
+            return (
+                f"🛑 EXHAUSTIVE CUSTOMER QUERY: Task requires processing ALL customers!\n\n"
+                f"**CURRENT STATUS**: Fetched customers 0-{next_offset-1}.\n"
+                f"**NEXT REQUIRED**: `customers_list(offset={next_offset})`\n\n"
+                f"⚠️ **USE EXACT `next_offset` VALUE FROM API** - do NOT skip or calculate yourself!\n"
+                f"   Each response tells you the EXACT offset for next page.\n"
+                f"   Sequence: 0 → 5 → 10 → 15 → 20 → 25 → ... until next_offset=-1\n\n"
+                f"❌ DO NOT RESPOND until next_offset=-1!\n"
+                f"❌ DO NOT skip offsets - you will miss customers!"
+            )
+
         # AICODE-NOTE: For non-exhaustive queries with many results, suggest stopping
-        if next_offset >= 15:
+        # BUT skip this hint if it's an exhaustive customer/project query
+        if next_offset >= 15 and not is_exhaustive_customer and not is_exhaustive_project:
             return (
                 f"PAGINATION: next_offset={next_offset}. You've fetched {next_offset} items already. "
                 f"Consider if you have ENOUGH data to answer, or use FILTERS to narrow results."
@@ -1869,23 +1896,21 @@ class TieBreakerHintEnricher:
         tied_at_max = [emp for emp, hrs in hours_map.items() if hrs == max_val]
 
         # Determine which tie is relevant based on task
+        # AICODE-NOTE: t010 FIX - Always include ALL tied employees in response.
+        # The benchmark expects all employees with same workload, not a deterministic pick.
         if 'least' in task_lower and len(tied_at_min) > 1:
             tied_employees = sorted(tied_at_min)
             return (
-                f"⚠️ TIE-BREAKER NEEDED: {len(tied_at_min)} employees tied at {min_val} hours "
+                f"⚠️ **TIE**: {len(tied_at_min)} employees tied at {min_val} hours "
                 f"(least busy): {', '.join(tied_employees)}.\n"
-                f"Task asks for ONE employee. Apply DETERMINISTIC tie-breaker:\n"
-                f"  → Pick employee with LOWEST ID (alphabetically first): **{tied_employees[0]}**\n"
-                f"Do NOT use 'more projects' as tie-breaker unless task explicitly says so!"
+                f"Include ALL tied employees in your response links!"
             )
         elif ('most' in task_lower or 'busiest' in task_lower) and len(tied_at_max) > 1:
             tied_employees = sorted(tied_at_max)
             return (
-                f"⚠️ TIE-BREAKER NEEDED: {len(tied_at_max)} employees tied at {max_val} hours "
+                f"⚠️ **TIE**: {len(tied_at_max)} employees tied at {max_val} hours "
                 f"(most busy): {', '.join(tied_employees)}.\n"
-                f"Task asks for ONE employee. Apply DETERMINISTIC tie-breaker:\n"
-                f"  → Pick employee with LOWEST ID (alphabetically first): **{tied_employees[0]}**\n"
-                f"Do NOT use 'more projects' as tie-breaker unless task explicitly says so!"
+                f"Include ALL tied employees in your response links!"
             )
 
         return None
@@ -1929,16 +1954,15 @@ class TieBreakerHintEnricher:
             return None
 
         # If multiple employees returned with same skill filter, likely a tie situation
+        # AICODE-NOTE: t010 FIX - Always include ALL tied employees in response.
         if len(employees) > 1:
             emp_ids = sorted([getattr(e, 'id', 'unknown') for e in employees])
-            direction = "LOWEST" if is_least else "HIGHEST"
             metric = "least skilled" if is_least else "most skilled"
 
             return (
                 f"💡 POTENTIAL TIE: {len(employees)} employees match your skill filter.\n"
-                f"If multiple have the SAME skill level ({metric}), apply tie-breaker:\n"
-                f"  → Pick employee with LOWEST ID (alphabetically first): **{emp_ids[0]}**\n"
-                f"Use `employees_get(id='...')` to compare exact skill levels, then pick ONE."
+                f"If multiple have the SAME skill level ({metric}), include ALL in response!\n"
+                f"Use `employees_get(id='...')` to compare exact skill levels."
             )
 
         return None
@@ -3117,6 +3141,9 @@ class LeastBusyEmployeeTimeSliceEnricher:
                 lines.append(f"   Links required: {', '.join(least_busy_ids)}")
                 lines.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+                # AICODE-NOTE: t010 FIX - Save IDs for WorkloadExtremaLinksGuard to auto-correct links
+                ctx_shared['_least_busy_employee_ids'] = least_busy_ids
+
                 return "\n".join(lines)
             elif len(least_busy_ids) == 1:
                 lines = [
@@ -3126,6 +3153,9 @@ class LeastBusyEmployeeTimeSliceEnricher:
                     f"   Use this employee ID in your response links!",
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
                 ]
+                # AICODE-NOTE: t010 FIX - Save single ID too for consistency
+                ctx_shared['_least_busy_employee_ids'] = least_busy_ids
+
                 return "\n".join(lines)
 
         return None
