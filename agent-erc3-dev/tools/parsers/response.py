@@ -645,20 +645,12 @@ def _parse_respond(ctx: ParseContext) -> Any:
     # Example: User has "skill_corrosion" but response includes "skill_corrosion_resistance_testing"
     # → Validation fails because message contains "skill_corrosion"!
     # Solution: Auto-replace skill_X with "X" (humanized) instead of blocking.
-    if outcome == 'ok_answer' and ctx.context:
-        task_text = ctx.context.shared.get('task_text', '').lower()
-        skill_comparison_patterns = [
-            r"skill.*(i|me).*(don't|do not|lack|missing|need)",
-            r"(don't|do not|lack|missing).*(skill|have)",
-            r"skills.*(that|which).*(i|me).*(don't|haven't)",
-            r"table\s+of\s+skills?",
-        ]
-        is_skill_comparison = any(re.search(p, task_text) for p in skill_comparison_patterns)
-
-        if is_skill_comparison:
-            # Auto-fix all skill_* patterns in message
-            skill_pattern = re.compile(r'\bskill_[a-z_]+\b', re.IGNORECASE)
-
+    # AICODE-NOTE: t094 FIX v2 - Always check for skill_* patterns regardless of task_text.
+    # The task_text check was too fragile - skill IDs should NEVER appear in responses.
+    if outcome == 'ok_answer':
+        # Check if message contains any skill_* patterns
+        skill_pattern = re.compile(r'\bskill_[a-z_]+\b', re.IGNORECASE)
+        if skill_pattern.search(message):
             def _humanize_skill(match):
                 skill_id = match.group(0)
                 # Remove 'skill_' prefix

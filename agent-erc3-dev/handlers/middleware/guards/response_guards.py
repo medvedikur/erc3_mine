@@ -811,6 +811,9 @@ class SkillsIDontHaveGuard(ResponseGuard):
         r"skills?\s+i\s+lack",
         r"what\s+skills?\s+(?:am\s+i\s+)?missing",
         r"skills?\s+not\s+in\s+my\s+profile",
+        # AICODE-NOTE: t094 FIX v2 - Handle "skills and their names that I don't have"
+        r"skills?\s+(?:and\s+)?(?:their\s+)?(?:\w+\s+)?that\s+i\s+don'?t\s+have",
+        r"table\s+of\s+skills?.*i\s+don'?t\s+have",
     ]
 
     def __init__(self):

@@ -57,6 +57,28 @@ class EmployeeSearchHandler(ActionHandler):
         # This must happen here because EmployeeSearchHandler bypasses pipeline preprocessors
         self._correct_skill_names(ctx)
 
+        # AICODE-NOTE: t075 CRITICAL FIX - Early hint for skill queries without skill filter!
+        # If task asks "least/most skilled in X" but agent uses department/location filter
+        # instead of skill filter, warn BEFORE wasting turns on wrong search approach.
+        current_offset = getattr(ctx.model, 'offset', 0) or 0
+        if current_offset == 0 and self._is_skill_level_query(ctx) and not ctx.model.skills:
+            skill_name = self._extract_skill_name_from_task(ctx)
+            if skill_name:
+                hint_lines = [
+                    "",
+                    f"⚠️ **SKILL QUERY DETECTED**: Task asks for 'skilled in {skill_name}'",
+                    f"   You're using department/location filter, but this is a SKILL query!",
+                    f"   ",
+                    f"   ❌ WRONG: employees_search(department=...) or employees_search(location=...)",
+                    f"   ✅ CORRECT: employees_search(skills=[{{name: 'skill_...'}}])",
+                    f"   ",
+                    f"   → Search skills_list for '{skill_name}' to find the exact skill ID.",
+                    f"   → Then use: employees_search(skills=[{{name: 'skill_xxx', min_level: 1}}])",
+                    "",
+                ]
+                ctx.results.append('\n'.join(hint_lines))
+                print(f"  {CLI_YELLOW}⚠ t075: Skill query detected but no skill filter used!{CLI_CLR}")
+
         employees_map = {}
         exact_error = None
         res_exact = None
@@ -153,6 +175,16 @@ class EmployeeSearchHandler(ActionHandler):
                 except Exception as e:
                     print(f"  {CLI_YELLOW}⚠ Keyword search '{kw}' failed: {e}{CLI_CLR}")
 
+        # 2.5. Smart Name Matcher (t077 fix - reduce ambiguity for permuted names)
+        # AICODE-NOTE: When query = "Messina Viola" and we find "Giulio Messina" + "Viola Messina",
+        # the correct match is "Viola Messina" (query words are permutation of name words).
+        # Without this, agent returns none_clarification_needed asking for disambiguation.
+        if query and len(employees_map) > 1:
+            exact_permutation = self._find_exact_name_permutation(query, list(employees_map.values()))
+            if exact_permutation:
+                print(f"  {CLI_BLUE}🎯 Smart Name Match: '{query}' -> '{exact_permutation.name}' (exact word permutation){CLI_CLR}")
+                employees_map = {exact_permutation.id: exact_permutation}
+
         # 3. Check if we have a system error that prevents any results
         if exact_error and len(employees_map) == 0:
             # System error prevented search - store error for default handler
@@ -220,6 +252,36 @@ class EmployeeSearchHandler(ActionHandler):
             or str(task)
         )
         return str(task_text).lower()
+
+    def _find_exact_name_permutation(self, query: str, employees: List) -> Optional[Any]:
+        """
+        Find employee whose name is an exact word permutation of query.
+
+        AICODE-NOTE: t077 FIX - Smart name matching.
+        When query = "Messina Viola" and candidates = ["Giulio Messina", "Viola Messina"],
+        "Viola Messina" matches because query words {"messina", "viola"} == name words {"viola", "messina"}.
+
+        Returns:
+            Employee if exactly one matches, None otherwise (to avoid wrong auto-selection)
+        """
+        if not query or not employees:
+            return None
+
+        query_words = set(w.lower() for w in query.split() if w.strip())
+        if len(query_words) < 2:
+            return None  # Single word query - not a name permutation case
+
+        matches = []
+        for emp in employees:
+            emp_name = getattr(emp, 'name', '') or ''
+            name_words = set(w.lower() for w in emp_name.split() if w.strip())
+            if query_words == name_words:
+                matches.append(emp)
+
+        # Only return if exactly ONE match - otherwise ambiguous
+        if len(matches) == 1:
+            return matches[0]
+        return None
 
     def _is_workload_query(self, ctx: ToolContext) -> bool:
         """
@@ -304,6 +366,41 @@ class EmployeeSearchHandler(ActionHandler):
         has_interest = any(k in t for k in interest_keywords)
 
         return has_superlative and has_interest
+
+    def _is_skill_level_query(self, ctx: ToolContext) -> bool:
+        """
+        Detect whether task asks for least/most skilled in X.
+
+        AICODE-NOTE: t075 CRITICAL FIX!
+        When task says "least/most skilled in X", agent MUST use skill filter,
+        not department filter. This detects such queries.
+        """
+        t = self._get_task_text(ctx)
+        if not t:
+            return False
+
+        # Pattern: "least skilled [person/employee/...] in X" or "most skilled ... in X"
+        # Allow words between "skilled" and "in" (e.g., "least skilled person in")
+        import re
+        return bool(re.search(r'\b(?:least|most)\s+skilled\b.*?\bin\b', t, re.I))
+
+    def _extract_skill_name_from_task(self, ctx: ToolContext) -> Optional[str]:
+        """
+        Extract skill name from "least/most skilled [person] in X" pattern.
+
+        AICODE-NOTE: t075 FIX - Returns the X part for hint generation.
+        """
+        t = self._get_task_text(ctx)
+        if not t:
+            return None
+
+        import re
+        # Match "least/most skilled [person/employee/...] in X" where X is before "(" or end of string
+        # Allow words between "skilled" and "in" (e.g., "least skilled person in Production planning")
+        match = re.search(r'\b(?:least|most)\s+skilled\b.*?\bin\s+([^(]+?)(?:\s*\(|$)', t, re.I)
+        if match:
+            return match.group(1).strip()
+        return None
 
     def _extract_time_slice_from_team(self, team: Sequence[Any], emp_id: str) -> float:
         """Extract employee time_slice from a project.team array (supports DTO objects or dicts)."""
@@ -1193,13 +1290,36 @@ class EmployeeSearchHandler(ActionHandler):
 
         AICODE-NOTE: Fully adaptive approach - NO hardcoded mappings!
         When both skills and wills filters present and 0 results:
-        1. Fetch available skills from system
-        2. Fetch available wills from system
-        3. Return combined hint with both lists for agent to retry
+        1. Check if this is a coaching query (skill names likely correct, will filter unnecessary)
+        2. Otherwise fetch available skills/wills from system for agent to retry
         """
         print(f"  {CLI_BLUE}🔍 Smart Search: Combined skills+wills adaptive hint{CLI_CLR}")
 
-        # Fetch available skills and wills from system
+        # AICODE-NOTE: t077 FIX - Check if this is skill-only coaching query
+        # If task asks for "coaching on skills" (not willingness), the will filter
+        # is the problem, not the skill/will names.
+        task_text = self._get_task_text(ctx)
+        coaching_keywords = ['coach', 'mentor', 'upskill', 'improve his skill', 'improve her skill']
+        explicit_will_keywords = ['willing', 'willingness', 'motivation', 'want to mentor']
+
+        is_coaching = any(kw in task_text for kw in coaching_keywords)
+        explicit_will = any(kw in task_text for kw in explicit_will_keywords)
+
+        if is_coaching and not explicit_will:
+            # This is skill-only coaching - tell agent to remove will filter
+            original_wills = [w.name for w in ctx.model.wills] if ctx.model.wills else []
+            ctx.results.append(
+                f"⚠️ COMBINED SKILL+WILL SEARCH RETURNED 0 RESULTS!\n\n"
+                f"The task asks for 'coaching on skills' — this means SKILL level only!\n"
+                f"Your wills filter {original_wills} is too restrictive.\n\n"
+                f"**SOLUTION**: REMOVE the wills filter and retry:\n"
+                f"  `employees_search(skills=[...])` — WITHOUT wills parameter!\n\n"
+                f"Anyone with high skill level can coach — mentoring willingness is NOT required."
+            )
+            print(f"  {CLI_GREEN}✓ Returned coaching-specific hint (remove will filter){CLI_CLR}")
+            return None
+
+        # Default behavior: provide skill/will name hints
         available_skills = self._get_available_skills_from_api(ctx)
         available_wills = self._get_available_wills_from_api(ctx)
 

@@ -14,6 +14,7 @@ from .preprocessors import (
     SkillNameCorrectionPreprocessor,
     SendToLocationPreprocessor,
     LocationNameCorrectionPreprocessor,
+    CoachingSkillOnlyPreprocessor,
 )
 from .postprocessors import (
     IdentityPostProcessor,
@@ -66,6 +67,7 @@ class ActionPipeline:
             SkillNameCorrectionPreprocessor(),  # t056 fix: auto-correct skill names
             LocationNameCorrectionPreprocessor(),  # t012/t086: "City (Country)" -> "City Office – Country"
             SendToLocationPreprocessor(),  # t013 fix: warn about location filter with "send to"
+            CoachingSkillOnlyPreprocessor(),  # t077 fix: remove will filter for skill-only coaching
         ]
 
         # Executor
@@ -423,6 +425,12 @@ class ActionPipeline:
         # Time entry update hints
         if isinstance(ctx.model, client.Req_SearchTimeEntries):
             hint = self._time_entry_hints.maybe_hint_time_update(result, task_text)
+            if hint:
+                ctx.results.append(hint)
+
+            # AICODE-NOTE: t097 FIX - Detect when agent uses time_search for "swap workloads" task
+            # In project context, "workload" = time_slice, not time entries. Redirect agent.
+            hint = self._swap_workloads_hints.maybe_hint_swap_wrong_tool(ctx.model, result, task_text)
             if hint:
                 ctx.results.append(hint)
 

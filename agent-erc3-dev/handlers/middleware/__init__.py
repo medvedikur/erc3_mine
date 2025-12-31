@@ -64,6 +64,7 @@ from .guards import (
     CustomerContactPaginationMiddleware,
     ProjectSearchOffsetGuard,
     CoachingTimeoutGuard,
+    EmployeeSearchOffsetGuard,
 )
 
 from .membership import ProjectMembershipMiddleware
@@ -86,6 +87,7 @@ __all__ = [
     'CustomerContactPaginationMiddleware',
     'ProjectSearchOffsetGuard',
     'CoachingTimeoutGuard',
+    'EmployeeSearchOffsetGuard',
     # Project Guards
     'ProjectSearchReminderMiddleware',
     'ProjectModificationClarificationGuard',

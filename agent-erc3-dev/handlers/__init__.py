@@ -43,6 +43,7 @@ from .middleware import (
     CustomerContactPaginationMiddleware,
     ProjectSearchOffsetGuard,
     CoachingTimeoutGuard,
+    EmployeeSearchOffsetGuard,
     # M&A Compliance
     CCCodeValidationGuard,
     JiraTicketRequirementGuard,
@@ -75,6 +76,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         PaginationEnforcementMiddleware(),            # Blocks analysis tools when pagination is incomplete
         CustomerContactPaginationMiddleware(),        # t087: Blocks customers_get when customers_list incomplete
         ProjectSearchOffsetGuard(),                   # t069: Validates sequential offsets for projects_search
+        EmployeeSearchOffsetGuard(),                  # t075: Validates sequential offsets for employees_search
         CoachingTimeoutGuard(),                       # t077: Force respond on last turns for coaching queries
         NameResolutionGuard(),                        # Ensures human names resolved to IDs (t007, t008)
         MultipleMatchClarificationGuard(),            # t080: Requires clarification when multiple name matches

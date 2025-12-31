@@ -310,3 +310,78 @@ class LocationNameCorrectionPreprocessor(Preprocessor):
         ctx.results.append(
             f"💡 LOCATION NORMALIZATION: Interpreting location '{loc_stripped}' as '{corrected}' for employees_search."
         )
+
+
+class CoachingSkillOnlyPreprocessor(Preprocessor):
+    """
+    AICODE-NOTE: t077 FIX - Remove wills filter for skill-only coaching queries.
+
+    Problem: When task says "coach X on skills" or "upskill X", agent incorrectly
+    adds will_mentor_juniors filter alongside skills filter. Combined search returns
+    0 results (no one has BOTH high skill AND high will), agent gets stuck.
+
+    Solution: For skill-coaching queries that do NOT explicitly require willingness,
+    automatically REMOVE the wills filter before API call.
+
+    IMPORTANT: Does NOT apply when task explicitly asks for both skill AND will
+    (e.g., t056: "strong X skills AND strong Y motivation").
+
+    Detection:
+    - Task contains coaching keywords: coach, mentor, upskill, improve skills
+    - Task does NOT contain explicit will requirement keywords
+    - employees_search has BOTH skills AND wills filters
+    """
+
+    # Keywords indicating skill-based coaching (potentially remove will)
+    COACHING_KEYWORDS = ['coach', 'mentor', 'upskill', 'improve his skill', 'improve her skill',
+                         'improve their skill', 'train on skill', 'develop skill']
+
+    # Keywords that indicate task EXPLICITLY requires will - DO NOT remove will filter
+    # AICODE-NOTE: These are derived from CoachingWillHintEnricher + t056 patterns
+    EXPLICIT_WILL_KEYWORDS = [
+        'willing', 'willingness', 'want to mentor', 'wants to mentor',
+        'motivated to', 'motivation', 'interest in mentoring', 'desire to teach',
+        # t056 patterns: "combines X skills AND Y motivation/willingness"
+        'and a strong will', 'and strong will', 'and a high will',
+        'skills and', 'skill and',  # "X skills and Y willingness/motivation"
+    ]
+
+    def can_process(self, ctx: 'ToolContext') -> bool:
+        """Process only employee search with BOTH skills AND wills filters."""
+        if not isinstance(ctx.model, client.Req_SearchEmployees):
+            return False
+        return bool(ctx.model.skills) and bool(ctx.model.wills)
+
+    def process(self, ctx: 'ToolContext') -> None:
+        """Remove wills filter if this is skill-only coaching query."""
+        task_text = self._get_task_text(ctx)
+        task_lower = task_text.lower()
+
+        # Check if this is a coaching query
+        is_coaching = any(kw in task_lower for kw in self.COACHING_KEYWORDS)
+        if not is_coaching:
+            return  # Not a coaching query, don't modify
+
+        # Check if task EXPLICITLY requires will (e.g., t056)
+        explicit_will_required = any(kw in task_lower for kw in self.EXPLICIT_WILL_KEYWORDS)
+        if explicit_will_required:
+            return  # Task explicitly wants both skill AND will, don't modify
+
+        # This is skill-only coaching - remove wills filter
+        original_wills = [w.name for w in ctx.model.wills]
+        ctx.model.wills = None
+
+        print(f"  🔧 [t077 fix] CoachingSkillOnlyPreprocessor: Removed wills filter {original_wills}")
+        print(f"     Task is skill-coaching query, will filter not required")
+
+        # Add hint to results so agent understands what happened
+        ctx.results.append(
+            f"💡 SKILL COACHING AUTO-FIX: Removed wills filter {original_wills}.\n"
+            f"Task asks for 'coaching on skills' - this means SKILL level only, not mentoring willingness.\n"
+            f"Continuing search with skills filter only."
+        )
+
+    def _get_task_text(self, ctx: 'ToolContext') -> str:
+        """Extract task text from context."""
+        task = ctx.shared.get("task")
+        return getattr(task, "task_text", "") or ""

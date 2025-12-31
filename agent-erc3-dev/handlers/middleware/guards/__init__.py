@@ -82,6 +82,7 @@ from .pagination_guards import (
     CustomerContactPaginationMiddleware,
     ProjectSearchOffsetGuard,
     CoachingTimeoutGuard,
+    EmployeeSearchOffsetGuard,
 )
 
 __all__ = [
@@ -97,6 +98,7 @@ __all__ = [
     'CustomerContactPaginationMiddleware',
     'ProjectSearchOffsetGuard',
     'CoachingTimeoutGuard',
+    'EmployeeSearchOffsetGuard',
     # Project Guards
     'ProjectSearchReminderMiddleware',
     'ProjectModificationClarificationGuard',

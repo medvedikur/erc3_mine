@@ -1167,9 +1167,14 @@ class SkillSearchStrategyHintEnricher:
 
 class CoachingWillHintEnricher:
     """
-    AICODE-NOTE: t077 FIX - Clarify valid coaching/mentoring wills.
-    Agent often treats 'will_people_management' as coaching interest, but it means
-    career ambition (wanting to be a manager). Real coaching wills are 'will_mentor_...'.
+    AICODE-NOTE: t077 FIX v2 - REMOVED mandatory will requirement for skill coaching.
+
+    Problem: "coach X on skills" just means find people with HIGHER skill levels.
+    It does NOT require will_mentor_juniors. Agent was adding will filter and
+    getting 0 results → ok_not_found instead of ok_answer.
+
+    Solution: Only require will_mentor_* when task EXPLICITLY mentions
+    "willingness", "motivation to mentor", or similar phrases.
     """
 
     def maybe_hint_coaching_wills(
@@ -1182,20 +1187,38 @@ class CoachingWillHintEnricher:
             return None
 
         task_lower = task_text.lower()
-        # AICODE-NOTE: t017 FIX (over-filtering)
-        # Only trigger mentoring/coaching will guidance when the task EXPLICITLY asks for it.
-        # "trainer/training" alone should NOT force checking will_mentor_* (optional unless requested).
+
+        # AICODE-NOTE: t077 FIX - "coach on skills" / "upskill" means SKILL-BASED coaching only!
+        # Do NOT require will_mentor_* unless task explicitly asks about willingness/motivation.
+        # Keywords that indicate skill-based coaching (NO will needed):
+        # - "coach X on skills", "improve skills", "upskill", "train on skills"
         if not any(kw in task_lower for kw in ['coach', 'mentor', 'upskill']):
             return None
-            
-        return (
-            "💡 COACHING CRITERIA: When checking if an employee can be a coach/mentor:\n"
-            "  ✅ Look for `will_mentor_juniors` or `will_sharing_knowledge` (>= 7)\n"
-            "  ❌ `will_people_management` means 'wants to be a manager/boss' (career ambition)\n"
-            "  ❌ `will_process_improvement` is about efficiency, not people\n"
-            "  👉 A good coach must have the SKILL (level >= 7) AND the WILL to mentor!\n"
-            "  ⚠️ EXCLUDE employees who lack mentoring wills, even if they have high skills."
-        )
+
+        # AICODE-NOTE: t077 FIX - Only require will when task EXPLICITLY asks about it
+        # e.g. "who wants to mentor", "willing to coach", "motivated to teach"
+        explicit_will_keywords = [
+            'willing', 'willingness', 'want to mentor', 'wants to mentor',
+            'motivated to', 'interest in mentoring', 'desire to teach'
+        ]
+        task_explicitly_asks_for_will = any(kw in task_lower for kw in explicit_will_keywords)
+
+        if task_explicitly_asks_for_will:
+            return (
+                "💡 MENTORING WILLINGNESS CHECK:\n"
+                "  ✅ Look for `will_mentor_juniors` (>= 7) for mentoring willingness\n"
+                "  ❌ `will_people_management` = career ambition (wants to be a boss)\n"
+                "  ❌ `will_process_improvement` = efficiency focus, not people"
+            )
+        else:
+            # t077: Just skill coaching - NO will requirement!
+            return (
+                "💡 SKILL COACHING: To find who can coach on skills:\n"
+                "  ✅ Search employees with HIGHER skill level than the coachee\n"
+                "  ✅ min_level = coachee's level + 1 (or >= 7 for strong coaching)\n"
+                "  ❌ DO NOT filter by will_mentor_* (task asks about SKILLS, not willingness)\n"
+                "  ⚠️ Anyone with higher skill can teach - will is NOT required here!"
+            )
 
 class CombinedSkillWillHintEnricher:
     """
