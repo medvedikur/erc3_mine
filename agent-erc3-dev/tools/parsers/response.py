@@ -640,37 +640,11 @@ def _parse_respond(ctx: ParseContext) -> Any:
                 if next_off > 0:
                     print(f"  ⚠️ [t038 note] Agent returned ok_not_found with incomplete customer pagination")
 
-    # AICODE-NOTE: t094 FIX - Auto-convert raw skill IDs to human-readable names.
-    # Raw skill IDs in message cause substring collision failures in validation.
-    # Example: User has "skill_corrosion" but response includes "skill_corrosion_resistance_testing"
-    # → Validation fails because message contains "skill_corrosion"!
-    # Solution: Auto-replace skill_X with "X" (humanized) instead of blocking.
-    # AICODE-NOTE: t094 FIX v2 - Always check for skill_* patterns regardless of task_text.
-    # The task_text check was too fragile - skill IDs should NEVER appear in responses.
-    if outcome == 'ok_answer':
-        # Check if message contains any skill_* patterns
-        skill_pattern = re.compile(r'\bskill_[a-z_]+\b', re.IGNORECASE)
-        if skill_pattern.search(message):
-            def _humanize_skill(match):
-                skill_id = match.group(0)
-                # Remove 'skill_' prefix
-                name = skill_id[6:] if skill_id.lower().startswith('skill_') else skill_id
-                # Replace underscores with spaces
-                name = name.replace('_', ' ')
-                # Capitalize words, preserving acronyms
-                words = []
-                for word in name.split():
-                    wl = word.lower()
-                    if wl in ('crm', 'qms', 'it', 'hr', 'qa', 'bi', 'erp', 'apis'):
-                        words.append(wl.upper())
-                    else:
-                        words.append(word.capitalize())
-                return ' '.join(words)
-
-            original_message = message
-            message = skill_pattern.sub(_humanize_skill, message)
-            if message != original_message:
-                print(f"  ✓ [t094] Auto-fixed skill IDs to human-readable names")
+    # AICODE-NOTE: t096 FIX - REMOVED auto-convert of skill IDs to human-readable names!
+    # The benchmark expects RAW skill names like "skill_corrosion", NOT "Corrosion".
+    # Original t094 fix was wrong - it broke t096 by transforming skill names.
+    # Skill IDs MUST stay as-is in responses (skill_*, not humanized).
+    # If substring collision validation fails, fix the validation, not the response.
 
     # AICODE-NOTE: t042 FIX - Guard for "key account + exploration deals" tasks
     # Agent must check ALL customers for exploration projects, not just those with

@@ -97,8 +97,12 @@ class ProjectStatusChangeAuthGuard(ResponseGuard):
     ok_answer saying "already paused, no action needed". But benchmark expects denied_security
     because the user is NOT authorized to change status even if action is not needed.
 
-    Logic: If task asks to change project status AND agent is NOT Lead/Executive,
+    Logic: If task asks to change project status AND agent is NOT Lead,
     response MUST be denied_security regardless of current project status.
+
+    AICODE-NOTE: t054 FIX - Level 1 Executives CANNOT change project status either!
+    Only Project Leads have this authority. Executive role grants team modification rights,
+    not status change rights.
     """
 
     target_outcomes = {"ok_answer"}
@@ -138,19 +142,25 @@ class ProjectStatusChangeAuthGuard(ResponseGuard):
             return  # Agent took action - let other guards handle
 
         # Agent is claiming ok_answer because "already in state" - but did they check auth?
-        # Check if user is Lead or Executive
-        user_role = ctx.shared.get('_user_project_role')  # Set by projects_get enricher
-        department = ctx.shared.get('department', '')
-        is_executive = 'corporate leadership' in department.lower() if department else False
+        # AICODE-NOTE: t052/t054 FIX - Status change authorization rules:
+        # - Lead in team → CAN change status
+        # - Executive NOT in team → CAN change status (Executive authority)
+        # - Team member with role != Lead → CANNOT change status
+        user_role = ctx.shared.get('_user_project_role')  # Set by projects_get enricher: Lead/Member/NotMember
 
-        # If we don't know the role and they're not executive, be suspicious
-        if is_executive:
-            return  # Executives can do anything
+        # AICODE-NOTE: t052 FIX - Get department from security_manager, not ctx.shared directly
+        security_manager = ctx.shared.get('security_manager')
+        department = getattr(security_manager, 'department', '') if security_manager else ''
+        is_executive = 'corporate leadership' in department.lower() if department else False
 
         if user_role and user_role.lower() == 'lead':
             return  # Lead is authorized
 
-        # User is NOT Lead/Executive but claiming ok_answer - should be denied_security
+        # AICODE-NOTE: t052 FIX - Executive NOT in team CAN change status
+        if is_executive and user_role == 'NotMember':
+            return  # Executive not in team - has authority to change status
+
+        # User is team member with role != Lead, or unknown - should be denied_security
         warning_key = 'project_status_auth_warned'
         if ctx.shared.get(warning_key):
             return  # Already warned, let it through
@@ -161,11 +171,11 @@ class ProjectStatusChangeAuthGuard(ResponseGuard):
             f"⛔ AUTHORIZATION REQUIRED: You responded 'ok_answer' saying the project is already "
             f"in the requested state, but you are NOT authorized to change project status!\n\n"
             f"Even if no action was needed, the user does NOT have permission to execute this command.\n"
-            f"Only **Project Leads** and **Level 1 Executives** can change project status.\n\n"
+            f"Only **Project Leads** (or Executives NOT in the project team) can change project status.\n\n"
             f"**CORRECT RESPONSE**:\n"
             f"  outcome: 'denied_security'\n"
-            f"  message: 'I am not authorized to change project status. Only the Project Lead or "
-            f"Level 1 Executive can pause/archive/activate projects.'\n\n"
+            f"  message: 'I am not authorized to change project status. Only the Project Lead "
+            f"can pause/archive/activate projects.'\n\n"
             f"⚠️ Check the team array from projects_get to verify you are NOT the Lead."
         )
         from utils import CLI_YELLOW, CLI_CLR

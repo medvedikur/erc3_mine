@@ -18,6 +18,7 @@ from .guards import (
     IncompletePaginationGuard,
     VagueQueryNotFoundGuard,
     YesNoGuard,
+    CustomerContactNotFoundGuard,
     # Project Guards
     ProjectSearchReminderMiddleware,
     ProjectModificationClarificationGuard,
@@ -64,6 +65,7 @@ from .guards import (
     CustomerContactPaginationMiddleware,
     ProjectSearchOffsetGuard,
     CoachingTimeoutGuard,
+    SkillExtremaTimeoutGuard,
     EmployeeSearchOffsetGuard,
 )
 
@@ -87,6 +89,7 @@ __all__ = [
     'CustomerContactPaginationMiddleware',
     'ProjectSearchOffsetGuard',
     'CoachingTimeoutGuard',
+    'SkillExtremaTimeoutGuard',
     'EmployeeSearchOffsetGuard',
     # Project Guards
     'ProjectSearchReminderMiddleware',

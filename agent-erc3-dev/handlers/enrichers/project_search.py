@@ -89,7 +89,13 @@ class ProjectSearchEnricher:
             if missing_filter_hint := self._get_missing_team_filter_hint(task_text, projects):
                 hints.append(missing_filter_hint)
 
-        # 7. AICODE-NOTE: t016 - DISABLED active status hint.
+        # 7. AICODE-NOTE: t082 FIX - Singular "THE project" clarification hint
+        # When task says "THE coating project" (singular) but multiple projects found,
+        # agent MUST use none_clarification_needed instead of picking one
+        if singular_hint := self._get_singular_project_clarification_hint(projects, query, task_text):
+            hints.append(singular_hint)
+
+        # 8. AICODE-NOTE: t016 - DISABLED active status hint.
         # "Project lead" means lead of ANY project, not just active ones.
         # Benchmark expects all leads regardless of project status.
         # if active_hint := self._get_active_status_hint(ctx, projects, task_text):
@@ -298,6 +304,69 @@ class ProjectSearchEnricher:
             f"Then check authorization for EACH matching project:\n"
             f"   - If YOU are the Lead → authorized to log time\n"
             f"   - If NOT Lead → check `employees_search(manager='YOUR_ID')` for direct reports"
+        )
+
+    def _get_singular_project_clarification_hint(
+        self,
+        projects: List[Any],
+        query: str,
+        task_text: str
+    ) -> Optional[str]:
+        """
+        AICODE-NOTE: t082 FIX - Detect when task expects SINGLE project but multiple found.
+
+        When task says "THE coating project" (definite article + singular noun)
+        but search returns >1 projects, agent MUST use none_clarification_needed
+        instead of arbitrarily picking one.
+
+        Patterns that indicate singular expectation:
+        - "the X project" (not "the X projects")
+        - "this project"
+        - "that project"
+        """
+        import re
+
+        # Only trigger when multiple projects found
+        if len(projects) <= 1:
+            return None
+
+        task_lower = task_text.lower()
+
+        # Pattern: "the <query> project" (singular) - NOT "projects" (plural)
+        # Match: "the coating project", "the flooring project"
+        # Don't match: "the coating projects", "projects with coating"
+        singular_patterns = [
+            r'\bthe\s+\w+\s+project\b(?!s)',  # "the coating project" but not "the coating projects"
+            r'\bthis\s+project\b',
+            r'\bthat\s+project\b',
+            r'\bfor\s+the\s+\w+\s+project\b(?!s)',  # "for the coating project"
+        ]
+
+        is_singular_reference = any(re.search(p, task_lower) for p in singular_patterns)
+
+        if not is_singular_reference:
+            return None
+
+        # Build project list for hint
+        proj_names = [
+            f"  • {getattr(p, 'name', 'unknown')} ({getattr(p, 'id', 'unknown')}, status={getattr(p, 'status', 'unknown')})"
+            for p in projects[:5]
+        ]
+        proj_list = "\n".join(proj_names)
+        more_text = f"  ... and {len(projects) - 5} more" if len(projects) > 5 else ""
+
+        return (
+            f"\n🛑 AMBIGUOUS QUERY: Task says 'THE project' (SINGULAR) but you found {len(projects)} projects!\n"
+            f"Query '{query}' matched:\n{proj_list}{more_text}\n\n"
+            f"⚠️ CRITICAL: You cannot guess which project the user means!\n"
+            f"   - 'THE project' implies user expects EXACTLY ONE match\n"
+            f"   - Finding multiple means the query is AMBIGUOUS\n\n"
+            f"📝 REQUIRED RESPONSE:\n"
+            f"   outcome: 'none_clarification_needed'\n"
+            f"   message: 'Multiple projects match \"coating\". Please specify which one: [list names]'\n"
+            f"   links: [] (empty - don't link any project until user clarifies)\n\n"
+            f"❌ DO NOT pick one project arbitrarily!\n"
+            f"❌ DO NOT report workload for multiple projects when task asks about 'THE project'!"
         )
 
     def _get_active_status_hint(

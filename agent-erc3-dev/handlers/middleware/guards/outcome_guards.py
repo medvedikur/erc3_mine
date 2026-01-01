@@ -11,7 +11,7 @@ Guards:
 import re
 from ..base import ResponseGuard, get_task_text
 from ...base import ToolContext
-from utils import CLI_GREEN, CLI_CLR
+from utils import CLI_GREEN, CLI_YELLOW, CLI_CLR
 
 
 class IncompletePaginationGuard(ResponseGuard):
@@ -141,23 +141,63 @@ class YesNoGuard(ResponseGuard):
     AICODE-NOTE: t022 FIX - Ensures Yes/No questions get English "Yes"/"No" in response.
     Problem: Agent responds in Russian "Да" when question is in Russian, but benchmark expects "Yes".
     Solution: If task ends with (Yes/No) or asks for yes/no, force English keywords.
+
+    AICODE-NOTE: t022 FIX v2 - For location/office Yes/No questions, require wiki_load
+    before answering "No". The agent may miss locations if only using wiki_search snippets.
     """
     target_outcomes = {"ok_answer"}
-    
+
+    # Location-related patterns for wiki_load requirement
+    LOCATION_PATTERNS = [
+        r'\boffice\s+in\b',
+        r'\blocation\s+in\b',
+        r'\bsite\s+in\b',
+        r'\bpresence\s+in\b',
+        r'\boperate\s+in\b',
+    ]
+
+    def __init__(self):
+        import re
+        self._location_re = re.compile('|'.join(self.LOCATION_PATTERNS), re.IGNORECASE)
+
     def _check(self, ctx: ToolContext, outcome: str) -> None:
         task_text = get_task_text(ctx)
         if not task_text:
             return
-            
+
         # Check if task explicitly asks for Yes/No (case insensitive)
         if "(yes/no)" in task_text.lower() or "yes or no" in task_text.lower():
             message = ctx.model.message or ""
             msg_lower = message.lower()
-            
+
+            # AICODE-NOTE: t022 FIX v2 - For location questions answered "No",
+            # verify agent loaded the full wiki page (not just search snippets)
+            if "no" in msg_lower and self._location_re.search(task_text):
+                action_types_executed = ctx.shared.get('action_types_executed', set())
+                wiki_loaded = 'wiki_load' in action_types_executed
+                wiki_searched = 'wiki_search' in action_types_executed
+
+                # If agent only searched but didn't load, soft block for verification
+                if wiki_searched and not wiki_loaded:
+                    warning_key = 'yes_no_location_wiki_load_warned'
+                    if not ctx.shared.get(warning_key):
+                        ctx.shared[warning_key] = True
+                        ctx.stop_execution = True
+                        ctx.results.append(
+                            "⚠️ LOCATION YES/NO VERIFICATION REQUIRED:\n\n"
+                            "You're answering 'No' to a location question based only on wiki_search snippets.\n"
+                            "**wiki_search returns PARTIAL content** - the location may exist in parts you didn't see!\n\n"
+                            "**REQUIRED**: Call `wiki_load(file='company/locations_and_sites.md')` to verify\n"
+                            "the full document doesn't contain the location before answering 'No'.\n\n"
+                            "If the location IS in the full document, change your answer to 'Yes'."
+                        )
+                        print(f"  {CLI_YELLOW}🛑 YesNoGuard: Blocking 'No' for location - needs wiki_load verification{CLI_CLR}")
+                        return
+
             # Check if English Yes/No is missing
             has_yes = "yes" in msg_lower
             has_no = "no" in msg_lower
-            
+
             if not (has_yes or has_no):
                 # Check for Russian equivalents
                 if "да" in msg_lower:
@@ -762,3 +802,78 @@ class VagueQueryNotFoundGuard(ResponseGuard):
                     "**ACTION**: Change outcome to `none_clarification_needed`."
                 )
             )
+
+
+class CustomerContactNotFoundGuard(ResponseGuard):
+    """
+    AICODE-NOTE: t087 FIX - Blocks ok_not_found for contact email queries
+    when customer pagination is incomplete.
+
+    Problem: Agent searches customers_list but does not paginate to the end.
+    Task asks for contact email of "Jana Svoboda" who is on page 2 (offset=15+).
+    Agent checks only first 15 customers and concludes ok_not_found.
+
+    Solution: Block ok_not_found if:
+    1. Task asks for contact email
+    2. customers_list was used but pagination is incomplete (next_offset > 0)
+    """
+
+    target_outcomes = {"ok_not_found"}
+
+    CONTACT_EMAIL_PATTERNS = [
+        r"contact\s+email",
+        r"email\s+(?:of|for|address)",
+        r"(?:what|give|find|get).*email.*(?:of|for)",
+    ]
+
+    def __init__(self):
+        self._contact_email_re = re.compile(
+            "|".join(self.CONTACT_EMAIL_PATTERNS), re.IGNORECASE
+        )
+
+    def _check(self, ctx: ToolContext, outcome: str) -> None:
+        task_text = ctx.shared.get("task_text", "")
+        if not task_text:
+            return
+
+        # Check if task asks for contact email
+        if not self._contact_email_re.search(task_text):
+            return
+
+        # Check if customers_list was used
+        action_types_executed = ctx.shared.get("action_types_executed", set())
+        if "customers_list" not in action_types_executed:
+            return
+
+        # Check if pagination is complete
+        customers_list_complete = ctx.shared.get("_customers_list_complete", True)
+        
+        # Also check pending_pagination as a backup
+        pending = ctx.shared.get("pending_pagination", {})
+        cust_pending = pending.get("Req_ListCustomers") or pending.get("customers_list")
+        next_off = cust_pending.get("next_offset", 0) if cust_pending else 0
+
+        if customers_list_complete and next_off <= 0:
+            # Pagination is complete - ok_not_found is valid
+            return
+
+        # Soft block: first time warn, second time allow
+        warning_key = "customer_contact_not_found_warned"
+        if ctx.shared.get(warning_key):
+            return
+
+        ctx.shared[warning_key] = True
+        ctx.stop_execution = True
+
+        current_count = len(ctx.shared.get("_customers_list_ids", set()))
+        ctx.results.append(
+            f"PAGINATION INCOMPLETE: You cannot conclude ok_not_found!\n\n"
+            f"You searched {current_count} customers but MORE exist (next_offset={next_off}).\n"
+            f"The person you are looking for may be on a LATER PAGE!\n\n"
+            f"**REQUIRED**: Continue customers_list pagination until next_offset=-1:\n"
+            f"  1. Call `customers_list(offset={next_off})` to get next page\n"
+            f"  2. For EACH new customer, call `customers_get(id=...)` to check contact\n"
+            f"  3. Repeat until you find the contact OR pagination completes (next_offset=-1)\n\n"
+            f"Do NOT conclude ok_not_found until you have checked ALL customers!"
+        )
+        print(f"  {CLI_YELLOW}CustomerContactNotFoundGuard: Blocked - pagination incomplete{CLI_CLR}")

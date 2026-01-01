@@ -38,11 +38,13 @@ from .middleware import (
     IncompletePaginationGuard,
     VagueQueryNotFoundGuard,
     YesNoGuard,
+    CustomerContactNotFoundGuard,
     # Pagination Guards
     PaginationEnforcementMiddleware,
     CustomerContactPaginationMiddleware,
     ProjectSearchOffsetGuard,
     CoachingTimeoutGuard,
+    SkillExtremaTimeoutGuard,
     EmployeeSearchOffsetGuard,
     # M&A Compliance
     CCCodeValidationGuard,
@@ -75,9 +77,11 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         IncompletePaginationGuard(),                  # Blocks ok_answer when LIST query has unfetched pages
         PaginationEnforcementMiddleware(),            # Blocks analysis tools when pagination is incomplete
         CustomerContactPaginationMiddleware(),        # t087: Blocks customers_get when customers_list incomplete
+        CustomerContactNotFoundGuard(),               # t087: Blocks ok_not_found when customers_list pagination incomplete
         ProjectSearchOffsetGuard(),                   # t069: Validates sequential offsets for projects_search
         EmployeeSearchOffsetGuard(),                  # t075: Validates sequential offsets for employees_search
         CoachingTimeoutGuard(),                       # t077: Force respond on last turns for coaching queries
+        SkillExtremaTimeoutGuard(),                   # t075: Force respond on last turns for skill extrema queries
         NameResolutionGuard(),                        # Ensures human names resolved to IDs (t007, t008)
         MultipleMatchClarificationGuard(),            # t080: Requires clarification when multiple name matches
         OutcomeValidationMiddleware(),                # Validates denied outcomes (unsupported vs security)

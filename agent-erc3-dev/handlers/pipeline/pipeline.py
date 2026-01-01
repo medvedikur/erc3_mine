@@ -136,6 +136,12 @@ class ActionPipeline:
         # 1. Run preprocessors
         self._run_preprocessors(ctx)
 
+        # AICODE-NOTE: t037 FIX - Check if preprocessor blocked execution
+        # EmployeeUpdatePreprocessor sets stop_execution=True for salary-related notes
+        if getattr(ctx, 'stop_execution', False):
+            # Preprocessor blocked execution - don't call API!
+            return
+
         # 2. Execute action
         exec_result = self._executor.execute(ctx)
 
@@ -365,6 +371,11 @@ class ActionPipeline:
 
         # Customer contact search hint (t087) - when looking for contact email
         hint = self._employee_hints.maybe_hint_customer_contact_search(ctx.model, result, task_text)
+        if hint:
+            ctx.results.append(hint)
+
+        # Project role search hint (t081) - when task asks "role of X at Y"
+        hint = self._employee_hints.maybe_hint_project_role_search(ctx.model, result, task_text)
         if hint:
             ctx.results.append(hint)
 

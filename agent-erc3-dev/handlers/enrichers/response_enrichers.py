@@ -527,6 +527,76 @@ class EmployeeSearchHintEnricher:
 
         return None
 
+    def maybe_hint_project_role_search(
+        self,
+        model: Any,
+        result: Any,
+        task_text: str
+    ) -> Optional[str]:
+        """
+        Generate hint when task asks role of X at Y (project role query).
+
+        AICODE-NOTE: t081 FIX - When task asks for role of Piras at Hygienic flooring,
+        this is asking about the PROJECT ROLE (from project team), not the employees
+        department or job title. Agent must search for the PROJECT and check team array.
+        """
+        if not isinstance(model, client.Req_SearchEmployees):
+            return None
+
+        # AICODE-NOTE: t081 FIX v2 - Multiple patterns to catch role-at-project queries
+        # Pattern 1: "role of X at Y" where Y is project name
+        # Pattern 2: "what is X's role at Y"
+        # Pattern 3: "X's role at/in/on Y"
+        role_patterns = [
+            # "role of Piras at Hygienic flooring for processing area"
+            re.compile(
+                r"(?:role|position)\s+of\s+(\w+)\s+(?:at|in|on)\s+(.+?)(?:\s+project|\s+for\s+\w+\s+area|[.?\!]|$)",
+                re.IGNORECASE
+            ),
+            # "what is Piras's role at/in ..."
+            re.compile(
+                r"(?:what\s+is\s+)?(\w+)(?:'s|s)\s+role\s+(?:at|in|on)\s+(.+?)(?:\s+project|[.?\!]|$)",
+                re.IGNORECASE
+            ),
+        ]
+
+        person_name = None
+        project_hint = None
+
+        for pattern in role_patterns:
+            match = pattern.search(task_text)
+            if match:
+                person_name = match.group(1).strip()
+                project_hint = match.group(2).strip()
+                # Skip common words that are not names
+                if person_name.lower() not in ("the", "a", "an", "this", "that", "my", "your", "what", "is"):
+                    break
+                person_name = None
+                project_hint = None
+
+        if not person_name or not project_hint:
+            return None
+
+        # AICODE-NOTE: t081 FIX - Debug print to verify enricher fires
+        print(f"  [t081 enricher] Detected role query: {person_name} at {project_hint}")
+
+        # Generate hint to search for project
+        return (
+            f"🛑 PROJECT ROLE QUERY DETECTED!\n\n"
+            f"Task asks for **{person_name}'s role at '{project_hint}'**.\n"
+            f"This is a **PROJECT TEAM ROLE** query (Lead, Engineer, QA, etc.), "
+            f"NOT an employee's department or job title!\n\n"
+            f"⚠️ CRITICAL: The answer is in the PROJECT's team array, NOT employee profile!\n\n"
+            f"**REQUIRED STEPS**:\n"
+            f"  1. Use `projects_search(query='{project_hint}')` to find the project\n"
+            f"  2. Call `projects_get(id='proj_xxx')` to get the full project with team array\n"
+            f"  3. Find {person_name} in the team array and read their `role` field\n"
+            f"     (Team array: [{{employee: 'emp_id', role: 'Lead/Engineer/QA/etc', time_slice: 0.5}}])\n"
+            f"  4. Return the role from the PROJECT TEAM, not from employee profile!\n\n"
+            f"❌ DO NOT return employee department/job title!\n"
+            f"❌ DO NOT use employees_search result to answer - it doesn't have project roles!"
+        )
+
 
 class PaginationHintEnricher:
     """
@@ -730,9 +800,30 @@ class PaginationHintEnricher:
                 f"❌ DO NOT skip offsets - you will miss customers!"
             )
 
+        # AICODE-NOTE: t087 FIX - Contact email searches MUST check ALL customers
+        # When task asks for "contact email of X", agent must paginate through ALL
+        # customers and call customers_get for each to find the right person.
+        is_contact_email_search = (
+            'contact' in task_lower and 'email' in task_lower and
+            model and isinstance(model, client.Req_ListCustomers)
+        )
+
+        if is_contact_email_search:
+            return (
+                f"🛑 CRITICAL: CONTACT EMAIL SEARCH with INCOMPLETE PAGINATION!\n"
+                f"You are searching for someone's contact email but customers_list has MORE pages!\n"
+                f"next_offset={next_offset} — MORE CUSTOMERS EXIST that you haven't checked!\n\n"
+                f"⚠️ You MUST:\n"
+                f"  1. Continue paginating: `customers_list(offset={next_offset})`\n"
+                f"  2. Keep paginating until next_offset=-1\n"
+                f"  3. Call `customers_get` for EACH customer to check primary_contact_name\n\n"
+                f"❌ DO NOT respond with 'ok_not_found' until you've checked ALL customers!\n"
+                f"❌ The person you're looking for may be on a later page!"
+            )
+
         # AICODE-NOTE: For non-exhaustive queries with many results, suggest stopping
-        # BUT skip this hint if it's an exhaustive customer/project query
-        if next_offset >= 15 and not is_exhaustive_customer and not is_exhaustive_project:
+        # BUT skip this hint if it's an exhaustive customer/project query OR contact email search
+        if next_offset >= 15 and not is_exhaustive_customer and not is_exhaustive_project and not is_contact_email_search:
             return (
                 f"PAGINATION: next_offset={next_offset}. You've fetched {next_offset} items already. "
                 f"Consider if you have ENOUGH data to answer, or use FILTERS to narrow results."
@@ -1535,65 +1626,6 @@ class ProjectNameNormalizationHintEnricher:
 
         return None
 
-
-class SendToLocationHintEnricher:
-    """
-    AICODE-NOTE: t013 FIX - Hints to check if candidate is already in destination.
-    When task says "send to X", prefer candidates NOT in X.
-    """
-    
-    # Patterns indicating destination
-    SEND_TO_PATTERNS = [
-        re.compile(r'\bsend\s+(?:\w+\s+)?to\s+(\w+)', re.IGNORECASE),
-        re.compile(r'\bassign\s+(?:\w+\s+)?to\s+(\w+)', re.IGNORECASE),
-        re.compile(r'\bdispatch\s+(?:\w+\s+)?to\s+(\w+)', re.IGNORECASE),
-        re.compile(r'\btravel\s+to\s+(\w+)', re.IGNORECASE),
-    ]
-
-    def maybe_hint_location_check(
-        self,
-        model: Any,
-        result: Any,
-        task_text: str
-    ) -> Optional[str]:
-        if not isinstance(model, client.Req_SearchEmployees):
-            return None
-            
-        employees = getattr(result, 'employees', []) or []
-        if not employees:
-            return None
-            
-        # Check for destination
-        destination = None
-        for pattern in self.SEND_TO_PATTERNS:
-            match = pattern.search(task_text)
-            if match:
-                destination = match.group(1)
-                break
-        
-        if not destination:
-            return None
-            
-        # Check if found employees are in destination
-        in_destination = []
-        for emp in employees:
-            loc = getattr(emp, 'location', '')
-            if destination.lower() in loc.lower():
-                in_destination.append(getattr(emp, 'id', ''))
-                
-        if in_destination and len(in_destination) < len(employees):
-            # Mixed results (some in, some out) - no hint needed, agent can choose
-            return None
-            
-        if in_destination and len(in_destination) == len(employees):
-            # ALL found employees are already in the destination!
-            return (
-                f"⚠️ LOCATION CHECK: You found {len(employees)} employees, but they are ALL already in '{destination}'.\n"
-                f"Task asks to 'send to {destination}' - usually implying travel for someone NOT currently there.\n"
-                f"Consider searching for candidates in OTHER locations if possible."
-            )
-            
-        return None
 
 class SendToLocationHintEnricher:
     """
@@ -2464,13 +2496,17 @@ class SwapWorkloadsHintEnricher:
         if is_swap_workload and not is_swap_role and len(team) >= 2:
             time_slices = [getattr(m, 'time_slice', None) for m in team if hasattr(m, 'time_slice')]
             unique_slices = set(ts for ts in time_slices if ts is not None)
-            if len(unique_slices) == 1 and len(time_slices) >= 2:
-                # All team members have same time_slice - swap alone won't change anything!
+            # AICODE-NOTE: t097 FIX - Check if ANY duplicates exist, not just all-same
+            # Example: [0.4, 0.4, 0.2] has duplicates (len(3) > len({0.4, 0.2})=2)
+            if len(time_slices) > len(unique_slices):
+                # Some team members have identical time_slice - swap might be a no-op!
                 identical_values_warning = (
-                    "\n\n🚨 **CRITICAL (t097)**: All team members have the SAME time_slice value!\n"
-                    "Swapping identical time_slice values produces NO actual change in the system.\n"
-                    "The task says 'fix earlier entry mistake' - this means ROLES were assigned wrong!\n\n"
-                    "**YOU MUST SWAP BOTH time_slice AND role VALUES** between the two employees:\n"
+                    "\n\n🚨 **CRITICAL (t097)**: Some team members have the SAME time_slice value!\n"
+                    "If the two employees you need to swap have identical time_slice values, "
+                    "swapping them produces NO actual change in the system.\n"
+                    "The task says 'fix earlier entry mistake' - if time_slice values are the same, "
+                    "the mistake was likely in ROLES!\n\n"
+                    "**IF THEIR time_slice VALUES ARE EQUAL**: You MUST SWAP BOTH time_slice AND role VALUES:\n"
                     "  - Employee A gets Employee B's time_slice AND role\n"
                     "  - Employee B gets Employee A's time_slice AND role\n"
                     "This ensures a REAL change is made to fix the 'entry mistake'."

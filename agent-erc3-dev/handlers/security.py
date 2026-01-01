@@ -108,15 +108,19 @@ class SecurityManager:
             )
 
         # Corporate Leadership has executive access
+        # AICODE-NOTE: t052/t054 FIX - Executive project status permissions depend on team membership:
+        # - NOT a team member → CAN change status (Executive authority)
+        # - IS a team member with role != Lead → CANNOT change status (must be Lead)
         if 'corporate leadership' in dept_lower or 'executive' in dept_lower or 'c-suite' in dept_lower:
             return (
                 "👔 EXECUTIVE PERMISSIONS (Level 1):\n"
                 "- ✅ Full access to salary information\n"
                 "- ✅ Can approve salary changes\n"
-                "- ✅ Can modify project statuses\n"
                 "- ✅ Can modify project teams (add/remove members, change roles, swap workloads)\n"
                 "- ✅ Can grant bonuses to any employee\n"
-                "⚠️ You have FULL authority to modify ANY project, even if you are not the Lead!"
+                "- ✅ Can change project status IF you are NOT a member of that project (Executive authority)\n"
+                "- ❌ If you ARE a team member with role != Lead, you CANNOT change status (must be Lead)!\n"
+                "⚠️ Check `projects_get` to see if you are in the team. If NOT in team → you CAN change status."
             )
 
         # External department has limited access but IS authenticated (not Guest!)

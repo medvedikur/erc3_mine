@@ -76,28 +76,40 @@ class WorkloadFormatGuard(ResponseGuard):
 
 class ContactEmailResponseGuard(ResponseGuard):
     """
-    AICODE-NOTE: t087 FIX - Blocks response with internal email when task asks for contact email.
+    AICODE-NOTE: t087/t088 FIX - Blocks response with internal email ONLY when task
+    explicitly asks for CUSTOMER contact email.
 
-    Problem: Task asks "What is the contact email of X". Agent finds employee with same name
-    and returns internal email (@bellini.internal). But X is actually a customer contact
-    with an external email (e.g., @balkanmetal.com).
+    Problem (t087): Task asks "What is the contact email of X". Agent finds employee
+    with same name and returns internal email (@bellini.internal). But X is actually
+    a customer contact with an external email (e.g., @balkanmetal.com).
 
-    Solution: If task asks for "contact email" and response contains @bellini.internal,
-    soft-block and require agent to check customers.
+    Problem (t088): Task asks "What is the contact email of Noemi Coppola". Noemi is
+    an EMPLOYEE, and her @bellini.internal email IS the correct answer. The guard
+    was incorrectly forcing customer search.
+
+    Solution: Only trigger if task explicitly mentions CUSTOMER context:
+    - "customer contact email"
+    - "primary contact email"
+    - "external contact"
+    For generic "contact email of [person]", employee email is acceptable.
     """
 
     target_outcomes = {"ok_answer"}
 
-    # Patterns to detect contact email queries
-    CONTACT_EMAIL_PATTERNS = [
-        r'contact\s+email',
-        r'email\s+(?:of|for|address)',
-        r"(?:what|give|find|get).*email.*(?:of|for)",
+    # AICODE-NOTE: t088 FIX - Only match CUSTOMER-specific contact email patterns
+    # Generic "contact email of X" should NOT trigger this guard since X could be employee
+    CUSTOMER_CONTACT_PATTERNS = [
+        r'customer\s+contact\s+email',
+        r'customer.*contact.*email',
+        r'primary\s+contact\s+email',
+        r'external\s+contact',
+        r'contact\s+email\s+(?:of|for)\s+(?:the\s+)?customer',
+        r'client\s+contact\s+email',
     ]
 
     def __init__(self):
-        self._contact_email_re = re.compile(
-            '|'.join(self.CONTACT_EMAIL_PATTERNS), re.IGNORECASE
+        self._customer_contact_re = re.compile(
+            '|'.join(self.CUSTOMER_CONTACT_PATTERNS), re.IGNORECASE
         )
 
     def _check(self, ctx: ToolContext, outcome: str) -> None:
@@ -105,8 +117,9 @@ class ContactEmailResponseGuard(ResponseGuard):
         if not task_text:
             return
 
-        # Check if task asks for contact email
-        if not self._contact_email_re.search(task_text):
+        # AICODE-NOTE: t088 FIX - Only block if task EXPLICITLY asks for CUSTOMER contact
+        # Generic "contact email of [person]" should NOT trigger since person could be employee
+        if not self._customer_contact_re.search(task_text):
             return
 
         # Check if response contains internal email
@@ -129,8 +142,8 @@ class ContactEmailResponseGuard(ResponseGuard):
         ctx.shared[warning_key] = True
         ctx.stop_execution = True
         ctx.results.append(
-            f"⛔ WRONG EMAIL TYPE: Task asks for 'contact email' but you returned an INTERNAL email (@bellini.internal).\n\n"
-            f"Internal emails are for EMPLOYEES. 'Contact email' usually means EXTERNAL email for a customer contact.\n\n"
+            f"⛔ WRONG EMAIL TYPE: Task asks for CUSTOMER 'contact email' but you returned an INTERNAL email (@bellini.internal).\n\n"
+            f"Internal emails are for EMPLOYEES. Customer contact emails are EXTERNAL (e.g., @company.com).\n\n"
             f"**REQUIRED**: Search customers to find this person as a customer contact:\n"
             f"  1. Call `customers_list()` to get all customers\n"
             f"  2. For EACH customer, call `customers_get(id='cust_xxx')`\n"
@@ -138,7 +151,7 @@ class ContactEmailResponseGuard(ResponseGuard):
             f"  4. Return `primary_contact_email` (external email like @company.com)\n\n"
             f"⚠️ Only if you've checked ALL customers and found no match, then the employee email might be correct."
         )
-        print(f"  {CLI_YELLOW}🛑 ContactEmailResponseGuard: Blocked - internal email for contact email query{CLI_CLR}")
+        print(f"  {CLI_YELLOW}🛑 ContactEmailResponseGuard: Blocked - internal email for customer contact query{CLI_CLR}")
 
 
 class SkillIdResponseGuard(ResponseGuard):
@@ -255,10 +268,24 @@ class LeadWikiCreationGuard(ResponseGuard):
     AICODE-NOTE: t069 FIX - Validates all project leads have wiki pages created.
 
     Uses _state_ref to read LIVE mutation state (not stale snapshot).
+
+    Two-stage validation:
+    1. Check if all projects found via projects_search were processed via projects_get
+       (otherwise agent may have missed leads from unprocessed projects)
+    2. Check if all leads found have wiki pages created
+
     Only blocks if task is about creating wiki for leads AND some leads are missing.
     """
 
     target_outcomes = {"ok_answer"}
+
+    # Keywords indicating exhaustive lead wiki creation task
+    EXHAUSTIVE_LEAD_KEYWORDS = [
+        'every lead', 'all leads', 'each lead',
+        'for every lead', 'for each lead', 'for all leads',
+        'every employee that is a lead', 'all employees who are leads',
+        'every project lead', 'all project leads',
+    ]
 
     def _check(self, ctx: ToolContext, outcome: str) -> None:
         # Check if this is a lead wiki creation task
@@ -275,7 +302,46 @@ class LeadWikiCreationGuard(ResponseGuard):
         if not state:
             return
 
-        # Get leads found via projects_get
+        # AICODE-NOTE: t069 FIX - Check if this is an EXHAUSTIVE lead query
+        # ("every lead", "all leads", etc.) - if so, agent MUST process ALL projects
+        is_exhaustive = any(kw in task_text for kw in self.EXHAUSTIVE_LEAD_KEYWORDS)
+
+        # Stage 1: Check if all found projects were processed via projects_get
+        # (only for exhaustive queries)
+        if is_exhaustive:
+            found_projects = state.found_projects_search
+            processed_projects = state.processed_projects_get
+            unprocessed = found_projects - processed_projects
+
+            if unprocessed:
+                # AICODE-NOTE: t069 FIX - Agent found projects but didn't call projects_get for all
+                # This means agent may have MISSED leads from unprocessed projects
+                unprocessed_list = ', '.join(sorted(list(unprocessed)[:5]))
+                if len(unprocessed) > 5:
+                    unprocessed_list += f"... (+{len(unprocessed) - 5} more)"
+
+                print(f"  [t069 guard] INCOMPLETE PROJECT PROCESSING: {len(found_projects)} found, {len(processed_projects)} processed, {len(unprocessed)} missing")
+
+                # Soft block - warn first time, allow second
+                warning_key = 't069_unprocessed_projects_warned'
+                if not ctx.shared.get(warning_key):
+                    ctx.shared[warning_key] = True
+                    ctx.stop_execution = True
+                    ctx.results.append(
+                        f"⛔ INCOMPLETE PROJECT PROCESSING!\n\n"
+                        f"Task requires processing ALL projects to find ALL leads, but:\n"
+                        f"  • Projects found via projects_search: {len(found_projects)}\n"
+                        f"  • Projects processed via projects_get: {len(processed_projects)}\n"
+                        f"  • **Missing**: {len(unprocessed)} projects NOT checked for leads!\n\n"
+                        f"Unprocessed projects: {unprocessed_list}\n\n"
+                        f"**REQUIRED**: Call `projects_get(id='...')` for EACH unprocessed project.\n"
+                        f"Some of these projects may have leads you haven't discovered yet!\n\n"
+                        f"After processing all projects, create wiki pages for ALL found leads."
+                    )
+                    return
+                # Already warned - continue to check wiki pages
+
+        # Stage 2: Check if all leads found have wiki pages
         found_leads = state.found_project_leads
         if not found_leads:
             # No leads tracked - either no projects_get calls or no leads in projects
@@ -1381,9 +1447,9 @@ class CoachingSearchGuard(ResponseGuard):
     target_outcomes = {"ok_answer"}
 
     COACHING_PATTERNS = [
-        r'\bcoach\b',
-        r'\bmentor\b',
-        r'\bupskill\b',
+        r'\bcoach(?:es|ing)?\b',  # AICODE-NOTE: t077 FIX - Match "coach", "coaches", "coaching"
+        r'\bmentor(?:s|ing)?\b',   # Match "mentor", "mentors", "mentoring"
+        r'\bupskill(?:ing)?\b',    # Match "upskill", "upskilling"
         r'\bimprove\s+(?:his|her|their)?\s*skills?\b',
         r'\btrain(?:er|ing)?\s+(?:for|on)\b',
         r'\bdevelop\s+(?:his|her|their)?\s*skills?\b',
@@ -1623,9 +1689,9 @@ class ProjectLeadLinkGuard(ResponseGuard):
     target_outcomes = {"ok_answer"}
 
     LEAD_QUERY_PATTERNS = [
-        r"who(?:'s| is) (?:the )?lead",
+        r"who(?:'s| is) (?:the )?(?:team )?lead",  # AICODE-NOTE: t001 FIX - Added optional "team"
         r"who leads",
-        r"who is (?:the )?project lead",
+        r"who is (?:the )?(?:team |project )?lead",  # AICODE-NOTE: t001 FIX - Added optional "team"
         r"lead on .* project",
     ]
 
@@ -1658,7 +1724,11 @@ class ProjectLeadLinkGuard(ResponseGuard):
         message_lower = message.lower()
 
         # Check if agent says "I am the lead" - use current_user
-        if any(phrase in message_lower for phrase in ['i am the lead', 'i am lead', "i'm the lead", "i'm lead"]):
+        # AICODE-NOTE: t001 FIX - Added "team lead" variants
+        if any(phrase in message_lower for phrase in [
+            'i am the lead', 'i am lead', "i'm the lead", "i'm lead",
+            'i am the team lead', 'i am team lead', "i'm the team lead", "i'm team lead"
+        ]):
             sm = ctx.shared.get('security_manager')
             current_user = getattr(sm, 'current_user', None) if sm else None
             if current_user:

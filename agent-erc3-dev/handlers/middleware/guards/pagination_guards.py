@@ -309,18 +309,25 @@ class CoachingTimeoutGuard(Middleware):
     parser fails, action_queue becomes empty, agent wastes turn(s), then
     restarts pagination from scratch. By turn 17-20, still paginating.
 
-    Solution: If coaching query AND remaining turns <= 2 AND we have coaching
-    search results → block further employees_search and force respond.
+    Solution: Multi-stage intervention:
+    1. Remaining <= 5 turns: WARN that time is running low
+    2. Remaining <= 3 turns AND have some coaches: HARD BLOCK employees_search
+    3. Remaining <= 1 turn: Force best-effort respond
 
     This is a HARD block (no repeat allowed) because on last turns we MUST respond.
     """
 
     COACHING_PATTERNS = [
-        r'\bcoach\b',
-        r'\bmentor\b',
-        r'\bupskill\b',
+        r'\bcoach(?:es|ing)?\b',  # AICODE-NOTE: t077 FIX - Match "coach", "coaches", "coaching"
+        r'\bmentor(?:s|ing)?\b',   # Match "mentor", "mentors", "mentoring"
+        r'\bupskill(?:ing)?\b',    # Match "upskill", "upskilling"
         r'\bimprove\s+(?:his|her|their)?\s*skills?\b',
     ]
+
+    # Turn thresholds for progressive intervention
+    WARN_THRESHOLD = 5      # Start warning at 5 turns remaining
+    SOFT_BLOCK_THRESHOLD = 3  # Soft block at 3 turns remaining
+    HARD_BLOCK_THRESHOLD = 2  # Hard block at 2 turns remaining
 
     def __init__(self):
         self._coaching_re = re.compile(
@@ -347,38 +354,194 @@ class CoachingTimeoutGuard(Middleware):
         max_turns = ctx.shared.get('max_turns', 20)
         remaining_turns = max_turns - current_turn - 1
 
-        # Only block on last 2 turns
-        if remaining_turns > 2:
-            return
-
         # Check if we have coaching search results
         coaching_results = ctx.shared.get('coaching_skill_search_results', 0)
         query_subject_ids = ctx.shared.get('query_subject_ids', set())
+        coachee_list = ', '.join(sorted(query_subject_ids)[:3]) if query_subject_ids else '(unknown)'
 
-        # Need to have found coachee AND some coaches
-        if not query_subject_ids or coaching_results < 5:
-            # Not enough data yet - let it continue
+        # AICODE-NOTE: t077 FIX - Progressive intervention for coaching queries
+        # Stage 1: Warning at 5 turns remaining
+        if remaining_turns <= self.WARN_THRESHOLD and remaining_turns > self.SOFT_BLOCK_THRESHOLD:
+            # Only warn once
+            warn_key = 'coaching_turn_budget_warned'
+            if not ctx.shared.get(warn_key):
+                ctx.shared[warn_key] = True
+                # Don't block, just add warning hint
+                ctx.results.append(
+                    f"⚠️ COACHING QUERY: Only {remaining_turns} turns remaining!\n\n"
+                    f"**Current progress**: {coaching_results}+ potential coaches found.\n"
+                    f"**Coachee**: {coachee_list}\n\n"
+                    f"Consider wrapping up soon. If you have enough coaches (3-5+), "
+                    f"you can start preparing your response."
+                )
+            return  # Don't block yet
+
+        # Stage 2: Soft block at 3 turns remaining (if we have results)
+        if remaining_turns <= self.SOFT_BLOCK_THRESHOLD and remaining_turns > self.HARD_BLOCK_THRESHOLD:
+            # Only block if we have some results
+            if coaching_results >= 3:
+                from utils import CLI_RED
+                print(f"  {CLI_RED}🛑 CoachingTimeoutGuard: Soft blocking search at {remaining_turns} turns{CLI_CLR}")
+                ctx.stop_execution = True
+                ctx.results.append(
+                    f"⚠️ TIME RUNNING LOW - PREPARE RESPONSE!\n\n"
+                    f"You have {remaining_turns} turns left and {coaching_results}+ potential coaches found.\n\n"
+                    f"**Coachee**: {coachee_list}\n\n"
+                    f"**RECOMMENDED**: Stop searching for more coaches and prepare your `respond`.\n"
+                    f"You have ENOUGH data to provide a useful answer.\n\n"
+                    f"Use `respond` with:\n"
+                    f"  • outcome: \"ok_answer\"\n"
+                    f"  • message: List the coaches you found\n"
+                    f"  • links: Include ALL employee IDs with level >= 7"
+                )
+                return
+            # Not enough results - add warning but allow search
+            ctx.results.append(
+                f"⚠️ LOW TURN BUDGET: Only {remaining_turns} turns left, {coaching_results} coaches found.\n"
+                f"Continue searching but prepare to respond soon!"
+            )
             return
 
-        # HARD BLOCK - force respond now
-        from utils import CLI_RED
-        coachee_list = ', '.join(sorted(query_subject_ids)[:3])
+        # Stage 3: Hard block at 2 turns or less
+        if remaining_turns <= self.HARD_BLOCK_THRESHOLD:
+            # HARD BLOCK - force respond now regardless of results
+            from utils import CLI_RED
+            print(f"  {CLI_RED}🛑 CoachingTimeoutGuard: HARD blocking search - must respond now!{CLI_CLR}")
+            ctx.stop_execution = True
+            ctx.results.append(
+                f"⛔ TIME LIMIT REACHED - RESPOND NOW!\n\n"
+                f"You have only {remaining_turns} turns left. You MUST respond immediately.\n\n"
+                f"**Data collected so far:**\n"
+                f"  • Coachee: {coachee_list}\n"
+                f"  • Potential coaches found: {coaching_results}+\n\n"
+                f"**REQUIRED ACTION:**\n"
+                f"Use `respond` tool NOW with:\n"
+                f"  • outcome: \"ok_answer\"\n"
+                f"  • message: List all employees found as potential coaches\n"
+                f"  • links: Include ALL employee IDs you found with level >= 7\n\n"
+                f"⚠️ DO NOT call employees_search again. Respond with what you have!"
+            )
 
-        print(f"  {CLI_RED}🛑 CoachingTimeoutGuard: Blocking search - must respond now!{CLI_CLR}")
-        ctx.stop_execution = True
-        ctx.results.append(
-            f"⛔ TIME LIMIT REACHED - RESPOND NOW!\n\n"
-            f"You have only {remaining_turns} turns left. You MUST respond immediately.\n\n"
-            f"**Data collected so far:**\n"
-            f"  • Coachee: {coachee_list}\n"
-            f"  • Potential coaches found: {coaching_results}+\n\n"
-            f"**REQUIRED ACTION:**\n"
-            f"Use `respond` tool NOW with:\n"
-            f"  • outcome: \"ok_answer\"\n"
-            f"  • message: List all employees found as potential coaches\n"
-            f"  • links: Include ALL employee IDs you found with level >= 7\n\n"
-            f"⚠️ DO NOT call employees_search again. Respond with what you have!"
+
+class SkillExtremaTimeoutGuard(Middleware):
+    """
+    AICODE-NOTE: t075 FIX - Forces respond on last turns for skill extrema queries.
+
+    Problem: Agent gets query like "find least skilled person in English".
+    Agent starts paginating through ALL employees with skill_english, looking
+    for the minimum level. This can take 15+ turns. Agent runs out of turns
+    doing pagination and never responds.
+
+    Root cause: Unlike coaching (where we need level >= 7), extrema queries
+    need to find MIN/MAX across ALL employees. But after ~10 turns of pagination,
+    agent likely has enough data to answer.
+
+    Solution: Multi-stage intervention (similar to CoachingTimeoutGuard):
+    1. Remaining <= 5 turns: WARN that time is running low
+    2. Remaining <= 3 turns AND have results: SOFT BLOCK employees_search
+    3. Remaining <= 2 turns: HARD BLOCK - must respond now
+    """
+
+    # AICODE-NOTE: t075 - Patterns for skill extrema queries
+    SKILL_EXTREMA_PATTERNS = [
+        r'\bleast\s+skilled\b',
+        r'\bmost\s+skilled\b',
+        r'\blowest\s+(?:skill\s+)?level\b',
+        r'\bhighest\s+(?:skill\s+)?level\b',
+        r'\bwho\s+has\s+(?:the\s+)?lowest\b',
+        r'\bwho\s+has\s+(?:the\s+)?highest\b',
+        r'\bminimum\s+(?:skill\s+)?level\b',
+        r'\bmaximum\s+(?:skill\s+)?level\b',
+    ]
+
+    # Turn thresholds
+    WARN_THRESHOLD = 5
+    SOFT_BLOCK_THRESHOLD = 3
+    HARD_BLOCK_THRESHOLD = 2
+
+    def __init__(self):
+        self._skill_extrema_re = re.compile(
+            '|'.join(self.SKILL_EXTREMA_PATTERNS), re.IGNORECASE
         )
+
+    def process(self, ctx: ToolContext) -> None:
+        tool_name = ctx.raw_action.get('tool', '')
+
+        # Only intercept employees_search
+        if tool_name != 'employees_search':
+            return
+
+        task_text = get_task_text(ctx)
+        if not task_text:
+            return
+
+        # Check if this is a skill extrema query
+        if not self._skill_extrema_re.search(task_text):
+            return
+
+        # Check turn budget
+        current_turn = ctx.shared.get('current_turn', 0)
+        max_turns = ctx.shared.get('max_turns', 20)
+        remaining_turns = max_turns - current_turn - 1
+
+        # Track skill search progress
+        skill_search_count = ctx.shared.get('skill_extrema_search_count', 0)
+        ctx.shared['skill_extrema_search_count'] = skill_search_count + 1
+
+        # Stage 1: Warning at 5 turns remaining
+        if remaining_turns <= self.WARN_THRESHOLD and remaining_turns > self.SOFT_BLOCK_THRESHOLD:
+            warn_key = 'skill_extrema_turn_budget_warned'
+            if not ctx.shared.get(warn_key):
+                ctx.shared[warn_key] = True
+                ctx.results.append(
+                    f"⚠️ SKILL EXTREMA QUERY: Only {remaining_turns} turns remaining!\n\n"
+                    f"**Search progress**: {skill_search_count}+ employee search calls made.\n\n"
+                    f"Consider wrapping up soon. Review the employees you've found so far "
+                    f"and pick the one with the lowest/highest level."
+                )
+            return
+
+        # Stage 2: Soft block at 3 turns remaining
+        if remaining_turns <= self.SOFT_BLOCK_THRESHOLD and remaining_turns > self.HARD_BLOCK_THRESHOLD:
+            if skill_search_count >= 5:  # Have done some searching
+                from utils import CLI_RED
+                print(f"  {CLI_RED}🛑 SkillExtremaTimeoutGuard: Soft blocking at {remaining_turns} turns{CLI_CLR}")
+                ctx.stop_execution = True
+                ctx.results.append(
+                    f"⚠️ TIME RUNNING LOW - PREPARE RESPONSE!\n\n"
+                    f"You have {remaining_turns} turns left and have done {skill_search_count}+ skill searches.\n\n"
+                    f"**RECOMMENDED**: Stop searching and respond with what you have.\n"
+                    f"Review the employees found so far and pick the one with the "
+                    f"lowest/highest skill level. Apply tie-breaker if needed.\n\n"
+                    f"Use `respond` with:\n"
+                    f"  • outcome: \"ok_answer\"\n"
+                    f"  • message: Name the person with lowest/highest level\n"
+                    f"  • links: Include the employee ID"
+                )
+                return
+            ctx.results.append(
+                f"⚠️ LOW TURN BUDGET: Only {remaining_turns} turns left.\n"
+                f"Prepare to respond soon with the data you have!"
+            )
+            return
+
+        # Stage 3: Hard block at 2 turns or less
+        if remaining_turns <= self.HARD_BLOCK_THRESHOLD:
+            from utils import CLI_RED
+            print(f"  {CLI_RED}🛑 SkillExtremaTimeoutGuard: HARD blocking - must respond now!{CLI_CLR}")
+            ctx.stop_execution = True
+            ctx.results.append(
+                f"⛔ TIME LIMIT REACHED - RESPOND NOW!\n\n"
+                f"You have only {remaining_turns} turns left. You MUST respond immediately.\n\n"
+                f"**REQUIRED ACTION:**\n"
+                f"Review ALL employees you found so far. Pick the one with the "
+                f"lowest/highest skill level. If tie, apply the tie-breaker from the task.\n\n"
+                f"Use `respond` tool NOW with:\n"
+                f"  • outcome: \"ok_answer\"\n"
+                f"  • message: Name the winning employee\n"
+                f"  • links: Include the employee ID\n\n"
+                f"⚠️ DO NOT call employees_search again. Respond with what you have!"
+            )
 
 
 class EmployeeSearchOffsetGuard(Middleware):
