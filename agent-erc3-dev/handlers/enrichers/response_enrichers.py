@@ -2532,6 +2532,26 @@ class SwapWorkloadsHintEnricher:
                 f"  4. Keep roles unchanged unless explicitly asked to swap roles too"
             )
 
+        # AICODE-NOTE: t092 FIX - Detect "fix entry mistake" pattern
+        # When task says "fix earlier entry mistake" and one person is NOT on the team,
+        # this means REPLACE the wrong person with the correct one!
+        fix_entry_mistake_hint = ""
+        is_fix_mistake = 'fix' in task_lower and ('mistake' in task_lower or 'entry' in task_lower)
+        if is_fix_mistake:
+            fix_entry_mistake_hint = (
+                "\n\n🔧 **FIX ENTRY MISTAKE DETECTED**:\n"
+                "Task says 'fix earlier entry mistake' - this indicates a CORRECTION!\n\n"
+                "**IF ONE PERSON IS NOT ON THE TEAM**: This means they were entered incorrectly.\n"
+                "You should REPLACE the wrong person with the correct one:\n"
+                "  1. Find who IS on the team (the wrong entry)\n"
+                "  2. Find who is NOT on the team (the correct person)\n"
+                "  3. In `projects_team_update`, REMOVE the wrong person and ADD the correct person\n"
+                "     with the SAME role and time_slice as the removed person\n\n"
+                "⚠️ Do NOT ask for clarification - 'fix mistake' means REPLACE!\n"
+                "Example: If Alessandro is on team as Engineer (0.3) but Fabio should be,\n"
+                "update team to have Fabio as Engineer (0.3) instead of Alessandro."
+            )
+
         # AICODE-NOTE: t097 FIX - Detect if swap would be no-op (same values)
         # When two employees have identical time_slice, swapping them produces no change
         # and API won't generate Evt_ProjectTeamUpdated event. Solution: swap ROLES too!
@@ -2564,7 +2584,7 @@ class SwapWorkloadsHintEnricher:
             f"  2. Identify the two employees to swap (match by name using employees_get)\n"
             f"{swap_instruction}\n\n"
             f"Example: If A has 0.3 and B has 0.4, after swap A should have 0.4 and B should have 0.3."
-            f"{permission_hint}{identical_values_warning}"
+            f"{permission_hint}{fix_entry_mistake_hint}{identical_values_warning}"
         )
 
     def maybe_hint_swap_wrong_tool(
