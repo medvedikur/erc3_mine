@@ -793,14 +793,15 @@ class SalaryNoteInjectionGuard(ResponseGuard):
 
 class InternalProjectContactGuard(ResponseGuard):
     """
-    AICODE-NOTE: t026 FIX - Blocks ok_answer when asking for customer contact of internal project.
+    AICODE-NOTE: t026/t027 FIX - Blocks ok_answer when asking for customer contact of internal project.
 
     Problem: Task asks for customer contact email of an internal project (cust_bellini_internal).
-    Internal projects don't have customer contacts. Agent should respond with none_unsupported,
-    but instead responds ok_answer offering themselves as contact.
+    Internal projects don't have customer contacts. Agent should respond with:
+    - denied_security: For External/Guest users (they shouldn't access internal projects)
+    - none_unsupported: For internal users (internal projects have no customer contacts)
 
-    Solution: If task asks for customer contact/email AND internal customer was found (not found error),
-    block ok_answer and require none_unsupported.
+    Solution: If task asks for customer contact/email AND internal customer was accessed,
+    block ok_answer and require appropriate outcome based on user type.
     """
 
     target_outcomes = {"ok_answer"}
@@ -841,6 +842,26 @@ class InternalProjectContactGuard(ResponseGuard):
         if ctx.shared.get(warning_key):
             return
 
+        # AICODE-NOTE: t027 FIX - Check if user is External (QR23_xxx) or Guest
+        # External users should get denied_security, internal users get none_unsupported
+        security_manager = ctx.shared.get('security_manager')
+        current_user = getattr(security_manager, 'current_user', '') if security_manager else ''
+        department = getattr(security_manager, 'department', '') if security_manager else ''
+
+        # External users have QR23_ prefix or are in External/Guest department
+        is_external = (
+            current_user.startswith('QR23_') or
+            'external' in department.lower() or
+            'guest' in department.lower()
+        )
+
+        if is_external:
+            correct_outcome = 'denied_security'
+            message = 'You do not have permission to access contact information for internal projects.'
+        else:
+            correct_outcome = 'none_unsupported'
+            message = 'This is an internal project and does not have a customer contact email.'
+
         ctx.shared[warning_key] = True
         ctx.stop_execution = True
         ctx.results.append(
@@ -848,8 +869,8 @@ class InternalProjectContactGuard(ResponseGuard):
             f"Internal projects (cust_bellini_internal) do NOT have customer contacts!\n"
             f"This is not 'ok_answer' - you cannot provide what doesn't exist.\n\n"
             f"**CORRECT RESPONSE**:\n"
-            f"  outcome: 'none_unsupported'\n"
-            f"  message: 'This is an internal project and does not have a customer contact email.'\n\n"
+            f"  outcome: '{correct_outcome}'\n"
+            f"  message: '{message}'\n\n"
             f"⚠️ The project Lead is NOT the customer contact. Customer contacts are external people."
         )
         print(f"  {CLI_YELLOW}🛑 InternalProjectContactGuard: Blocked ok_answer for internal project contact{CLI_CLR}")

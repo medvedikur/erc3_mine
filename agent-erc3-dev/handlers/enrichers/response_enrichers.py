@@ -328,6 +328,11 @@ class EmployeeSearchHintEnricher:
     2. Name query - suggests alternative name formats
     """
 
+    # AICODE-NOTE: Context bloat fix - prevent repetitive hints for task_text patterns
+    def __init__(self):
+        self._customer_contact_hint_shown = False
+        self._project_role_hint_shown = False
+
     def maybe_hint_empty_employees(
         self,
         model: Any,
@@ -487,6 +492,10 @@ class EmployeeSearchHintEnricher:
         employee search returns no match, suggest searching customers.
         The person might be a customer's primary_contact, not an employee!
         """
+        # AICODE-NOTE: Context bloat fix - show hint only once per task
+        if self._customer_contact_hint_shown:
+            return None
+
         if not isinstance(model, client.Req_SearchEmployees):
             return None
 
@@ -513,6 +522,7 @@ class EmployeeSearchHintEnricher:
                 break
 
         if not has_exact_match:
+            self._customer_contact_hint_shown = True
             return (
                 f"💡 CONTACT EMAIL HINT: Task asks for 'contact email' of '{query}'.\n"
                 f"This person might be a CUSTOMER CONTACT, not an employee!\n"
@@ -540,6 +550,10 @@ class EmployeeSearchHintEnricher:
         this is asking about the PROJECT ROLE (from project team), not the employees
         department or job title. Agent must search for the PROJECT and check team array.
         """
+        # AICODE-NOTE: Context bloat fix - show hint only once per task
+        if self._project_role_hint_shown:
+            return None
+
         if not isinstance(model, client.Req_SearchEmployees):
             return None
 
@@ -581,6 +595,7 @@ class EmployeeSearchHintEnricher:
         print(f"  [t081 enricher] Detected role query: {person_name} at {project_hint}")
 
         # Generate hint to search for project
+        self._project_role_hint_shown = True
         return (
             f"🛑 PROJECT ROLE QUERY DETECTED!\n\n"
             f"Task asks for **{person_name}'s role at '{project_hint}'**.\n"
@@ -602,6 +617,16 @@ class PaginationHintEnricher:
     """
     Provides hints for paginated results.
     """
+
+    # AICODE-NOTE: FIX context bloat - limit repetitive pagination hints
+    MAX_GENERIC_HINTS = 3  # Show generic "MORE results exist" hint max 3 times
+
+    def __init__(self):
+        self._generic_hint_count = 0
+
+    def reset_hint_count(self):
+        """Reset hint counter between tasks."""
+        self._generic_hint_count = 0
 
     # Keywords indicating ALL results are needed (recommendation, list, AND superlative queries)
     # AICODE-NOTE: t075 fix - superlative queries also need ALL results to find the minimum/maximum
@@ -828,6 +853,13 @@ class PaginationHintEnricher:
                 f"PAGINATION: next_offset={next_offset}. You've fetched {next_offset} items already. "
                 f"Consider if you have ENOUGH data to answer, or use FILTERS to narrow results."
             )
+
+        # AICODE-NOTE: FIX context bloat - limit generic hints to prevent repetition
+        # Critical hints (manager filter, superlative) bypass this limit
+        self._generic_hint_count += 1
+        if self._generic_hint_count > self.MAX_GENERIC_HINTS:
+            # Already showed enough generic hints, skip to avoid context bloat
+            return None
 
         # Simple pagination hint - don't overwhelm with JSON examples
         base_hint = (
@@ -1268,11 +1300,19 @@ class CoachingWillHintEnricher:
     "willingness", "motivation to mentor", or similar phrases.
     """
 
+    def __init__(self):
+        # AICODE-NOTE: FIX context bloat - show hint only ONCE per task
+        self._hint_shown = False
+
     def maybe_hint_coaching_wills(
         self,
         model: Any,
         task_text: str
     ) -> Optional[str]:
+        # AICODE-NOTE: FIX context bloat - show hint only ONCE per task
+        if self._hint_shown:
+            return None
+
         # Only relevant for employees_get (checking profile) or employees_search
         if not isinstance(model, (client.Req_GetEmployee, client.Req_SearchEmployees)):
             return None
@@ -1293,6 +1333,9 @@ class CoachingWillHintEnricher:
             'motivated to', 'interest in mentoring', 'desire to teach'
         ]
         task_explicitly_asks_for_will = any(kw in task_lower for kw in explicit_will_keywords)
+
+        # Mark as shown to prevent repetition
+        self._hint_shown = True
 
         if task_explicitly_asks_for_will:
             return (

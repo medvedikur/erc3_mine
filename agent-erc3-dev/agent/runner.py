@@ -170,9 +170,14 @@ def run_agent(
         # AICODE-NOTE: t012 FIX - Check for empty action_queue without is_final
         # Agent is stuck if it returns no actions but claims task is not done.
         # Force it to either take action or respond.
+        # AICODE-NOTE: t077 FIX - Pass context to generate coaching-aware hints
         if not valid_actions and not is_final:
             print(f"{CLI_YELLOW}Empty action_queue without is_final - agent stuck{CLI_CLR}")
-            messages.append(message_builder.build_empty_actions_message())
+            messages.append(message_builder.build_empty_actions_message(
+                task_text=task.task_text,
+                current_turn=turn,
+                max_turns=max_turns
+            ))
             continue
 
         # Loop detection

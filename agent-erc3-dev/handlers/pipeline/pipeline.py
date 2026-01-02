@@ -638,5 +638,15 @@ class ActionPipeline:
         # Clear combined skill+will hint cache (t056 fix)
         self._combined_skill_will_hints._hint_shown = False
 
+        # Clear coaching will hint cache (context bloat fix)
+        self._coaching_will_hints._hint_shown = False
+
+        # Clear pagination hint counter (context bloat fix)
+        self._pagination_hints.reset_hint_count()
+
         # Clear project customer search hint cache (t028 fix)
         self._project_customer_search_hints._hint_shown = False
+
+        # Clear employee search hint cache (context bloat fix)
+        self._employee_hints._customer_contact_hint_shown = False
+        self._employee_hints._project_role_hint_shown = False

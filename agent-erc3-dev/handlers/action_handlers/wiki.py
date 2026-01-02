@@ -139,19 +139,50 @@ def _get_location_search_hint(
     # Only hint if cities actually exist in wiki
     existing_missing = [c for c in missing_cities if c.lower() in locations_content]
 
+    # AICODE-NOTE: t020 FIX - Check if task mentions "City Office – Country" format
+    # This format is used in employee locations, NOT wiki. Agent must check BOTH sources!
+    employee_location_format = None
+    for city, country in office_matches:
+        # Reconstruct the exact format used in employee locations
+        employee_location_format = f"{city} Office – {country}"
+        break  # Just need the first one
+
     if not existing_missing:
-        return None  # Cities don't exist, agent is correct to say No
+        # Cities not in wiki - but might be in employee locations!
+        if employee_location_format:
+            # AICODE-NOTE: t020 FIX - "Vienna Office – Austria" is employee location format
+            return (
+                f"\n📍 LOCATION SEARCH HINT:\n"
+                f"'{employee_location_format}' was NOT found in wiki.\n"
+                f"BUT this format matches EMPLOYEE LOCATIONS (not wiki pages)!\n\n"
+                f"⚠️ IMPORTANT: Company locations come from TWO sources:\n"
+                f"  1. Wiki (company/locations_and_sites.md) - documents the main sites\n"
+                f"  2. Employee Registry - employees have location field like 'Vienna Office – Austria'\n\n"
+                f"✅ TRY: `employees_search(location='{employee_location_format}')` to check if anyone works there!\n"
+                f"   If employees exist at that location → the company operates there.\n\n"
+                f"⚠️ Don't conclude 'No' until you've checked BOTH wiki AND employee locations!"
+            )
+        return None  # Cities don't exist in wiki and no employee format detected
 
     # Generate hint to search for specific city
     city_to_search = existing_missing[0]
-    return (
+    hint = (
         f"\n📍 LOCATION SEARCH HINT:\n"
         f"Your search didn't return results for '{city_to_search}'.\n"
         f"The locations document lists MULTIPLE offices. Your generic search may have missed it.\n\n"
         f"✅ TRY: `wiki_search(query='{city_to_search}')`\n"
         f"   or: `wiki_load('company/locations_and_sites.md')` to see ALL office locations.\n\n"
-        f"⚠️ Don't conclude 'No' until you've searched for the SPECIFIC city name!"
     )
+
+    # AICODE-NOTE: t020 FIX - Also mention employee locations if format matches
+    if employee_location_format:
+        hint += (
+            f"💡 ALSO CHECK: `employees_search(location='{employee_location_format}')`\n"
+            f"   to verify if anyone works at this location (employee locations differ from wiki).\n\n"
+        )
+
+    hint += f"⚠️ Don't conclude 'No' until you've searched for the SPECIFIC city name!"
+    return hint
 
 
 # Stopwords for filtering query keywords when matching wiki filenames

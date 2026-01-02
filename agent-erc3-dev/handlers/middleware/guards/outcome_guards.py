@@ -144,6 +144,9 @@ class YesNoGuard(ResponseGuard):
 
     AICODE-NOTE: t022 FIX v2 - For location/office Yes/No questions, require wiki_load
     before answering "No". The agent may miss locations if only using wiki_search snippets.
+
+    AICODE-NOTE: t020 FIX - Also require employees_search for "City Office – Country" format.
+    These locations are stored in employee registry, not wiki!
     """
     target_outcomes = {"ok_answer"}
 
@@ -156,9 +159,13 @@ class YesNoGuard(ResponseGuard):
         r'\boperate\s+in\b',
     ]
 
+    # AICODE-NOTE: t020 FIX - Pattern to detect "City Office – Country" employee location format
+    EMPLOYEE_LOCATION_PATTERN = r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+Office\s*[–-]\s*([A-Z][a-z]+)'
+
     def __init__(self):
         import re
         self._location_re = re.compile('|'.join(self.LOCATION_PATTERNS), re.IGNORECASE)
+        self._employee_loc_re = re.compile(self.EMPLOYEE_LOCATION_PATTERN)
 
     def _check(self, ctx: ToolContext, outcome: str) -> None:
         task_text = get_task_text(ctx)
@@ -176,6 +183,28 @@ class YesNoGuard(ResponseGuard):
                 action_types_executed = ctx.shared.get('action_types_executed', set())
                 wiki_loaded = 'wiki_load' in action_types_executed
                 wiki_searched = 'wiki_search' in action_types_executed
+                employees_searched = 'employees_search' in action_types_executed
+
+                # AICODE-NOTE: t020 FIX - Check for "City Office – Country" employee location format
+                # If task mentions this format, agent MUST search employees (not just wiki)
+                employee_loc_match = self._employee_loc_re.search(task_text)
+                if employee_loc_match and not employees_searched:
+                    city, country = employee_loc_match.groups()
+                    employee_location = f"{city} Office – {country}"
+                    warning_key = 'yes_no_employee_location_warned'
+                    if not ctx.shared.get(warning_key):
+                        ctx.shared[warning_key] = True
+                        ctx.stop_execution = True
+                        ctx.results.append(
+                            f"⚠️ EMPLOYEE LOCATION VERIFICATION REQUIRED:\n\n"
+                            f"You're answering 'No' but task mentions '{employee_location}' format.\n"
+                            f"This is an EMPLOYEE LOCATION format (not wiki pages)!\n\n"
+                            f"**REQUIRED**: Call `employees_search(location='{employee_location}')` to check\n"
+                            f"if any employees are assigned to this location.\n\n"
+                            f"If employees exist at that location → the company operates there → answer 'Yes'."
+                        )
+                        print(f"  {CLI_YELLOW}🛑 YesNoGuard: Blocking 'No' for location - needs employees_search{CLI_CLR}")
+                        return
 
                 # If agent only searched but didn't load, soft block for verification
                 if wiki_searched and not wiki_loaded:

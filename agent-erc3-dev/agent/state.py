@@ -114,6 +114,10 @@ class AgentTurnState:
     # Format: Set of project IDs where user has role='Lead'
     user_lead_projects: Set[str] = field(default_factory=set)
 
+    # AICODE-NOTE: t027 FIX - Track when internal customer project was accessed
+    # Used by InternalProjectContactGuard to block ok_answer for contact queries
+    internal_customer_contact_blocked: bool = False
+
     # Loop detection
     action_history: List[Any] = field(default_factory=list)
 
@@ -255,6 +259,8 @@ class AgentTurnState:
             'employee_notes_updated': self.employee_notes_updated,
             # AICODE-NOTE: t029 FIX - Pass user lead projects for "my projects" filtering
             'user_lead_projects': self.user_lead_projects,
+            # AICODE-NOTE: t027 FIX - Pass internal customer flag for contact guard
+            '_internal_customer_contact_blocked': self.internal_customer_contact_blocked,
             # AICODE-NOTE: t077 FIX - Pass coaching search tracking for CoachingSearchGuard
             'coaching_skill_search_done': self.coaching_skill_search_done,
             'coaching_skill_search_results': self.coaching_skill_search_results,
@@ -392,6 +398,11 @@ class AgentTurnState:
         coaching_results = ctx.shared.get('coaching_skill_search_results', 0)
         if coaching_results:
             self.coaching_skill_search_results += coaching_results
+
+        # AICODE-NOTE: t027 FIX - Sync internal customer contact flag
+        # Pipeline sets this when project has cust_bellini_internal customer
+        if ctx.shared.get('_internal_customer_contact_blocked'):
+            self.internal_customer_contact_blocked = True
 
         # Note: had_mutations, mutation_entities, search_entities are
         # updated directly in the main loop after successful actions

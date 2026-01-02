@@ -5,6 +5,7 @@ Handles building system messages, error messages, and feedback messages.
 """
 
 from typing import List, Optional
+import re
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
 
@@ -137,9 +138,79 @@ class MessageBuilder:
         """Build message for no actions executed."""
         return HumanMessage(content=NO_ACTIONS_MSG)
 
-    def build_empty_actions_message(self) -> HumanMessage:
-        """Build message for empty action_queue without is_final (agent stuck)."""
-        return HumanMessage(content=EMPTY_ACTIONS_MSG)
+    # AICODE-NOTE: t077 FIX - Patterns for coaching/skill queries that need special handling
+    COACHING_PATTERNS = [
+        r'\bcoach(?:es|ing)?\b',
+        r'\bmentor(?:s|ing)?\b',
+        r'\bupskill(?:ing)?\b',
+        r'\bimprove\s+(?:his|her|their)?\s*skills?\b',
+    ]
+    _coaching_re = re.compile('|'.join(COACHING_PATTERNS), re.IGNORECASE)
+
+    def build_empty_actions_message(
+        self,
+        task_text: Optional[str] = None,
+        current_turn: Optional[int] = None,
+        max_turns: Optional[int] = None
+    ) -> HumanMessage:
+        """
+        Build message for empty action_queue without is_final (agent stuck).
+
+        AICODE-NOTE: t077 FIX - Enhanced to detect coaching queries and force
+        respond when running low on turns.
+
+        Args:
+            task_text: Original task text (for detecting query type)
+            current_turn: Current turn number (0-indexed)
+            max_turns: Maximum turns allowed
+
+        Returns:
+            HumanMessage with context-aware error and guidance
+        """
+        base_msg = EMPTY_ACTIONS_MSG
+
+        # If no context provided, return base message
+        if task_text is None or current_turn is None or max_turns is None:
+            return HumanMessage(content=base_msg)
+
+        remaining_turns = max_turns - current_turn - 1
+
+        # AICODE-NOTE: t077 FIX - For coaching queries with low turn budget,
+        # add urgent hint to respond immediately with collected data
+        if remaining_turns <= 3 and self._coaching_re.search(task_text):
+            coaching_urgent_msg = f"""⛔ CRITICAL: COACHING QUERY WITH LOW TURN BUDGET!
+
+You have only {remaining_turns} turns remaining and returned empty action_queue!
+
+**STOP SEARCHING** — You likely have enough data to respond.
+
+**REQUIRED ACTION NOW:**
+```json
+{{
+  "thoughts": "I have collected coaching data. Responding with what I have.",
+  "plan": [{{"step": "Respond with coaches found", "status": "in_progress"}}],
+  "action_queue": [
+    {{"tool": "respond", "args": {{
+      "message": "Employees who can coach [COACHEE_NAME] (ID): [LIST COACH NAMES WITH IDs]",
+      "outcome": "ok_answer",
+      "query_specificity": "specific"
+    }}}}
+  ],
+  "is_final": true
+}}
+```
+
+**INCLUDE in your response:**
+- The coachee's name and ID
+- All employees found with skill level >= 7 (potential coaches)
+- Each coach's ID in parentheses
+
+⚠️ DO NOT return empty action_queue again!
+⚠️ DO NOT call employees_search again!
+⚠️ RESPOND NOW with the coaches you found!"""
+            return HumanMessage(content=coaching_urgent_msg)
+
+        return HumanMessage(content=base_msg)
 
     def build_malformed_actions_message(
         self,
