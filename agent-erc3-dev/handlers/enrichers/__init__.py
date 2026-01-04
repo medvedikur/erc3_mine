@@ -45,6 +45,9 @@ from .response_enrichers import (
     LeastBusyEmployeeTimeSliceEnricher,
     SendToLocationHintEnricher,
     CoachingWillHintEnricher,
+    SelfCheckEnricher,
+    LocationFilterSummaryEnricher,
+    EmptyLocationSkillSearchEnricher,
 )
 
 __all__ = [
@@ -82,4 +85,7 @@ __all__ = [
     'LeastBusyEmployeeTimeSliceEnricher',
     'SendToLocationHintEnricher',
     'CoachingWillHintEnricher',
+    'SelfCheckEnricher',
+    'LocationFilterSummaryEnricher',
+    'EmptyLocationSkillSearchEnricher',
 ]

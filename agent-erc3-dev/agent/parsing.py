@@ -5,10 +5,104 @@ Provides robust JSON extraction from LLM responses, handling:
 - Markdown code blocks
 - Truncated/broken JSON
 - Multiple concatenated JSON objects
+- Corrupted content detection (non-ASCII garbage)
 """
 import json
 import re
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+from dataclasses import dataclass
+
+
+@dataclass
+class ParseResult:
+    """
+    Result of parsing LLM response.
+
+    AICODE-NOTE: t017 FIX - Added to communicate parse status to runner.
+    Previously, corrupted JSON was silently ignored, leading to hallucination.
+    """
+    success: bool
+    data: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    needs_retry: bool = False
+    corruption_detected: bool = False
+
+
+def _detect_corruption(content: str) -> Optional[str]:
+    """
+    Detect corrupted content in JSON.
+
+    AICODE-NOTE: t017 FIX - LLM sometimes generates garbage characters
+    (Chinese, emoji garbage, random unicode) especially when hitting token limits.
+
+    Returns:
+        Error message if corruption detected, None otherwise.
+    """
+    # Check for suspicious non-ASCII sequences in key areas
+    # Look specifically in action_queue area
+    aq_start = content.find('"action_queue"')
+    if aq_start == -1:
+        return None
+
+    aq_section = content[aq_start:]
+
+    # Pattern: unexpected characters in JSON values that break parsing
+    # Chinese characters, random unicode blocks, etc.
+    corruption_patterns = [
+        # Chinese characters (common corruption)
+        r'[\u4e00-\u9fff]',
+        # Random unicode control chars
+        r'[\u0000-\u0008\u000b\u000c\u000e-\u001f]',
+        # Cyrillic in unexpected places (inside JSON keys/values that should be English)
+        r'"[^"]*[\u0400-\u04ff][^"]*":\s*\[',  # Cyrillic in key names
+    ]
+
+    for pattern in corruption_patterns:
+        match = re.search(pattern, aq_section)
+        if match:
+            # Get context around the corruption
+            pos = match.start()
+            context_start = max(0, pos - 20)
+            context_end = min(len(aq_section), pos + 30)
+            context = aq_section[context_start:context_end]
+            return f"Corrupted characters in action_queue near: ...{context}..."
+
+    return None
+
+
+def _detect_truncated_action_queue(content: str, parsed_actions: list) -> Optional[str]:
+    """
+    Detect when action_queue appears truncated.
+
+    AICODE-NOTE: t017 FIX - Sometimes JSON parses but action_queue is incomplete
+    because it was truncated mid-object.
+
+    Returns:
+        Error message if truncation detected, None otherwise.
+    """
+    # If action_queue key exists in raw text but parsed as empty
+    if '"action_queue"' in content:
+        # Find the action_queue section
+        aq_match = re.search(r'"action_queue"\s*:\s*\[', content)
+        if aq_match:
+            aq_start = aq_match.end()
+            # Look for content after the opening bracket
+            remaining = content[aq_start:].strip()
+
+            # If there's content but we got empty list, likely truncated
+            if remaining and not remaining.startswith(']') and len(parsed_actions) == 0:
+                # Check for incomplete action object
+                if '{' in remaining and remaining.count('{') > remaining.count('}'):
+                    return "action_queue appears truncated - incomplete action object"
+
+    # Check if any action looks incomplete
+    for i, action in enumerate(parsed_actions):
+        if not isinstance(action, dict):
+            return f"Action {i} is not a valid object (got {type(action).__name__})"
+        if 'tool' not in action:
+            return f"Action {i} missing required 'tool' field"
+
+    return None
 
 
 def extract_json(content: str) -> Dict[str, Any]:
@@ -375,3 +469,58 @@ class OpenAIUsage:
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens
         }
+
+
+def parse_llm_response(raw_content: str) -> ParseResult:
+    """
+    Parse LLM response and return structured result.
+
+    AICODE-NOTE: t017 FIX - Wrapper around extract_json that:
+    1. Detects corrupted content BEFORE parsing
+    2. Validates action_queue structure AFTER parsing
+    3. Returns ParseResult with needs_retry flag
+
+    This allows runner.py to inform the agent about parse failures
+    so it can regenerate the response instead of hallucinating.
+
+    Args:
+        raw_content: Raw LLM response text
+
+    Returns:
+        ParseResult with success status and error details if any
+    """
+    # Step 1: Check for corruption BEFORE parsing
+    corruption_error = _detect_corruption(raw_content)
+    if corruption_error:
+        return ParseResult(
+            success=False,
+            error=corruption_error,
+            needs_retry=True,
+            corruption_detected=True
+        )
+
+    # Step 2: Try to parse JSON
+    try:
+        parsed = extract_json(raw_content)
+    except json.JSONDecodeError as e:
+        return ParseResult(
+            success=False,
+            error=f"JSON parse error: {e}",
+            needs_retry=True
+        )
+
+    # Step 3: Validate action_queue
+    action_queue = parsed.get("action_queue", [])
+    truncation_error = _detect_truncated_action_queue(raw_content, action_queue)
+    if truncation_error:
+        return ParseResult(
+            success=False,
+            data=parsed,  # Include partial data for debugging
+            error=truncation_error,
+            needs_retry=True
+        )
+
+    return ParseResult(
+        success=True,
+        data=parsed
+    )

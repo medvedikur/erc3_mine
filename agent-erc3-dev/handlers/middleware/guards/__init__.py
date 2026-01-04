@@ -38,6 +38,8 @@ from .time_guards import (
 from .security_guards import (
     BasicLookupDenialGuard,
     PublicUserSemanticGuard,
+    ExternalSalaryGuard,
+    DataDestructionGuard,
 )
 
 from .response_guards import (
@@ -113,6 +115,8 @@ __all__ = [
     # Security Guards
     'BasicLookupDenialGuard',
     'PublicUserSemanticGuard',
+    'ExternalSalaryGuard',
+    'DataDestructionGuard',
     # Response Guards
     'ResponseValidationMiddleware',
     'LeadWikiCreationGuard',

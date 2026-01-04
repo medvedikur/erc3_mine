@@ -39,7 +39,8 @@ from ..enrichers import (
     SwapWorkloadsHintEnricher, KeyAccountExplorationHintEnricher,
     LeadSalaryComparisonHintEnricher, BusiestEmployeeTimeSliceEnricher,
     LeastBusyEmployeeTimeSliceEnricher, SendToLocationHintEnricher,
-    CoachingWillHintEnricher,
+    CoachingWillHintEnricher, SelfCheckEnricher, LocationFilterSummaryEnricher,
+    EmptyLocationSkillSearchEnricher,
 )
 from utils import CLI_BLUE, CLI_GREEN, CLI_YELLOW, CLI_CLR
 
@@ -114,6 +115,9 @@ class ActionPipeline:
         self._coaching_will_hints = CoachingWillHintEnricher()
         self._combined_skill_will_hints = CombinedSkillWillHintEnricher()
         self._project_customer_search_hints = ProjectCustomerSearchHintEnricher()
+        self._self_check_hints = SelfCheckEnricher()
+        self._location_filter_hints = LocationFilterSummaryEnricher()  # t086 fix
+        self._empty_location_skill_hints = EmptyLocationSkillSearchEnricher()  # t086 fix
 
         # Error/Success handling
         self._error_handler = ErrorHandler()
@@ -433,6 +437,23 @@ class ActionPipeline:
             if hint:
                 ctx.results.append(hint)
 
+            # AICODE-NOTE: t086 FIX - Location breakdown for "list employees in X" queries
+            # When pagination completes, show all employees grouped by location
+            # to prevent LLM from forgetting employees during manual filtering
+            hint = self._location_filter_hints.maybe_show_location_breakdown(
+                ctx.model, result, task_text, ctx.shared
+            )
+            if hint:
+                ctx.results.append(hint)
+
+            # AICODE-NOTE: t086 FIX - When location + skills/wills returns 0 results,
+            # suggest removing location filter and filtering manually
+            hint = self._empty_location_skill_hints.maybe_suggest_manual_filter(
+                ctx.model, result, task_text
+            )
+            if hint:
+                ctx.results.append(hint)
+
         # Time entry update hints
         if isinstance(ctx.model, client.Req_SearchTimeEntries):
             hint = self._time_entry_hints.maybe_hint_time_update(result, task_text)
@@ -614,6 +635,20 @@ class ActionPipeline:
             if hint:
                 ctx.results.append(hint)
 
+        # AICODE-NOTE: t094 FIX - Self-check hint for "skills I don't have" queries
+        # When agent fetches current_user via employees_get, add reminder about their skills
+        if action_name == 'Req_GetEmployee' and current_user:
+            emp_id = getattr(ctx.model, 'id', None)
+            if emp_id == current_user:
+                employee = getattr(result, 'employee', None)
+                if employee:
+                    skills = getattr(employee, 'skills', []) or []
+                    hint = self._self_check_hints.enrich_for_skill_query(
+                        task_text, skills
+                    )
+                    if hint:
+                        ctx.results.append(hint)
+
     def clear_task_caches(self) -> None:
         """
         Clear all per-task caches in enrichers.
@@ -650,3 +685,6 @@ class ActionPipeline:
         # Clear employee search hint cache (context bloat fix)
         self._employee_hints._customer_contact_hint_shown = False
         self._employee_hints._project_role_hint_shown = False
+
+        # Clear location filter hint cache (t086 fix)
+        self._location_filter_hints.clear_cache()

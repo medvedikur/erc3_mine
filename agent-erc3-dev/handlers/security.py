@@ -260,6 +260,7 @@ class SecurityMiddleware(Middleware):
         - who_am_i (identity check)
         - wiki operations (public knowledge base)
         - respond (to send answers)
+        - employees_search with ONLY location parameter (t019/t021 fix - company presence verification)
 
         Everything else is internal data and should be blocked.
         """
@@ -274,6 +275,16 @@ class SecurityMiddleware(Middleware):
 
         if isinstance(model, allowed_types):
             return False
+
+        # AICODE-NOTE: t019/t021 fix - Allow employees_search with ONLY location parameter
+        # This is for "Do you operate in X?" questions - checking company presence is PUBLIC info
+        # We're not exposing employee data, just verifying if anyone works at that location
+        if isinstance(model, client.Req_SearchEmployees):
+            # Allow ONLY if location is set and no other search params are used
+            # Fields: query, location, department, manager, skills, wills
+            if model.location and not model.query and not model.department and not model.manager and not model.skills and not model.wills:
+                print(f"✅ PUBLIC LOCATION CHECK ALLOWED: employees_search(location='{model.location}')")
+                return False
 
         # Everything else is blocked for public users:
         # - Customer operations (Req_SearchCustomers, Req_GetCustomer, Req_ListCustomers)

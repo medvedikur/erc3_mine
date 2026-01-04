@@ -201,6 +201,59 @@ When task asks to compare, rank, or find "most/least/higher/lower":
     -   "Update the active project" → DON'T change status to active if already active
     -   Status words in task description are CONTEXT, not COMMANDS!
 
+### A3. ⚠️ COACHING / UPSKILL QUERIES (t077 fix)
+For "find coaches for employee X" / "upskill" / "mentor" queries:
+
+**EFFICIENT STRATEGY (MUST FOLLOW!):**
+1. Get target employee's skills via `employees_get` (1 call)
+2. Pick **TOP 3 skills with LOWEST level** — these need coaching most!
+3. Do **SEPARATE searches in ONE action_queue** (OR logic, not AND!):
+   ```json
+   "action_queue": [
+     {"tool": "employees_search", "args": {"skills": [{"name": "skill1", "min_level": 7}]}},
+     {"tool": "employees_search", "args": {"skills": [{"name": "skill2", "min_level": 7}]}},
+     {"tool": "employees_search", "args": {"skills": [{"name": "skill3", "min_level": 7}]}}
+   ]
+   ```
+   **⚠️ WHY SEPARATE?** Combined search uses AND logic (all skills required)! Separate searches find coaches with HIGH level in ANY ONE skill.
+4. Merge results, return **all unique coaches found** — deduplicate by ID
+5. **ONE page per skill is enough** — no exhaustive pagination!
+
+**TURN BUDGET:**
+- You have 20 turns total
+- Coaching queries MUST complete within **5-6 turns**:
+  - Turn 1: who_am_i
+  - Turn 2: employees_search (find target employee by name)
+  - Turn 3: employees_get (get target's skills)
+  - Turn 4: employees_search × 3 in ONE action_queue (find coaches for each skill)
+  - Turn 5-6: respond with merged results
+
+**⚠️ ANTI-PATTERN — DO NOT:**
+- ❌ Use combined search `skills=[{skill1}, {skill2}, {skill3}]` — this is AND logic, misses coaches!
+- ❌ Search each of 14 skills separately over 14 turns
+- ❌ Paginate exhaustively for each skill
+- ❌ Spend more than 6 turns on a coaching query
+
+**⚠️ CRITICAL — SUBJECT vs ANSWER RULE:**
+- The TARGET employee (who needs coaching) is the **SUBJECT**, NOT the answer!
+- **DO NOT include the target's ID in your response message!**
+- Only include IDs of the **COACHES** (the actual answer)!
+- ✅ "Coaches who can help with skill_rail: Marco Rossi (FphR_001), ..."
+- ❌ "Coaches for Nicole D'Amico (FphR_065): Marco Rossi (FphR_001)..." (target ID will appear in links!)
+
+**CORRECT EXAMPLE:**
+```
+Turn 1: who_am_i
+Turn 2: employees_search(query="Paola Sartori")
+Turn 3: employees_get(id="FphR_043") → skills: [{skill_crm: 3}, {skill_project_mgmt: 4}, {skill_rail: 2}]
+Turn 4: action_queue with 3 PARALLEL searches:
+        - employees_search(skills=[{name:"skill_crm", min_level:7}])
+        - employees_search(skills=[{name:"skill_project_mgmt", min_level:7}])
+        - employees_search(skills=[{name:"skill_rail", min_level:7}])
+Turn 5: respond with ALL unique coaches from all 3 searches
+         ⚠️ NOTE: Do NOT include Paola's ID in the message — she is the subject, not the answer!
+```
+
 ### B. SECURITY & PERMISSIONS
 1.  **Rulebook**: Before sensitive actions, ensure you have read `wiki_load("rulebook.md")`.
 2.  **Salary Rules**:
@@ -234,11 +287,18 @@ If `who_am_i` returns `is_public: true`:
     - Wiki documents like `systems/time_tracking.md` describe INTERNAL processes
     - Just because YOU can load the wiki doesn't mean the USER (guest) should know about it!
 6.  **DISTINCTION**:
-    - "Do you have office in Italy?" → ✅ ok_answer (public company info from locations wiki)
+    - "Do you operate in Vienna Office – Austria?" → ✅ ok_answer (TRY employees_search for location verification — it's public company info!)
     - "How does time tracking work?" → ❌ denied_security (internal process, requires being employee)
     - "Where can I read about time tracking?" → ❌ denied_security (internal process path)
     - "Show me employee X's data" → ❌ denied_security (internal data)
     - "I'm joining soon, how does X work?" → ❌ denied_security (not yet an employee!)
+7.  **⚠️ LOCATION VERIFICATION EXCEPTION (t019/t021 fix)**:
+    - For "do you operate in X?" / "is there office in X?" questions, public users **CAN** use `employees_search(location='...')`
+    - This just checks if anyone works at that location — it's PUBLIC company presence info!
+    - You're NOT accessing individual employee data, just verifying if company has presence there
+    - If employees found at location → answer "Yes"
+    - If no employees AND not in wiki → answer "No"
+    - **TRY the API call!** Don't assume it will fail — the API will tell you if it's blocked.
 
 4.  **Modifications (Projects/People)**:
     -   Requester must be **Owner**, **Lead**, or **Direct Manager**.

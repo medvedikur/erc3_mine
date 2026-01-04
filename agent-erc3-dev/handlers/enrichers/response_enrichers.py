@@ -1889,16 +1889,22 @@ class QuerySubjectHintEnricher:
                 emp_names.append(f"{emp_name} ({emp_id})")
 
         if emp_names:
-            # AICODE-NOTE: t077 FIX - Add coaching skill search guidance
+            # AICODE-NOTE: t077 FIX v4 - SEPARATE searches with OR logic!
+            # Combined search uses AND logic = misses coaches with high skill in ONE area.
+            # Separate searches in ONE action_queue finds ALL qualified coaches.
             coaching_hint = ""
             if is_coaching_task:
                 coaching_hint = (
-                    "\n\n🎓 COACHING SEARCH STRATEGY:\n"
-                    "To find ALL potential coaches, search for employees with level >= 7 in EACH skill the coachee has:\n"
-                    "  • Search ALL skills the coachee possesses, not just their top skills!\n"
-                    "  • A coach can help improve ANY skill, even if the coachee is already at level 7\n"
-                    "  • Include employees who have level 8-10 in skills where coachee is at level 2-6\n"
-                    "  • Paginate fully for EACH skill to find all qualified coaches"
+                    "\n\n🎓 COACHING SEARCH STRATEGY (EFFICIENT!):\n"
+                    "⚠️ TURN BUDGET: Complete in 5-6 turns!\n"
+                    "  1. Focus on TOP 3 skills with LOWEST levels\n"
+                    "  2. Do 3 SEPARATE searches in ONE action_queue (OR logic!):\n"
+                    '     - employees_search(skills=[{name:"skill1", min_level:7}])\n'
+                    '     - employees_search(skills=[{name:"skill2", min_level:7}])\n'
+                    '     - employees_search(skills=[{name:"skill3", min_level:7}])\n'
+                    "  3. Merge ALL unique coaches from all searches\n"
+                    "  ⚠️ DO NOT use combined search skills=[X,Y,Z] - that's AND logic, misses coaches!\n"
+                    "  ❌ DO NOT paginate exhaustively - one page per skill is enough"
                 )
 
             return (
@@ -3281,3 +3287,365 @@ class LeastBusyEmployeeTimeSliceEnricher:
                 return "\n".join(lines)
 
         return None
+
+
+class SelfCheckEnricher:
+    """
+    AICODE-NOTE: Minimal self-check hints for specific failure patterns.
+
+    Unlike guards, this enricher NEVER blocks - only adds hints to API responses.
+    Triggered during employees_get for current user to catch t094/t075 patterns.
+
+    Fixes:
+    - t094: "skills I don't have" - agent lists skills they already have
+    - t075: tie-breaker - agent picks wrong candidate
+    """
+
+    # Pattern for "skills I don't have" queries
+    SKILLS_DONT_HAVE_RE = re.compile(
+        r"skills?\s+.{0,20}(?:don'?t|do not|i lack|missing|i need)",
+        re.IGNORECASE
+    )
+
+    # Pattern for tie-breaker detection
+    TIE_BREAKER_RE = re.compile(
+        r'(?:pick|choose|select).+?(?:with\s+(?:more|most|higher|greater))\s+(\w+(?:\s+\w+)?)',
+        re.IGNORECASE
+    )
+
+    def enrich_for_skill_query(
+        self,
+        task_text: str,
+        current_user_skills: list,
+    ) -> Optional[str]:
+        """
+        For "skills I don't have" queries, remind agent about their current skills.
+
+        Args:
+            task_text: The task/question text
+            current_user_skills: List of skill dicts with 'name' key
+
+        Returns:
+            Hint string or None
+        """
+        if not self.SKILLS_DONT_HAVE_RE.search(task_text):
+            return None
+
+        if not current_user_skills:
+            return None
+
+        # Extract skill names
+        skill_names = []
+        for s in current_user_skills:
+            if isinstance(s, dict):
+                name = s.get('name', '')
+            elif hasattr(s, 'name'):
+                name = s.name
+            else:
+                name = str(s)
+            if name:
+                skill_names.append(name)
+
+        if not skill_names:
+            return None
+
+        # Format for display (human-readable)
+        display_names = []
+        for name in skill_names[:15]:  # Limit to 15 for readability
+            # Convert skill_batch_process_management -> Batch Process Management
+            if name.startswith('skill_'):
+                readable = name[6:].replace('_', ' ').title()
+            else:
+                readable = name.replace('_', ' ').title()
+            display_names.append(readable)
+
+        return (
+            f"\n📋 **YOUR CURRENT SKILLS** ({len(skill_names)} total):\n"
+            f"   {', '.join(display_names)}{'...' if len(skill_names) > 15 else ''}\n"
+            f"\n⚠️ **CRITICAL FOR 'SKILLS I DON'T HAVE' QUERY:**\n"
+            f"   Do NOT include ANY of the above skills in your response!\n"
+            f"   Only list skills from the wiki that are NOT in your profile."
+        )
+
+    def enrich_for_tie_breaker(
+        self,
+        task_text: str,
+        candidates: list,
+    ) -> Optional[str]:
+        """
+        For tie-breaker queries, remind agent about the criterion.
+
+        Args:
+            task_text: The task/question text
+            candidates: List of candidate dicts with 'id' key
+
+        Returns:
+            Hint string or None
+        """
+        match = self.TIE_BREAKER_RE.search(task_text)
+        if not match:
+            return None
+
+        criterion = match.group(1)
+
+        if len(candidates) < 2:
+            return None
+
+        candidate_ids = [c.get('id', str(c)) if isinstance(c, dict) else str(c)
+                        for c in candidates[:10]]
+
+        return (
+            f"\n⚠️ **TIE-BREAKER REMINDER**: '{criterion}'\n"
+            f"   You have {len(candidates)} candidates with same primary value.\n"
+            f"   Candidates: {', '.join(candidate_ids)}{'...' if len(candidates) > 10 else ''}\n"
+            f"   MUST pick ONE with highest '{criterion}'. Verify before responding!"
+        )
+
+
+class LocationFilterSummaryEnricher:
+    """
+    AICODE-NOTE: t086 FIX - Shows location breakdown when pagination completes
+    for "list employees in Location X" queries.
+
+    Problem: Agent paginated through employees_search(will_mentor_juniors>=7),
+    then manually filtered by location="HQ – Italy". But LLM forgot one employee
+    (QR23_012) during manual filtering, causing FAIL.
+
+    Solution: When pagination ends (next_offset=-1) for queries with location filter,
+    show breakdown by location highlighting the target location and ALL employees there.
+
+    Fires on: employees_search responses when next_offset=-1 and task mentions location
+    """
+
+    # Common location patterns in tasks
+    LOCATION_PATTERNS = [
+        r'(?:in|at|from)\s+([A-Z][A-Za-z\s]+(?:–|-)?\s*[A-Za-z]+)',  # "in HQ – Italy", "at Munich Office"
+        r'(?:location|office|site)\s+([A-Z][A-Za-z\s]+)',  # "location HQ – Italy"
+        r'employees\s+in\s+([A-Z][A-Za-z\s–-]+)',  # "employees in HQ – Italy"
+    ]
+
+    def __init__(self):
+        # Track accumulated employees with their locations
+        self._accumulated_employees: Dict[str, Dict[str, Any]] = {}
+        self._last_search_params: Optional[str] = None
+
+    def clear_cache(self):
+        """Reset accumulated data for new task."""
+        self._accumulated_employees = {}
+        self._last_search_params = None
+
+    def _extract_target_location(self, task_text: str) -> Optional[str]:
+        """Extract the target location from task text."""
+        for pattern in self.LOCATION_PATTERNS:
+            match = re.search(pattern, task_text, re.IGNORECASE)
+            if match:
+                location = match.group(1).strip()
+                # Normalize common variations
+                location = location.replace(' - ', ' – ').replace('-', '–')
+                return location
+        return None
+
+    def _location_matches(self, employee_location: str, target_location: str) -> bool:
+        """Check if employee location matches target (fuzzy matching)."""
+        if not employee_location or not target_location:
+            return False
+        emp_loc = employee_location.lower().strip()
+        target = target_location.lower().strip()
+        # Exact match
+        if emp_loc == target:
+            return True
+        # Contains match (e.g., "HQ" matches "HQ – Italy")
+        if target in emp_loc or emp_loc in target:
+            return True
+        # Normalize dashes
+        emp_normalized = emp_loc.replace('–', '-').replace('  ', ' ')
+        target_normalized = target.replace('–', '-').replace('  ', ' ')
+        if emp_normalized == target_normalized:
+            return True
+        return False
+
+    def maybe_show_location_breakdown(
+        self,
+        model: Any,
+        result: Any,
+        task_text: str,
+        shared: Optional[Dict] = None
+    ) -> Optional[str]:
+        """
+        Track employees and show location breakdown when pagination completes.
+
+        Args:
+            model: The request model (Req_SearchEmployees)
+            result: API response with employees list
+            task_text: Task instructions
+            shared: Shared context for storing accumulated data
+
+        Returns:
+            Hint string with location breakdown when pagination ends, or None
+        """
+        if not isinstance(model, client.Req_SearchEmployees):
+            return None
+
+        employees = getattr(result, 'employees', []) or []
+        next_offset = getattr(result, 'next_offset', 0)
+
+        # Detect if this is a location-filtered query (either via API or manual)
+        task_lower = task_text.lower()
+        target_location = self._extract_target_location(task_text)
+
+        # Only apply to "list" type queries that mention a location
+        is_list_query = any(kw in task_lower for kw in [
+            'list', 'employees in', 'employees at', 'employees from',
+            'who in', 'people in', 'staff in', 'workers in'
+        ])
+        if not is_list_query or not target_location:
+            return None
+
+        # Build search params key for tracking
+        offset = getattr(model, 'offset', 0)
+        current_search_params = f"{getattr(model, 'department', '')}-{getattr(model, 'location', '')}"
+
+        # Reset accumulator if new search
+        if offset == 0 or current_search_params != self._last_search_params:
+            self._accumulated_employees = {}
+            self._last_search_params = current_search_params
+
+        # Accumulate employees with their locations
+        for emp in employees:
+            emp_id = getattr(emp, 'id', None)
+            emp_name = getattr(emp, 'name', emp_id)
+            emp_location = getattr(emp, 'location', 'Unknown')
+            if emp_id:
+                self._accumulated_employees[emp_id] = {
+                    'name': emp_name,
+                    'location': emp_location
+                }
+
+        # Store in shared context for guards
+        if shared is not None:
+            shared['_location_filter_employees'] = dict(self._accumulated_employees)
+            shared['_location_filter_target'] = target_location
+
+        # Only show breakdown when pagination completes
+        if next_offset != -1:
+            return None
+
+        # Group by location
+        by_location: Dict[str, List[str]] = {}
+        for emp_id, emp_data in self._accumulated_employees.items():
+            loc = emp_data['location'] or 'Unknown'
+            if loc not in by_location:
+                by_location[loc] = []
+            by_location[loc].append(f"{emp_data['name']} ({emp_id})")
+
+        # Find employees matching target location
+        matching_employees = []
+        matching_ids = []
+        for emp_id, emp_data in self._accumulated_employees.items():
+            if self._location_matches(emp_data['location'], target_location):
+                matching_employees.append(f"{emp_data['name']} ({emp_id})")
+                matching_ids.append(emp_id)
+
+        if not matching_employees:
+            return None
+
+        # Build location breakdown hint
+        hint_lines = [
+            f"\n📍 **LOCATION BREAKDOWN** (pagination complete, {len(self._accumulated_employees)} total employees):",
+        ]
+
+        # Show all locations, highlighting the target
+        for loc, emps in sorted(by_location.items(), key=lambda x: -len(x[1])):
+            is_target = self._location_matches(loc, target_location)
+            marker = "✅ TARGET →" if is_target else "  "
+            hint_lines.append(f"  {marker} {loc}: {len(emps)} employees")
+            if is_target:
+                # Show full list for target location
+                for emp in emps:
+                    hint_lines.append(f"       • {emp}")
+
+        hint_lines.append("")
+        hint_lines.append(f"🎯 **FOR TASK \"{task_text[:60]}...\":**")
+        hint_lines.append(f"   Include ALL {len(matching_employees)} employees from {target_location}:")
+        hint_lines.append(f"   IDs: {', '.join(matching_ids)}")
+        hint_lines.append("")
+        hint_lines.append("⚠️ IMPORTANT: Do NOT miss any employee from the target location!")
+        hint_lines.append("   Copy the IDs above to ensure completeness.")
+
+        return '\n'.join(hint_lines)
+
+
+class EmptyLocationSkillSearchEnricher:
+    """
+    AICODE-NOTE: t086 FIX - When employees_search with location + skills/wills
+    returns 0 results, suggest trying without location filter.
+
+    Problem: employees_search(location='X', wills=[...]) returns 0,
+    but employees_search(wills=[...]) + manual location filter works.
+    The API may not handle this combination correctly.
+
+    Fires on: employees_search responses with 0 results and combined filters
+    """
+
+    def maybe_suggest_manual_filter(
+        self,
+        model: Any,
+        result: Any,
+        task_text: str
+    ) -> Optional[str]:
+        """
+        When location + skills/wills returns 0, suggest manual filtering.
+
+        Args:
+            model: The request model (Req_SearchEmployees)
+            result: API response with employees list
+            task_text: Task instructions
+
+        Returns:
+            Hint string if empty results with combined filters, or None
+        """
+        if not isinstance(model, client.Req_SearchEmployees):
+            return None
+
+        employees = getattr(result, 'employees', []) or []
+        if len(employees) > 0:
+            return None  # Has results, no need for hint
+
+        # Check if location + skills/wills were used
+        location = getattr(model, 'location', None)
+        skills = getattr(model, 'skills', None) or []
+        wills = getattr(model, 'wills', None) or []
+
+        if not location:
+            return None  # No location filter
+        if not skills and not wills:
+            return None  # No skills/wills filter
+
+        filter_type = "skills" if skills else "wills"
+        filter_value = skills if skills else wills
+
+        # Format filter value for display
+        if filter_value:
+            filter_display = ", ".join([
+                f"{getattr(f, 'name', f.get('name', 'unknown') if isinstance(f, dict) else 'unknown')}"
+                for f in filter_value
+            ])
+        else:
+            filter_display = str(filter_value)
+
+        print(f"  ⚠️ EmptyLocationSkillSearchEnricher: 0 results with location='{location}' + {filter_type}")
+
+        return (
+            f"\n⚠️ **ZERO RESULTS** with location + {filter_type} filter!\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Your search: location='{location}' + {filter_type}=[{filter_display}]\n"
+            f"Result: 0 employees\n\n"
+            f"**IMPORTANT:** Combined location + {filter_type} filters can be too restrictive!\n"
+            f"The API may not handle this combination correctly.\n\n"
+            f"**TRY THIS INSTEAD:**\n"
+            f"1. Search by {filter_type} ONLY: `employees_search({filter_type}=[...])`\n"
+            f"2. Get ALL matching employees (paginate until next_offset=-1)\n"
+            f"3. Filter by location='{location}' MANUALLY from the results\n\n"
+            f"This approach is more reliable for location-specific queries.\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )

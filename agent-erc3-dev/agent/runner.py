@@ -17,7 +17,7 @@ from handlers import WikiManager, SecurityManager
 from utils import CLI_GREEN, CLI_YELLOW, CLI_BLUE, CLI_CYAN, CLI_CLR
 
 from .state import AgentTurnState
-from .parsing import extract_json
+from .parsing import extract_json, parse_llm_response
 from .loop_detection import LoopDetector
 from .llm_invoker import LLMInvoker
 from .message_builder import MessageBuilder
@@ -125,14 +125,28 @@ def run_agent(
         print(raw_content)
         print()
 
-        # Parse JSON response
-        try:
-            parsed = extract_json(raw_content)
-        except json.JSONDecodeError as e:
-            print(f"{CLI_YELLOW}JSON parse error: {e}{CLI_CLR}")
-            messages.append(AIMessage(content=raw_content))
-            messages.append(message_builder.build_json_error_message())
-            continue
+        # Parse JSON response with enhanced validation
+        # AICODE-NOTE: t017 FIX - Use parse_llm_response for corruption detection
+        parse_result = parse_llm_response(raw_content)
+
+        if not parse_result.success:
+            print(f"{CLI_YELLOW}Parse error: {parse_result.error}{CLI_CLR}")
+
+            if parse_result.needs_retry:
+                # AICODE-NOTE: t017 FIX - Give agent specific feedback about corruption
+                # so it knows its actions did NOT execute and won't hallucinate
+                if parse_result.corruption_detected:
+                    print(f"{CLI_YELLOW}Corruption detected in action_queue{CLI_CLR}")
+                messages.append(message_builder.build_corrupted_json_message(parse_result.error))
+                # Don't add AIMessage for corrupted response to avoid confusion
+                continue
+            else:
+                # Fallback to old behavior for other parse errors
+                messages.append(AIMessage(content=raw_content))
+                messages.append(message_builder.build_json_error_message())
+                continue
+
+        parsed = parse_result.data
 
         # Extract parsed fields
         thoughts = parsed.get("thoughts", "")

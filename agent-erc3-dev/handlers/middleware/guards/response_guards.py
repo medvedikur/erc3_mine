@@ -9,6 +9,7 @@ Guards:
 - SkillIdResponseGuard: Blocks raw skill IDs in response when human names required (t094)
 """
 import re
+from erc3.erc3 import client
 from ..base import ResponseGuard, get_task_text
 from ...base import ToolContext
 from tools.links import LinkExtractor

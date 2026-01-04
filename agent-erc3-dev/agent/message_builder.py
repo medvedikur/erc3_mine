@@ -46,6 +46,35 @@ Your action_queue may have had:
 
 Please retry with correct syntax."""
 
+# AICODE-NOTE: t017 FIX - Message for corrupted/truncated JSON in action_queue
+CORRUPTED_JSON_MSG = """⚠️ [SYSTEM ERROR]: YOUR RESPONSE HAD CORRUPTED OR INVALID JSON!
+
+**Error**: {error}
+
+**CRITICAL**: Your action_queue was NOT executed because the JSON was corrupted.
+
+Your previous response contained invalid characters or incomplete JSON structure.
+This can happen when the model hits token limits or generates non-ASCII garbage.
+
+**REQUIRED ACTION:**
+1. Regenerate your ENTIRE response with valid JSON
+2. Make sure all brackets and braces are properly closed
+3. Do NOT reference "previous data" - your actions did NOT execute
+
+**Template:**
+```json
+{{
+  "thoughts": "...",
+  "plan": [...],
+  "action_queue": [
+    {{"tool": "...", "args": {{...}}}}
+  ],
+  "is_final": false
+}}
+```
+
+⚠️ This turn does NOT count against your budget. Please try again."""
+
 # AICODE-NOTE: t012 FIX - Message for empty action_queue without is_final
 EMPTY_ACTIONS_MSG = """[SYSTEM ERROR]: Empty action_queue but is_final=false!
 
@@ -125,6 +154,21 @@ class MessageBuilder:
     def build_json_error_message(self) -> HumanMessage:
         """Build message for JSON parse error."""
         return HumanMessage(content=JSON_ERROR_MSG)
+
+    def build_corrupted_json_message(self, error: str) -> HumanMessage:
+        """
+        Build message for corrupted/truncated JSON.
+
+        AICODE-NOTE: t017 FIX - Informs agent that its action_queue was corrupted
+        and actions were NOT executed. Prevents hallucination about "already collected" data.
+
+        Args:
+            error: Error description from parser
+
+        Returns:
+            HumanMessage with retry instructions
+        """
+        return HumanMessage(content=CORRUPTED_JSON_MSG.format(error=error))
 
     def build_is_final_error_message(self) -> HumanMessage:
         """Build message for is_final without respond."""
