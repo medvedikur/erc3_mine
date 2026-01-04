@@ -30,7 +30,7 @@ API_BASE_URL = "https://erc.timetoact-group.at"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Gonka Network model
-DEFAULT_MODEL_GONKA = "qwen/qwen3-30b-a3b-instruct-2507"
+DEFAULT_MODEL_GONKA = "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8"
 
 # OpenRouter model
 DEFAULT_MODEL_OPENROUTER = "qwen/qwen3-235b-a22b-2507"
