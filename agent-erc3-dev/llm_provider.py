@@ -10,12 +10,15 @@ AICODE-NOTE: Gonka Network optimization for parallel execution:
 - Per-node rate limiting to prevent 429 errors
 - NodePool with performance tracking for smart node selection
 - Jitter between requests to reduce contention
+- Periodic NTP time sync to prevent "signature is too old" errors
 """
 
 import os
 import time
 import random
 import threading
+import socket
+import struct
 from typing import Any, List, Optional, Dict
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, AIMessage, SystemMessage, HumanMessage, ToolMessage
@@ -23,7 +26,102 @@ from langchain_core.outputs import ChatResult, ChatGeneration
 from pydantic import Field, PrivateAttr
 
 from gonka_openai import GonkaOpenAI
+import gonka_openai.utils as gonka_utils
 from utils import get_available_nodes, GENESIS_NODES, CLI_RED, CLI_YELLOW, CLI_CYAN, CLI_CLR
+
+
+# AICODE-NOTE: NTP time synchronization to prevent "signature is too old" errors
+# Gonka requires accurate timestamps; system clock drift causes request rejection
+class NTPTimeSync:
+    """Periodic NTP time synchronization without sudo."""
+
+    NTP_SERVERS = ["time.apple.com", "pool.ntp.org", "time.google.com"]
+    SYNC_INTERVAL = 120  # seconds between syncs
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._last_sync = 0
+        self._offset_ns = 0  # offset to add to local time
+        self._sync_thread = None
+        self._running = False
+
+    def _query_ntp(self, server: str, timeout: float = 2.0) -> Optional[float]:
+        """Query NTP server and return offset in seconds."""
+        try:
+            # NTP packet: 48 bytes, first byte = 0x1B (client mode)
+            packet = b'\x1b' + 47 * b'\0'
+
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(timeout)
+
+            send_time = time.time()
+            sock.sendto(packet, (server, 123))
+            data, _ = sock.recvfrom(48)
+            recv_time = time.time()
+            sock.close()
+
+            # Extract transmit timestamp (bytes 40-47)
+            t = struct.unpack('!12I', data)[10]
+            t -= 2208988800  # NTP epoch (1900) to Unix epoch (1970)
+
+            # Calculate offset: NTP_time - local_time
+            round_trip = recv_time - send_time
+            offset = t - (send_time + round_trip / 2)
+            return offset
+
+        except Exception:
+            return None
+
+    def sync_once(self) -> bool:
+        """Perform one NTP sync, return True if successful."""
+        for server in self.NTP_SERVERS:
+            offset = self._query_ntp(server)
+            if offset is not None:
+                with self._lock:
+                    self._offset_ns = int(offset * 1_000_000_000)
+                    self._last_sync = time.time()
+
+                    # Patch gonka_openai's _wall_base to correct for drift
+                    gonka_utils._wall_base = time.time_ns() + self._offset_ns
+                    gonka_utils._perf_base = time.perf_counter_ns()
+
+                if abs(offset) > 0.5:  # Only log if significant drift
+                    print(f"{CLI_YELLOW}⏱ NTP sync: clock offset {offset:+.2f}s (corrected){CLI_CLR}")
+                return True
+        return False
+
+    def _sync_loop(self):
+        """Background sync loop."""
+        while self._running:
+            try:
+                self.sync_once()
+            except Exception:
+                pass
+            # Sleep in small intervals to allow clean shutdown
+            for _ in range(self.SYNC_INTERVAL):
+                if not self._running:
+                    break
+                time.sleep(1)
+
+    def start(self):
+        """Start periodic sync in background thread."""
+        if self._sync_thread and self._sync_thread.is_alive():
+            return
+
+        # Initial sync
+        if self.sync_once():
+            print(f"{CLI_CYAN}⏱ NTP time sync enabled (every {self.SYNC_INTERVAL}s){CLI_CLR}")
+
+        self._running = True
+        self._sync_thread = threading.Thread(target=self._sync_loop, daemon=True)
+        self._sync_thread.start()
+
+    def stop(self):
+        """Stop background sync."""
+        self._running = False
+
+
+_ntp_sync = NTPTimeSync()
 
 
 # AICODE-NOTE: Global rate limiter for Gonka nodes
@@ -233,6 +331,9 @@ def warmup_gonka_nodes():
         if _warmup_done:
             return
         _warmup_done = True
+
+    # Start periodic NTP sync to prevent "signature is too old" errors
+    _ntp_sync.start()
 
     print(f"{CLI_CYAN}🔥 Warming up Gonka nodes...{CLI_CLR}")
     nodes = get_available_nodes()
