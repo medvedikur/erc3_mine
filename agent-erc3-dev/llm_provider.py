@@ -354,6 +354,9 @@ class GonkaChatModel(BaseChatModel):
     max_retries_per_node: int = 3
     max_node_switches: int = 10
     request_timeout: int = 60
+    # AICODE-NOTE: Global retry params for network-wide outages (all nodes failing)
+    max_global_retries: int = 3  # Retry entire node cycle this many times
+    global_retry_base_delay: float = 30.0  # Base delay in seconds (exponential backoff)
 
     _client: Optional[GonkaOpenAI] = PrivateAttr(default=None)
     _current_node: Optional[str] = PrivateAttr(default=None)
@@ -385,6 +388,14 @@ class GonkaChatModel(BaseChatModel):
             timeout=self.request_timeout
         )
 
+    def _reset_for_global_retry(self):
+        """Reset state for global retry after all nodes failed."""
+        self._tried_nodes.clear()
+        self._client = None
+        self._current_node = None
+        # Clear blacklist to give nodes a fresh chance
+        _node_pool._blacklist.clear()
+
     def _generate(
         self,
         messages: List[BaseMessage],
@@ -394,61 +405,87 @@ class GonkaChatModel(BaseChatModel):
     ) -> ChatResult:
         openai_messages = self._convert_messages(messages)
 
-        if self._client is None:
-            self._connect_initial()
+        # AICODE-NOTE: Global retry loop for network-wide outages
+        for global_retry in range(self.max_global_retries + 1):
+            if global_retry > 0:
+                # Exponential backoff: 30s, 60s, 120s
+                delay = self.global_retry_base_delay * (2 ** (global_retry - 1))
+                print(f"{CLI_YELLOW}⏳ Global retry {global_retry}/{self.max_global_retries}: "
+                      f"waiting {delay:.0f}s before re-trying all nodes...{CLI_CLR}")
+                time.sleep(delay)
+                self._reset_for_global_retry()
+                # Re-warmup nodes to find working ones
+                nodes = get_available_nodes()
+                _node_pool.warmup_nodes(nodes, max_nodes=5)
 
-        for node_attempt in range(self.max_node_switches):
-            try:
-                response = self._call_with_retry(openai_messages, stop, **kwargs)
+            if self._client is None:
+                self._connect_initial()
 
-                if self._current_node and isinstance(self._current_node, str):
-                    GonkaChatModel._last_successful_node = self._current_node
+            all_nodes_exhausted = True
+            for node_attempt in range(self.max_node_switches):
+                try:
+                    response = self._call_with_retry(openai_messages, stop, **kwargs)
 
-                message_content = response.choices[0].message.content
-                usage = getattr(response, "usage", None)
+                    if self._current_node and isinstance(self._current_node, str):
+                        GonkaChatModel._last_successful_node = self._current_node
 
-                usage_metadata = {}
-                if usage:
-                    if isinstance(usage, dict):
+                    message_content = response.choices[0].message.content
+                    usage = getattr(response, "usage", None)
+
+                    usage_metadata = {}
+                    if usage:
+                        if isinstance(usage, dict):
+                            usage_metadata = {
+                                "prompt_tokens": usage.get("prompt_tokens", 0),
+                                "completion_tokens": usage.get("completion_tokens", 0),
+                                "total_tokens": usage.get("total_tokens", 0)
+                            }
+                        else:
+                            usage_metadata = {
+                                "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+                                "completion_tokens": getattr(usage, "completion_tokens", 0),
+                                "total_tokens": getattr(usage, "total_tokens", 0)
+                            }
+
+                    if not usage_metadata or usage_metadata.get("total_tokens", 0) == 0:
+                        est_completion = len(message_content) // 4 if message_content else 0
+                        est_prompt = sum(len(m.get('content', '')) for m in openai_messages) // 4
                         usage_metadata = {
-                            "prompt_tokens": usage.get("prompt_tokens", 0),
-                            "completion_tokens": usage.get("completion_tokens", 0),
-                            "total_tokens": usage.get("total_tokens", 0)
+                            "prompt_tokens": est_prompt,
+                            "completion_tokens": est_completion,
+                            "total_tokens": est_prompt + est_completion,
+                            "estimated": True
                         }
+
+                    return ChatResult(
+                        generations=[ChatGeneration(message=AIMessage(content=message_content))],
+                        llm_output={"token_usage": usage_metadata, "model_name": self.model_name}
+                    )
+
+                except Exception as e:
+                    error_str = str(e)
+                    print(f"{CLI_YELLOW}⚠ Node {self._current_node} failed: {e}{CLI_CLR}")
+
+                    hint_node = self._extract_hint_url(error_str)
+                    if hint_node:
+                        print(f"{CLI_CYAN}💡 Found hint node in error: {hint_node}{CLI_CLR}")
+
+                    if self._switch_node(hint_node=hint_node):
+                        all_nodes_exhausted = False
                     else:
-                        usage_metadata = {
-                            "prompt_tokens": getattr(usage, "prompt_tokens", 0),
-                            "completion_tokens": getattr(usage, "completion_tokens", 0),
-                            "total_tokens": getattr(usage, "total_tokens", 0)
-                        }
+                        # No more nodes to try in this cycle
+                        break
 
-                if not usage_metadata or usage_metadata.get("total_tokens", 0) == 0:
-                    est_completion = len(message_content) // 4 if message_content else 0
-                    est_prompt = sum(len(m.get('content', '')) for m in openai_messages) // 4
-                    usage_metadata = {
-                        "prompt_tokens": est_prompt,
-                        "completion_tokens": est_completion,
-                        "total_tokens": est_prompt + est_completion,
-                        "estimated": True
-                    }
+            # All nodes failed in this cycle - will retry if we have global retries left
+            if all_nodes_exhausted or node_attempt >= self.max_node_switches - 1:
+                if global_retry < self.max_global_retries:
+                    print(f"{CLI_YELLOW}⚠ All {self.max_node_switches} nodes exhausted, "
+                          f"initiating global retry...{CLI_CLR}")
+                    continue  # Go to next global retry
+                else:
+                    break  # No more retries
 
-                return ChatResult(
-                    generations=[ChatGeneration(message=AIMessage(content=message_content))],
-                    llm_output={"token_usage": usage_metadata, "model_name": self.model_name}
-                )
-
-            except Exception as e:
-                error_str = str(e)
-                print(f"{CLI_YELLOW}⚠ Node {self._current_node} failed: {e}{CLI_CLR}")
-
-                hint_node = self._extract_hint_url(error_str)
-                if hint_node:
-                    print(f"{CLI_CYAN}💡 Found hint node in error: {hint_node}{CLI_CLR}")
-
-                if not self._switch_node(hint_node=hint_node):
-                    raise e
-
-        raise Exception("All Gonka nodes failed.")
+        raise Exception("All Gonka nodes failed after global retries.")
 
     def _call_with_retry(self, messages, stop, **kwargs):
         last_error = None

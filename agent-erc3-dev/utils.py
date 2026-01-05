@@ -58,8 +58,13 @@ CLI_YELLOW = CLI.YELLOW
 CLI_CYAN = CLI.CYAN
 CLI_CLR = CLI.RESET
 
-def fetch_active_nodes(source_node: str = None) -> List[str]:
-    """Fetch list of active participant nodes from current epoch"""
+def fetch_active_nodes(source_node: str = None, model_filter: str = None) -> List[str]:
+    """Fetch list of active participant nodes from current epoch.
+
+    Args:
+        source_node: Specific node to query (optional)
+        model_filter: Only return nodes supporting this model (e.g. 'Qwen/Qwen3-235B-A22B-Instruct-2507-FP8')
+    """
     # If source_node provided, try only that. Otherwise try random genesis nodes.
     sources = [source_node] if source_node else list(GENESIS_NODES)
     if not source_node:
@@ -70,35 +75,48 @@ def fetch_active_nodes(source_node: str = None) -> List[str]:
     for source in sources:
         if not source:
             continue
-            
+
         try:
             # Handle full URL in source_node (e.g. from error message) or just base URL
             url = source if source.endswith("/participants") else f"{source}/v1/epochs/current/participants"
-            
+
             response = requests.get(
                 url,
                 timeout=10
             )
             if response.status_code == 200:
                 data = response.json()
-                participants = data.get("participants", [])
+                # AICODE-NOTE: API returns {"active_participants": {"participants": [...]}}
+                participants = data.get("active_participants", {}).get("participants", [])
+
+                # Filter by model if specified
+                if model_filter:
+                    participants = [p for p in participants if model_filter in p.get("models", [])]
+
                 nodes = [p.get("inference_url") for p in participants if p.get("inference_url")]
                 if nodes:
                     if not source_node:
-                         print(f"{CLI_CYAN}✓ Fetched {len(nodes)} active nodes from {source}{CLI_CLR}")
+                        filter_msg = f" (filtered for {model_filter})" if model_filter else ""
+                        print(f"{CLI_CYAN}✓ Fetched {len(nodes)} active nodes{filter_msg} from {source}{CLI_CLR}")
                     return nodes
         except Exception as e:
             if source_node: # Only print error if we were targeting a specific node
                 print(f"{CLI_YELLOW}⚠ Could not fetch participants from {source}: {e}{CLI_CLR}")
             continue
-    
+
     return []
 
 
-def get_available_nodes() -> List[str]:
-    """Get all available nodes: active participants + genesis nodes"""
-    active = fetch_active_nodes()
-    all_nodes = list(set(active + GENESIS_NODES))
-    random.shuffle(all_nodes)
-    return all_nodes
+def get_available_nodes(model_filter: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8") -> List[str]:
+    """Get all available nodes: active participants filtered by model + genesis nodes as fallback.
+
+    Args:
+        model_filter: Only return nodes supporting this model
+    """
+    active = fetch_active_nodes(model_filter=model_filter)
+    # Genesis nodes are gateways, not direct inference - only use as fallback
+    if not active:
+        print(f"{CLI_YELLOW}⚠ No active nodes found, falling back to genesis nodes{CLI_CLR}")
+        return list(GENESIS_NODES)
+    return active
 
