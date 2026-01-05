@@ -27,15 +27,31 @@ from utils import get_available_nodes, GENESIS_NODES, CLI_RED, CLI_YELLOW, CLI_C
 
 
 # AICODE-NOTE: Global rate limiter for Gonka nodes
+# Optimization B: Adaptive min_interval based on available nodes count
 class NodeRateLimiter:
-    """Thread-safe rate limiter for Gonka nodes."""
+    """Thread-safe rate limiter for Gonka nodes with adaptive intervals."""
 
     def __init__(self, min_interval: float = 0.2, max_concurrent_per_node: int = 3):
         self._lock = threading.Lock()
         self._last_request_time: Dict[str, float] = {}
         self._active_requests: Dict[str, int] = {}
-        self._min_interval = min_interval
+        self._base_min_interval = min_interval
         self._max_concurrent = max_concurrent_per_node
+        self._available_nodes_count = 0
+
+    def set_available_nodes_count(self, count: int):
+        """Update node count for adaptive interval calculation."""
+        with self._lock:
+            self._available_nodes_count = count
+
+    def _get_adaptive_interval(self) -> float:
+        """Return adaptive min_interval based on available nodes."""
+        # More nodes = lower interval needed (less contention per node)
+        if self._available_nodes_count > 20:
+            return 0.1
+        elif self._available_nodes_count > 10:
+            return 0.15
+        return self._base_min_interval
 
     def acquire(self, node: str) -> bool:
         with self._lock:
@@ -44,7 +60,8 @@ class NodeRateLimiter:
             if active >= self._max_concurrent:
                 return False
             last_time = self._last_request_time.get(node, 0)
-            if now - last_time < self._min_interval:
+            min_interval = self._get_adaptive_interval()
+            if now - last_time < min_interval:
                 return False
             self._active_requests[node] = active + 1
             self._last_request_time[node] = now
@@ -68,10 +85,13 @@ class NodeRateLimiter:
 _node_rate_limiter = NodeRateLimiter()
 
 
+# AICODE-NOTE: Optimization A - Round-robin node assignment for thread distribution
+# AICODE-NOTE: Optimization C - Preconnect warming at startup
 class NodePool:
     """
     Thread-safe pool of Gonka nodes with performance tracking.
     Tracks successful nodes and their response times.
+    Supports round-robin assignment and preconnect warming.
     """
 
     def __init__(self, blacklist_duration: float = 60.0):
@@ -79,6 +99,8 @@ class NodePool:
         self._good_nodes: Dict[str, Dict] = {}
         self._blacklist: Dict[str, float] = {}
         self._blacklist_duration = blacklist_duration
+        self._warmed_nodes: List[str] = []  # Optimization C: preconnected nodes
+        self._assignment_counter = 0  # Optimization A: for round-robin
 
     def record_success(self, node: str, response_time: float):
         with self._lock:
@@ -121,12 +143,106 @@ class NodePool:
         best = self.get_best_nodes(count=5)
         return random.choice(best) if best else None
 
+    def get_node_round_robin(self) -> Optional[str]:
+        """Optimization A: Get next node in round-robin fashion to distribute load."""
+        with self._lock:
+            now = time.time()
+            # First try warmed nodes
+            if self._warmed_nodes:
+                # Filter out blacklisted nodes inline (avoid nested lock)
+                available = [n for n in self._warmed_nodes if now >= self._blacklist.get(n, 0)]
+                if available:
+                    idx = self._assignment_counter % len(available)
+                    self._assignment_counter += 1
+                    return available[idx]
+            # Fallback to best nodes (get_best_nodes would cause deadlock, inline logic)
+            candidates = []
+            for node, stats in self._good_nodes.items():
+                if node in self._blacklist and self._blacklist[node] > now:
+                    continue
+                if now - stats["last_success"] > 600:
+                    continue
+                score = stats["success_count"] / max(0.1, stats["avg_response_time"])
+                candidates.append((node, score))
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            best = [node for node, _ in candidates[:10]]
+            if best:
+                idx = self._assignment_counter % len(best)
+                self._assignment_counter += 1
+                return best[idx]
+            return None
+
+    def warmup_nodes(self, nodes: List[str], max_nodes: int = 5) -> List[str]:
+        """Optimization C: Ping nodes to measure latency, store best ones."""
+        import concurrent.futures
+
+        def ping_node(node: str) -> tuple:
+            try:
+                start = time.time()
+                import requests
+                resp = requests.get(f"{node}/v1/models", timeout=5)
+                latency = time.time() - start
+                if resp.status_code == 200:
+                    return (node, latency)
+            except Exception:
+                pass
+            return (node, float('inf'))
+
+        results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(10, len(nodes))) as executor:
+            futures = {executor.submit(ping_node, n): n for n in nodes[:20]}
+            for future in concurrent.futures.as_completed(futures, timeout=10):
+                try:
+                    result = future.result()
+                    if result[1] < float('inf'):
+                        results.append(result)
+                except Exception:
+                    pass
+
+        # Sort by latency, take best
+        results.sort(key=lambda x: x[1])
+        warmed = [n for n, _ in results[:max_nodes]]
+
+        with self._lock:
+            self._warmed_nodes = warmed
+            # Pre-populate good_nodes with initial latency
+            for node, latency in results[:max_nodes]:
+                if node not in self._good_nodes:
+                    self._good_nodes[node] = {
+                        "avg_response_time": latency,
+                        "success_count": 1,
+                        "last_success": time.time()
+                    }
+
+        return warmed
+
     def is_blacklisted(self, node: str) -> bool:
         with self._lock:
             return time.time() < self._blacklist.get(node, 0)
 
 
 _node_pool = NodePool(blacklist_duration=60.0)
+_warmup_done = False
+_warmup_lock = threading.Lock()
+
+
+def warmup_gonka_nodes():
+    """Optimization C: Warmup nodes at startup for faster first requests."""
+    global _warmup_done
+    with _warmup_lock:
+        if _warmup_done:
+            return
+        _warmup_done = True
+
+    print(f"{CLI_CYAN}🔥 Warming up Gonka nodes...{CLI_CLR}")
+    nodes = get_available_nodes()
+    _node_rate_limiter.set_available_nodes_count(len(nodes))
+
+    warmed = _node_pool.warmup_nodes(nodes, max_nodes=8)
+    if warmed:
+        print(f"{CLI_CYAN}✓ Warmed {len(warmed)} nodes: {', '.join(n.split('/')[-1] for n in warmed[:3])}...{CLI_CLR}")
+    else:
+        print(f"{CLI_YELLOW}⚠ No nodes responded to warmup{CLI_CLR}")
 
 
 class GonkaChatModel(BaseChatModel):
@@ -289,6 +405,9 @@ class GonkaChatModel(BaseChatModel):
         raise last_error
 
     def _connect_initial(self):
+        # Optimization C: Run warmup on first connection
+        warmup_gonka_nodes()
+
         fixed_node = os.getenv("GONKA_NODE_URL")
         if fixed_node:
             print(f"{CLI_CYAN}🔗 Using fixed node: {fixed_node}{CLI_CLR}")
@@ -296,8 +415,8 @@ class GonkaChatModel(BaseChatModel):
             self._current_node = fixed_node
             return
 
-        # Try proven good nodes from pool first
-        pool_node = _node_pool.get_random_good_node()
+        # Optimization A: Use round-robin instead of random for better distribution
+        pool_node = _node_pool.get_node_round_robin()
         if pool_node and pool_node not in self._tried_nodes:
             try:
                 print(f"{CLI_CYAN}🔗 Using proven good node: {pool_node}{CLI_CLR}")
