@@ -28,12 +28,40 @@ class ParseResult:
     corruption_detected: bool = False
 
 
+def _remove_message_values(content: str) -> str:
+    """
+    Remove 'message' field values from content for corruption checking.
+
+    AICODE-NOTE: t023 FIX - Message values can contain any characters including
+    Chinese (e.g., "是" = Yes). We need to exclude them from corruption checks.
+
+    Args:
+        content: JSON content to process
+
+    Returns:
+        Content with message values replaced by placeholder
+    """
+    # Pattern: "message" followed by : and a quoted string
+    # Handle escaped quotes inside the string
+    pattern = r'("message"\s*:\s*)"((?:[^"\\]|\\.)*)(")'
+
+    def replacer(m):
+        # Keep structure, replace value with placeholder
+        return m.group(1) + '"__MESSAGE_PLACEHOLDER__"'
+
+    return re.sub(pattern, replacer, content)
+
+
 def _detect_corruption(content: str) -> Optional[str]:
     """
     Detect corrupted content in JSON.
 
     AICODE-NOTE: t017 FIX - LLM sometimes generates garbage characters
     (Chinese, emoji garbage, random unicode) especially when hitting token limits.
+
+    AICODE-NOTE: t023 FIX - Chinese characters in 'message' field of respond tool
+    are VALID (e.g., "是" = "Yes" for Chinese queries). Only flag Chinese in
+    structural elements (tool names, outcome values, etc.)
 
     Returns:
         Error message if corruption detected, None otherwise.
@@ -46,10 +74,15 @@ def _detect_corruption(content: str) -> Optional[str]:
 
     aq_section = content[aq_start:]
 
+    # AICODE-NOTE: t023 FIX - Remove message content before checking for Chinese
+    # Pattern: "message": "..." or "message" : "..."
+    # This allows Chinese/unicode in message values (valid user responses)
+    aq_section_for_check = _remove_message_values(aq_section)
+
     # Pattern: unexpected characters in JSON values that break parsing
     # Chinese characters, random unicode blocks, etc.
     corruption_patterns = [
-        # Chinese characters (common corruption)
+        # Chinese characters (common corruption) - but NOT in message values
         r'[\u4e00-\u9fff]',
         # Random unicode control chars
         r'[\u0000-\u0008\u000b\u000c\u000e-\u001f]',
@@ -58,13 +91,13 @@ def _detect_corruption(content: str) -> Optional[str]:
     ]
 
     for pattern in corruption_patterns:
-        match = re.search(pattern, aq_section)
+        match = re.search(pattern, aq_section_for_check)
         if match:
             # Get context around the corruption
             pos = match.start()
             context_start = max(0, pos - 20)
-            context_end = min(len(aq_section), pos + 30)
-            context = aq_section[context_start:context_end]
+            context_end = min(len(aq_section_for_check), pos + 30)
+            context = aq_section_for_check[context_start:context_end]
             return f"Corrupted characters in action_queue near: ...{context}..."
 
     return None

@@ -246,7 +246,8 @@ class MultipleMatchClarificationGuard(ResponseGuard):
             return
 
         # Check if employees_search returned multiple results
-        last_search_result = ctx.shared.get('_employee_search_result')
+        # AICODE-NOTE: t080 FIX - Use persistent key that survives executor pop()
+        last_search_result = ctx.shared.get('_last_employee_search_for_disambiguation')
         if not last_search_result:
             return
 

@@ -79,6 +79,12 @@ class EmployeeSearchHandler(ActionHandler):
                 ctx.results.append('\n'.join(hint_lines))
                 print(f"  {CLI_YELLOW}⚠ t075: Skill query detected but no skill filter used!{CLI_CLR}")
 
+        # AICODE-NOTE: t056 FIX - Warn about max_level for "strong" queries
+        # "Strong" = 7-8, but 9-10 (exceptional) is ALSO acceptable for "strong" queries.
+        # Using max_level=8 EXCLUDES employees with exceptional levels!
+        if current_offset == 0:
+            self._check_strong_max_level_usage(ctx)
+
         employees_map = {}
         exact_error = None
         res_exact = None
@@ -237,6 +243,12 @@ class EmployeeSearchHandler(ActionHandler):
 
         # Store result in context for DefaultActionHandler enrichments
         ctx.shared['_employee_search_result'] = result
+
+        # AICODE-NOTE: t080 FIX - Store persistent copy for MultipleMatchClarificationGuard.
+        # The executor pops '_employee_search_result', so guard can't access it during respond.
+        # This key is NOT popped and persists until next employees_search call.
+        ctx.shared['_last_employee_search_for_disambiguation'] = result
+
         return False  # Let default handler continue with enrichments
 
     def _get_task_text(self, ctx: ToolContext) -> str:
@@ -252,6 +264,97 @@ class EmployeeSearchHandler(ActionHandler):
             or str(task)
         )
         return str(task_text).lower()
+
+    def _check_strong_max_level_usage(self, ctx: ToolContext) -> None:
+        """
+        AICODE-NOTE: t056 FIX - Detect incorrect max_level usage for "strong" queries.
+
+        Problem: Task says "strong Project management" but agent uses max_level=8.
+        Wiki defines: 7-8 = Strong, 9-10 = Exceptional.
+        "Strong" should include 7+, not just 7-8, because exceptional is ALSO strong.
+
+        Detection:
+        1. Task contains "strong" (not "most skilled", "exactly", "level 7-8")
+        2. Search uses max_level < 10 for any skill/will filter
+
+        Action: Add warning hint (soft block behavior - warn on first use, auto-fix on second)
+        """
+        task_text = self._get_task_text(ctx)
+        if not task_text:
+            return
+
+        # Check if task mentions "strong" skill/will
+        strong_patterns = [
+            r'\bstrong\s+(?:\w+\s+){0,2}(?:skill|motivation|will)',
+            r'\b(?:skill|motivation|will)\w*\s+.*\bstrong\b',
+            r'\bstrongly\s+(?:motivated|skilled)',
+        ]
+        has_strong = any(re.search(p, task_text, re.IGNORECASE) for p in strong_patterns)
+        if not has_strong:
+            return
+
+        # Exclude "most skilled", "exactly", "level 7-8" patterns
+        exclude_patterns = [
+            r'\bmost\s+skilled\b',
+            r'\bexactly\s+(?:strong|level)',
+            r'\blevel\s*[78]\s*(?:to|-)\s*[78]\b',
+            r'\b7\s*(?:to|-)\s*8\s+only\b',
+        ]
+        if any(re.search(p, task_text, re.IGNORECASE) for p in exclude_patterns):
+            return
+
+        # Check if any skill/will filter uses max_level < 10
+        has_max_level_cap = False
+        capped_filters = []
+
+        for skill_filter in (ctx.model.skills or []):
+            max_lvl = getattr(skill_filter, 'max_level', None)
+            if max_lvl is not None and max_lvl < 10:
+                has_max_level_cap = True
+                capped_filters.append(f"skill '{skill_filter.name}' max_level={max_lvl}")
+
+        for will_filter in (ctx.model.wills or []):
+            max_lvl = getattr(will_filter, 'max_level', None)
+            if max_lvl is not None and max_lvl < 10:
+                has_max_level_cap = True
+                capped_filters.append(f"will '{will_filter.name}' max_level={max_lvl}")
+
+        if not has_max_level_cap:
+            return
+
+        # Check if already warned
+        warning_key = 't056_strong_max_level_warned'
+        if ctx.shared.get(warning_key):
+            # Second time - auto-fix by removing max_level
+            print(f"  {CLI_GREEN}✓ t056: Auto-fixing max_level cap for 'strong' query{CLI_CLR}")
+            for skill_filter in (ctx.model.skills or []):
+                if hasattr(skill_filter, 'max_level'):
+                    skill_filter.max_level = None
+            for will_filter in (ctx.model.wills or []):
+                if hasattr(will_filter, 'max_level'):
+                    will_filter.max_level = None
+            return
+
+        # First time - add warning hint
+        ctx.shared[warning_key] = True
+        hint_lines = [
+            "",
+            f"⚠️ **STRONG SKILL/WILL QUERY - MAX_LEVEL WARNING**",
+            f"   Task asks for 'strong' skills/wills, but you're using max_level cap!",
+            f"   ",
+            f"   Capped filters: {', '.join(capped_filters)}",
+            f"   ",
+            f"   **PROBLEM**: 'Strong' = levels 7-8, but 'Exceptional' (9-10) is ALSO strong!",
+            f"   Using max_level=8 EXCLUDES employees with level 9-10.",
+            f"   ",
+            f"   ❌ WRONG: skills=[{{..., min_level=7, max_level=8}}]",
+            f"   ✅ CORRECT: skills=[{{..., min_level=7}}]  (no max_level)",
+            f"   ",
+            f"   → Remove max_level to include ALL employees with skill/will ≥ 7.",
+            "",
+        ]
+        ctx.results.append('\n'.join(hint_lines))
+        print(f"  {CLI_YELLOW}⚠ t056: Strong query with max_level cap detected!{CLI_CLR}")
 
     def _find_exact_name_permutation(self, query: str, employees: List) -> Optional[Any]:
         """

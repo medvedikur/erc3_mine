@@ -87,6 +87,25 @@ Discover: `grep "AICODE-" -R agent-erc3-dev/`
 
 ## 7. Testing
 
+### LLM Backend: Gonka Network (ОБЯЗАТЕЛЬНО!)
+
+**⚠️ КРИТИЧЕСКИ ВАЖНО: Используем ТОЛЬКО Gonka Network!**
+
+```bash
+# ✅ ПРАВИЛЬНО — Gonka (бесплатно!)
+./venv-erc3/bin/python main.py -benchmark erc3-prod -threads 10
+
+# ❌ НЕПРАВИЛЬНО — НЕ использовать OpenRouter!
+./venv-erc3/bin/python main.py -openrouter -benchmark erc3-prod  # ЗАПРЕЩЕНО!
+```
+
+**Почему Gonka:**
+- Бесплатная LLM сеть
+- Та же модель (Qwen3-235B) что и OpenRouter
+- Флаг `-openrouter` — только для экстренной отладки с явного разрешения
+
+### Local Tests
+
 ```bash
 ./venv-erc3/bin/python main.py -tests_on              # Local tests
 ./venv-erc3/bin/python main.py -tests_on -threads 4   # Parallel
@@ -99,23 +118,25 @@ Discover: `grep "AICODE-" -R agent-erc3-dev/`
 
 ### Benchmark Strategy (IMPORTANT)
 
-**Full benchmark (`-benchmark erc3-prod -threads 20`) is EXPENSIVE!** Use sparingly.
+**Все команды БЕЗ флага `-openrouter`!** Gonka бесплатна.
 
-1. **For debugging/fixing specific tests**: Run isolated tests first
+1. **Отладка конкретных тестов**: Изолированные запуски
    ```bash
    ./venv-erc3/bin/python main.py -benchmark erc3-prod -task t081   # Single test
    ./venv-erc3/bin/python main.py -benchmark erc3-prod -task t081,t097,t056  # Few tests
    ```
 
-2. **For regression checking**: Run a small batch (3-5 tests)
+2. **Проверка регрессий**: Батч из 3-5 тестов
    ```bash
    ./venv-erc3/bin/python main.py -benchmark erc3-prod -threads 3 -task t009,t010,t012
    ```
 
-3. **Full benchmark**: Only when you expect 103/103!
-   - Before running full benchmark, verify fixes with isolated tests
-   - Run single problematic tests 3-5 times to confirm stability
-   - Full run should be reserved for final validation
+3. **Полный benchmark**: Когда ожидаем 103/103
+   ```bash
+   ./venv-erc3/bin/python main.py -benchmark erc3-prod -threads 10
+   ```
+   - Перед полным запуском — проверить фиксы изолированно
+   - Запустить проблемные тесты 3-5 раз для подтверждения стабильности
 
 ---
 

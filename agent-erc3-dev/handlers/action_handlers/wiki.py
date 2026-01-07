@@ -352,6 +352,39 @@ class WikiLoadHandler(ActionHandler):
             if '_loaded_wiki_content' not in ctx.shared:
                 ctx.shared['_loaded_wiki_content'] = {}
             ctx.shared['_loaded_wiki_content'][file_path] = content
+
+            # AICODE-NOTE: t023 FIX - For Yes/No location questions, add respond hint
+            # Agent often loads locations_and_sites.md but forgets to respond
+            if file_path == 'company/locations_and_sites.md':
+                task_text = ctx.shared.get('task_text', '')
+                task_lower = task_text.lower()
+                # Check for Yes/No question patterns (English and Chinese)
+                is_chinese_yesno = '是/否' in task_text or '（是/否）' in task_text
+                is_english_yesno = 'yes/no' in task_lower or 'yes or no' in task_lower
+                is_yes_no = is_chinese_yesno or is_english_yesno
+                # Check for location/office question patterns (English and Chinese)
+                is_location_q = ('office' in task_lower or 'location' in task_lower or
+                                 'presence' in task_lower or '办公室' in task_text)
+                if is_yes_no and is_location_q:
+                    # AICODE-NOTE: t023 FIX - Respond in same language as question
+                    if is_chinese_yesno:
+                        ctx.results.append(
+                            "\n✅ **LOCATIONS LOADED - NOW RESPOND!**\n"
+                            "You now have the full list of company locations.\n"
+                            "Check if the city from the question is listed, then call `respond` with:\n"
+                            "- outcome: 'ok_answer'\n"
+                            "- message: Include '是' (Yes) or '否' (No) in Chinese to match the question language\n"
+                            "Do NOT search further - you have all the information needed!"
+                        )
+                    else:
+                        ctx.results.append(
+                            "\n✅ **LOCATIONS LOADED - NOW RESPOND!**\n"
+                            "You now have the full list of company locations.\n"
+                            "Check if the city from the question is listed, then call `respond` with:\n"
+                            "- outcome: 'ok_answer'\n"
+                            "- message: 'Yes' or 'No'\n"
+                            "Do NOT search further - you have all the information needed!"
+                        )
         else:
             print(f"  {CLI_YELLOW}⚠ Page not found: {file_path}{CLI_CLR}")
             ctx.results.append(f"Action ({action_name}): Page '{file_path}' not found in wiki.")

@@ -19,6 +19,9 @@ import random
 import threading
 import socket
 import struct
+import contextvars
+from email.utils import parsedate_to_datetime
+from datetime import timezone
 from typing import Any, List, Optional, Dict
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, AIMessage, SystemMessage, HumanMessage, ToolMessage
@@ -27,7 +30,12 @@ from pydantic import Field, PrivateAttr
 
 from gonka_openai import GonkaOpenAI
 import gonka_openai.utils as gonka_utils
-from utils import get_available_nodes, GENESIS_NODES, CLI_RED, CLI_YELLOW, CLI_CYAN, CLI_CLR
+from utils import get_available_nodes, fetch_active_nodes, GENESIS_NODES, CLI_RED, CLI_YELLOW, CLI_CYAN, CLI_CLR, NoAvailableNodesError
+
+
+# AICODE-NOTE: ACSC (Adaptive Clock Skew Compensation) for per-node time adjustment
+# Each Gonka node has different clock drift. We learn and apply per-node offsets.
+_current_node_offset = contextvars.ContextVar('node_offset', default=0.0)
 
 
 # AICODE-NOTE: NTP time synchronization to prevent "signature is too old" errors
@@ -81,9 +89,12 @@ class NTPTimeSync:
                     self._offset_ns = int(offset * 1_000_000_000)
                     self._last_sync = time.time()
 
-                    # Patch gonka_openai's _wall_base to correct for drift
-                    gonka_utils._wall_base = time.time_ns() + self._offset_ns
-                    gonka_utils._perf_base = time.perf_counter_ns()
+                    # AICODE-NOTE: Safe patching with hasattr check to survive SDK updates
+                    if hasattr(gonka_utils, "_wall_base") and hasattr(gonka_utils, "_perf_base"):
+                        gonka_utils._wall_base = time.time_ns() + self._offset_ns
+                        gonka_utils._perf_base = time.perf_counter_ns()
+                    else:
+                        print(f"{CLI_YELLOW}⚠ WARNING: gonka_utils structure changed, NTP patch skipped{CLI_CLR}")
 
                 if abs(offset) > 0.5:  # Only log if significant drift
                     print(f"{CLI_YELLOW}⏱ NTP sync: clock offset {offset:+.2f}s (corrected){CLI_CLR}")
@@ -122,6 +133,135 @@ class NTPTimeSync:
 
 
 _ntp_sync = NTPTimeSync()
+
+
+# AICODE-NOTE: ACSC - Adaptive Clock Skew Compensation
+# Different Gonka nodes have different clock drifts. We learn and store per-node offsets.
+class NodeOffsetManager:
+    """
+    Manages per-node clock offsets for Gonka network.
+
+    Problem: Gonka nodes have inconsistent clocks (some ahead, some behind).
+    Solution: Learn each node's clock offset from HTTP Date headers and apply
+    per-node corrections to request signatures.
+    """
+
+    def __init__(self):
+        self._offsets: Dict[str, float] = {}  # node_url -> offset_seconds
+        self._lock = threading.RLock()
+
+    def update_from_headers(self, node_url: str, headers: dict) -> bool:
+        """Parse Date header and update offset for this node."""
+        server_date = headers.get("Date") or headers.get("date")
+        if not server_date:
+            return False
+
+        try:
+            # Parse HTTP Date (RFC 2822)
+            dt_server = parsedate_to_datetime(server_date)
+            ts_server = dt_server.replace(tzinfo=timezone.utc).timestamp()
+            ts_local = time.time()
+
+            # Calculate offset: how much server is ahead of us
+            offset = ts_server - ts_local
+
+            with self._lock:
+                # Exponential moving average to smooth jitter
+                old_offset = self._offsets.get(node_url, 0)
+                if old_offset == 0:
+                    self._offsets[node_url] = offset
+                else:
+                    self._offsets[node_url] = (old_offset * 0.7) + (offset * 0.3)
+
+            if abs(offset) > 1.0:  # Only log significant skew
+                print(f"{CLI_CYAN}⏰ Clock skew learned for {node_url.split('//')[-1]}: {offset:+.2f}s{CLI_CLR}")
+            return True
+
+        except Exception as e:
+            print(f"{CLI_YELLOW}⚠ Failed to parse clock skew: {e}{CLI_CLR}")
+            return False
+
+    def update_from_error(self, node_url: str, error_msg: str) -> float:
+        """
+        Estimate offset from error message when Date header is unavailable.
+        Returns the estimated offset that was applied.
+        """
+        error_lower = error_msg.lower()
+        with self._lock:
+            current = self._offsets.get(node_url, 0)
+
+            if "too old" in error_lower or "expired" in error_lower:
+                # Our time is behind server - add positive offset
+                new_offset = current + 30.0  # Jump 30s forward
+                self._offsets[node_url] = new_offset
+                print(f"{CLI_CYAN}⏰ Clock skew (too old) for {node_url.split('//')[-1]}: {new_offset:+.1f}s{CLI_CLR}")
+                return new_offset
+
+            elif "future" in error_lower:
+                # Our time is ahead of server - add negative offset
+                new_offset = current - 30.0  # Jump 30s backward
+                self._offsets[node_url] = new_offset
+                print(f"{CLI_CYAN}⏰ Clock skew (future) for {node_url.split('//')[-1]}: {new_offset:+.1f}s{CLI_CLR}")
+                return new_offset
+
+            return current
+
+    def get_offset(self, node_url: str) -> float:
+        """Get known offset for a node (0 if unknown)."""
+        with self._lock:
+            return self._offsets.get(node_url, 0.0)
+
+    def clear(self, node_url: str = None):
+        """Clear offset(s) - for testing or reset."""
+        with self._lock:
+            if node_url:
+                self._offsets.pop(node_url, None)
+            else:
+                self._offsets.clear()
+
+
+_offset_manager = NodeOffsetManager()
+
+
+# AICODE-NOTE: Patch SDK's time function for per-node clock compensation
+# We monkey-patch hybrid_timestamp_ns to use our contextvar offset
+_original_hybrid_timestamp_ns = None
+_sdk_patched = False
+
+
+def _patch_gonka_sdk():
+    """Patch Gonka SDK's time function to support per-node offsets."""
+    global _original_hybrid_timestamp_ns, _sdk_patched
+
+    if _sdk_patched:
+        return
+
+    if not hasattr(gonka_utils, 'hybrid_timestamp_ns'):
+        print(f"{CLI_YELLOW}⚠ gonka_utils.hybrid_timestamp_ns not found, ACSC disabled{CLI_CLR}")
+        return
+
+    _original_hybrid_timestamp_ns = gonka_utils.hybrid_timestamp_ns
+
+    def _patched_hybrid_timestamp_ns() -> int:
+        """
+        Patched time function that applies per-node offset from contextvar.
+        This allows different threads to use different time offsets.
+        """
+        # Get offset for current context (node)
+        offset_sec = _current_node_offset.get()
+        offset_ns = int(offset_sec * 1_000_000_000)
+
+        # Standard Gonka logic + our offset
+        if hasattr(gonka_utils, '_wall_base') and hasattr(gonka_utils, '_perf_base'):
+            base_time = gonka_utils._wall_base + (time.perf_counter_ns() - gonka_utils._perf_base)
+            return base_time + offset_ns
+        else:
+            # Fallback if SDK structure changed
+            return time.time_ns() + offset_ns
+
+    gonka_utils.hybrid_timestamp_ns = _patched_hybrid_timestamp_ns
+    _sdk_patched = True
+    print(f"{CLI_CYAN}💉 Gonka SDK patched for ACSC (per-node clock compensation){CLI_CLR}")
 
 
 # AICODE-NOTE: Global rate limiter for Gonka nodes
@@ -181,6 +321,206 @@ class NodeRateLimiter:
 
 
 _node_rate_limiter = NodeRateLimiter()
+
+
+# AICODE-NOTE: TrafficController - Central rate limiter for GonkaGate (100 RPM per IP)
+# Two-level rate limiting in Gonka Network:
+# Level 1: GonkaGate - 100 RPM per IP (global limit)
+# Level 2: Node Overload - vLLM queue overflow (per-node, handled by NodeRateLimiter)
+class TrafficController:
+    """
+    Central traffic controller. Manages global RPM (100).
+    Uses Token Bucket algorithm with smooth refill to prevent bursting.
+    """
+
+    def __init__(self, max_rpm: int = 90):  # 90 to leave safety margin
+        self.rpm_limit = max_rpm
+        self.tokens_bucket = float(max_rpm)  # Start full
+        self.last_refill = time.time()
+        self._lock = threading.RLock()
+        self._wait_count = 0  # Stats: how many times we had to wait
+
+    def wait_for_token(self, timeout: float = 120.0) -> bool:
+        """
+        Token Bucket algorithm for respecting 100 RPM.
+
+        Refills tokens continuously (rpm_limit tokens per 60 seconds).
+        If no tokens available, waits until one is available.
+
+        Returns:
+            True if token acquired, False if timeout exceeded.
+        """
+        start_wait = time.time()
+
+        while True:
+            with self._lock:
+                now = time.time()
+                # Refill tokens: add (elapsed_time / 60) * rpm_limit tokens
+                elapsed = now - self.last_refill
+                refill_amount = (elapsed / 60.0) * self.rpm_limit
+                self.tokens_bucket = min(self.rpm_limit, self.tokens_bucket + refill_amount)
+                self.last_refill = now
+
+                if self.tokens_bucket >= 1.0:
+                    self.tokens_bucket -= 1.0
+                    return True
+
+                # Calculate wait time for 1 token
+                tokens_needed = 1.0 - self.tokens_bucket
+                wait_time = (tokens_needed / self.rpm_limit) * 60.0
+
+            # Check timeout
+            if time.time() - start_wait + wait_time > timeout:
+                print(f"{CLI_YELLOW}⚠ TrafficController: timeout waiting for token{CLI_CLR}")
+                return False
+
+            # First time waiting? Log it
+            with self._lock:
+                self._wait_count += 1
+                if self._wait_count == 1 or self._wait_count % 10 == 0:
+                    print(f"{CLI_CYAN}⏳ TrafficController: rate limit reached, waiting {wait_time:.1f}s...{CLI_CLR}")
+
+            # Wait with small random jitter to prevent thundering herd
+            time.sleep(wait_time + random.random() * 0.1)
+
+    def record_429_error(self):
+        """
+        Called when we receive 429 error from GonkaGate.
+        Reduce tokens to slow down further.
+        """
+        with self._lock:
+            # Halve remaining tokens to back off
+            self.tokens_bucket = max(0, self.tokens_bucket / 2)
+            print(f"{CLI_YELLOW}⚡ TrafficController: 429 received, backing off (bucket: {self.tokens_bucket:.1f}){CLI_CLR}")
+
+    def get_stats(self) -> dict:
+        """Return current stats for debugging."""
+        with self._lock:
+            return {
+                "tokens": self.tokens_bucket,
+                "rpm_limit": self.rpm_limit,
+                "wait_count": self._wait_count
+            }
+
+
+_traffic_controller = TrafficController(max_rpm=90)
+
+
+# AICODE-NOTE: TopologyManager - Background worker for node discovery
+# Isolates inference threads from slow Genesis API calls
+class TopologyManager:
+    """
+    Background manager that maintains an up-to-date list of inference nodes.
+    Isolates the main inference thread from slow Genesis API calls.
+
+    Key features:
+    - Background refresh every 30-60s
+    - Caches node list to avoid blocking on discovery
+    - Filters nodes by model capability
+    - Does NOT return genesis nodes (they can't do inference)
+    """
+
+    def __init__(self, model_filter: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8",
+                 refresh_interval: int = 45):
+        self.model_filter = model_filter
+        self.refresh_interval = refresh_interval
+        self._nodes: List[str] = []
+        self._lock = threading.RLock()
+        self._running = False
+        self._last_update = 0
+        self._update_thread = None
+
+    def start(self):
+        """Start background topology updates."""
+        if self._running:
+            return
+
+        self._running = True
+        # First refresh is synchronous to have nodes immediately
+        self._refresh_topology()
+
+        # Start background refresh
+        self._update_thread = threading.Thread(target=self._loop, daemon=True)
+        self._update_thread.start()
+        print(f"{CLI_CYAN}📡 TopologyManager started (refresh every {self.refresh_interval}s){CLI_CLR}")
+
+    def stop(self):
+        """Stop background updates."""
+        self._running = False
+
+    def get_nodes(self) -> List[str]:
+        """Get current list of available inference nodes."""
+        with self._lock:
+            if not self._nodes:
+                # If empty, try sync refresh as failover
+                print(f"{CLI_YELLOW}⚠ Node list empty, forcing sync refresh...{CLI_CLR}")
+                self._refresh_topology()
+            return list(self._nodes)
+
+    def get_node_count(self) -> int:
+        """Get count of available nodes without copying list."""
+        with self._lock:
+            return len(self._nodes)
+
+    def _loop(self):
+        """Background refresh loop."""
+        while self._running:
+            # Sleep in small intervals to allow clean shutdown
+            for _ in range(self.refresh_interval):
+                if not self._running:
+                    return
+                time.sleep(1)
+            try:
+                self._refresh_topology()
+            except Exception as e:
+                print(f"{CLI_YELLOW}⚠ Topology background update failed: {e}{CLI_CLR}")
+
+    def _refresh_topology(self):
+        """Fetch fresh node list from Genesis nodes."""
+        sources = list(GENESIS_NODES)
+        random.shuffle(sources)
+
+        found_nodes = []
+
+        # Try up to 3 genesis nodes
+        for source in sources[:3]:
+            try:
+                url = f"{source}/v1/epochs/current/participants"
+                import requests
+                resp = requests.get(url, timeout=5)  # Short timeout for discovery
+                if resp.status_code != 200:
+                    continue
+
+                data = resp.json()
+                participants = data.get("active_participants", {}).get("participants", [])
+
+                # Filter by model (case-insensitive for robustness)
+                model_lower = self.model_filter.lower()
+                filtered = [
+                    p.get("inference_url") for p in participants
+                    if any(model_lower in m.lower() for m in p.get("models", []))
+                    and p.get("inference_url")
+                ]
+
+                if filtered:
+                    found_nodes = filtered
+                    break
+            except Exception:
+                continue
+
+        with self._lock:
+            if found_nodes:
+                old_count = len(self._nodes)
+                self._nodes = found_nodes
+                self._last_update = time.time()
+                if old_count != len(found_nodes):
+                    print(f"{CLI_CYAN}📡 Topology updated: {len(found_nodes)} nodes for {self.model_filter}{CLI_CLR}")
+            elif not self._nodes:
+                # CRITICAL: Never add Genesis nodes here - they can't do inference!
+                print(f"{CLI_YELLOW}✗ Failed to find any active inference nodes{CLI_CLR}")
+
+
+_topology_manager = TopologyManager()
 
 
 # AICODE-NOTE: Optimization A - Round-robin node assignment for thread distribution
@@ -270,6 +610,51 @@ class NodePool:
                 return best[idx]
             return None
 
+    def get_node_p2c(self, rate_limiter: 'NodeRateLimiter') -> Optional[str]:
+        """
+        Power of Two Choices (P2C) load balancing.
+
+        Pick 2 random nodes from available pool, choose the one with:
+        1. Lower current active requests
+        2. If tied, better historical latency
+
+        P2C is mathematically proven to work better than round-robin
+        for heterogeneous systems (different GPUs, network speeds).
+        """
+        # Get candidates from TopologyManager (not genesis nodes!)
+        candidates = _topology_manager.get_nodes()
+        if not candidates:
+            return None
+
+        with self._lock:
+            now = time.time()
+            # Filter out blacklisted nodes
+            valid = [n for n in candidates if now >= self._blacklist.get(n, 0)]
+
+            if not valid:
+                return None
+
+            if len(valid) == 1:
+                return valid[0]
+
+            # Pick 2 random nodes
+            n1, n2 = random.sample(valid, 2)
+
+            # Get current load from rate limiter
+            load1 = rate_limiter._active_requests.get(n1, 0)
+            load2 = rate_limiter._active_requests.get(n2, 0)
+
+            # Choose less loaded node
+            if load1 < load2:
+                return n1
+            elif load2 < load1:
+                return n2
+            else:
+                # If tied, choose node with better historical latency
+                stats1 = self._good_nodes.get(n1, {"avg_response_time": 10})
+                stats2 = self._good_nodes.get(n2, {"avg_response_time": 10})
+                return n1 if stats1["avg_response_time"] <= stats2["avg_response_time"] else n2
+
     def warmup_nodes(self, nodes: List[str], max_nodes: int = 5) -> List[str]:
         """Optimization C: Ping nodes to measure latency, store best ones."""
         import concurrent.futures
@@ -332,11 +717,22 @@ def warmup_gonka_nodes():
             return
         _warmup_done = True
 
+    # Patch SDK for ACSC (Adaptive Clock Skew Compensation)
+    _patch_gonka_sdk()
+
     # Start periodic NTP sync to prevent "signature is too old" errors
     _ntp_sync.start()
 
+    # Start TopologyManager for background node discovery
+    _topology_manager.start()
+
     print(f"{CLI_CYAN}🔥 Warming up Gonka nodes...{CLI_CLR}")
-    nodes = get_available_nodes()
+    # Get nodes from TopologyManager (or fallback to direct fetch)
+    nodes = _topology_manager.get_nodes()
+    if not nodes:
+        # Fallback to direct fetch if TopologyManager hasn't populated yet
+        nodes = get_available_nodes()
+
     _node_rate_limiter.set_available_nodes_count(len(nodes))
 
     warmed = _node_pool.warmup_nodes(nodes, max_nodes=8)
@@ -353,10 +749,10 @@ class GonkaChatModel(BaseChatModel):
     gonka_private_key: str = Field(default_factory=lambda: os.getenv("GONKA_PRIVATE_KEY"))
     max_retries_per_node: int = 3
     max_node_switches: int = 10
-    request_timeout: int = 60
+    request_timeout: int = 180  # AICODE-NOTE: Increased for Qwen-235B (can take 2-3 min on loaded nodes)
     # AICODE-NOTE: Global retry params for network-wide outages (all nodes failing)
-    max_global_retries: int = 3  # Retry entire node cycle this many times
-    global_retry_base_delay: float = 30.0  # Base delay in seconds (exponential backoff)
+    max_global_retries: int = 5  # Retry entire node cycle this many times (increased for unstable network)
+    global_retry_base_delay: float = 45.0  # Base delay in seconds (exponential backoff)
 
     _client: Optional[GonkaOpenAI] = PrivateAttr(default=None)
     _current_node: Optional[str] = PrivateAttr(default=None)
@@ -414,9 +810,11 @@ class GonkaChatModel(BaseChatModel):
                       f"waiting {delay:.0f}s before re-trying all nodes...{CLI_CLR}")
                 time.sleep(delay)
                 self._reset_for_global_retry()
-                # Re-warmup nodes to find working ones
-                nodes = get_available_nodes()
-                _node_pool.warmup_nodes(nodes, max_nodes=5)
+                # Force topology refresh and re-warmup nodes
+                _topology_manager._refresh_topology()
+                nodes = _topology_manager.get_nodes()
+                if nodes:
+                    _node_pool.warmup_nodes(nodes, max_nodes=5)
 
             if self._client is None:
                 self._connect_initial()
@@ -488,59 +886,117 @@ class GonkaChatModel(BaseChatModel):
         raise Exception("All Gonka nodes failed after global retries.")
 
     def _call_with_retry(self, messages, stop, **kwargs):
+        """
+        Call LLM with retry logic and ACSC (Adaptive Clock Skew Compensation).
+
+        ACSC allows us to handle nodes with different clock drifts by learning
+        and applying per-node time offsets based on error responses.
+        """
+        # AICODE-NOTE: TrafficController - respect global 100 RPM limit (GonkaGate)
+        if not _traffic_controller.wait_for_token(timeout=120.0):
+            raise Exception("TrafficController: timeout waiting for rate limit token")
+
         last_error = None
         node = self._current_node
 
-        for attempt in range(self.max_retries_per_node):
-            try:
-                if node and not _node_rate_limiter.wait_for_slot(node, timeout=10.0):
-                    print(f"{CLI_YELLOW}⚠ Rate limit timeout for {node}{CLI_CLR}")
-                    raise Exception("Rate limit timeout")
+        # ACSC: Get known offset for this node and set in context
+        offset = _offset_manager.get_offset(node) if node else 0.0
+        token = _current_node_offset.set(offset)
 
-                start_time = time.time()
+        try:
+            for attempt in range(self.max_retries_per_node):
                 try:
-                    result = self._client.chat.completions.create(
-                        model=self.model_name,
-                        messages=messages,
-                        stop=stop,
-                        temperature=kwargs.get("temperature", 0.0),
-                        timeout=self.request_timeout
-                    )
-                    response_time = time.time() - start_time
-                    if node:
-                        _node_pool.record_success(node, response_time)
-                    return result
-                finally:
-                    if node:
-                        _node_rate_limiter.release(node)
+                    if node and not _node_rate_limiter.wait_for_slot(node, timeout=10.0):
+                        print(f"{CLI_YELLOW}⚠ Rate limit timeout for {node}{CLI_CLR}")
+                        raise Exception("Rate limit timeout")
 
-            except Exception as e:
-                if node:
-                    _node_pool.record_failure(node)
+                    start_time = time.time()
+                    try:
+                        result = self._client.chat.completions.create(
+                            model=self.model_name,
+                            messages=messages,
+                            stop=stop,
+                            temperature=kwargs.get("temperature", 0.0),
+                            timeout=self.request_timeout
+                        )
+                        response_time = time.time() - start_time
+                        if node:
+                            _node_pool.record_success(node, response_time)
+                        return result
+                    finally:
+                        if node:
+                            _node_rate_limiter.release(node)
 
-                error_str = str(e).lower()
-                critical_errors = [
-                    "connection aborted", "remote end closed", "connection refused",
-                    "connecttimeouterror", "remotedisconnected", "transfer agent capacity reached",
-                    "429", "signature is too old", "signature is in the future",
-                    "unable to validate request", "invalid signature",
-                    "request timed out", "read timed out", "rate limit"
-                ]
+                except Exception as e:
+                    error_str = str(e).lower()
 
-                if any(ce in error_str for ce in critical_errors):
-                    print(f"{CLI_YELLOW}⚠ Critical error on {self._current_node}: {e}{CLI_CLR}")
-                    if "signature is too old" in error_str or "invalid signature" in error_str:
-                        print(f"{CLI_RED}⚠ System clock behind! Run: sudo sntp -sS time.apple.com{CLI_CLR}")
-                    if "signature is in the future" in error_str:
-                        print(f"{CLI_RED}⚠ System clock ahead! Run: sudo sntp -sS time.apple.com{CLI_CLR}")
-                    raise e
+                    # ACSC: Detect clock skew errors and learn offset
+                    is_clock_error = ("signature" in error_str and
+                                      ("old" in error_str or "future" in error_str or "expired" in error_str))
 
-                last_error = e
-                print(f"{CLI_YELLOW}⚠ Retry {attempt+1}/{self.max_retries_per_node} on {self._current_node}: {e}{CLI_CLR}")
-                wait_time = (attempt + 1) * 1.5 + random.random() * 0.5
-                if attempt < self.max_retries_per_node - 1:
-                    time.sleep(wait_time)
-        raise last_error
+                    if is_clock_error and node:
+                        print(f"{CLI_CYAN}🕰 Clock skew detected on {node.split('//')[-1]}. Learning offset...{CLI_CLR}")
+
+                        # Try to learn from HTTP Date header if available
+                        headers_learned = False
+                        if hasattr(e, 'response') and e.response:
+                            headers = getattr(e.response, 'headers', {})
+                            if headers:
+                                headers_learned = _offset_manager.update_from_headers(node, headers)
+
+                        # Fallback: estimate from error message
+                        if not headers_learned:
+                            _offset_manager.update_from_error(node, str(e))
+
+                        # Update context with new offset for retry
+                        new_offset = _offset_manager.get_offset(node)
+                        _current_node_offset.set(new_offset)
+                        print(f"{CLI_CYAN}🔄 Retrying with adjusted clock (offset: {new_offset:+.1f}s)...{CLI_CLR}")
+                        continue  # Retry with new offset
+
+                    # AICODE-NOTE: Smart 429/502/503/504 handling for TrafficController
+                    # 429 = GonkaGate rate limit (global) - back off via TrafficController
+                    # 502/503/504 = Node overload (vLLM queue full) - blacklist node immediately
+                    if "429" in error_str or "rate limit" in error_str:
+                        _traffic_controller.record_429_error()
+                        # Still raise to switch nodes, but TrafficController will throttle
+
+                    # Node failures: aggressive blacklisting
+                    is_node_failure = any(code in error_str for code in [
+                        "502", "503", "504", "timeout", "connection error",
+                        "connection aborted", "connection refused", "eof"
+                    ])
+                    if is_node_failure and node:
+                        print(f"{CLI_YELLOW}📉 Node {node.split('//')[-1]} failed. Blacklisting...{CLI_CLR}")
+                        _node_pool.record_failure(node)
+
+                    # Other critical errors - fail fast to switch nodes
+                    critical_errors = [
+                        "connection aborted", "remote end closed", "connection refused",
+                        "connecttimeouterror", "remotedisconnected", "transfer agent capacity reached",
+                        "429", "unable to validate request", "invalid signature",
+                        "request timed out", "read timed out", "rate limit", "timeout",
+                        "502", "503", "504", "service unavailable", "eof"
+                    ]
+
+                    # Record failure for any critical error (if not already done above)
+                    if node and not is_node_failure:
+                        _node_pool.record_failure(node)
+
+                    if any(ce in error_str for ce in critical_errors):
+                        print(f"{CLI_YELLOW}⚠ Critical error on {self._current_node}: {e}{CLI_CLR}")
+                        raise e
+
+                    last_error = e
+                    print(f"{CLI_YELLOW}⚠ Retry {attempt+1}/{self.max_retries_per_node} on {self._current_node}: {e}{CLI_CLR}")
+                    wait_time = (attempt + 1) * 1.5 + random.random() * 0.5
+                    if attempt < self.max_retries_per_node - 1:
+                        time.sleep(wait_time)
+
+            raise last_error
+        finally:
+            # ACSC: Reset context to avoid polluting other threads
+            _current_node_offset.reset(token)
 
     def _connect_initial(self):
         # Optimization C: Run warmup on first connection
@@ -553,11 +1009,11 @@ class GonkaChatModel(BaseChatModel):
             self._current_node = fixed_node
             return
 
-        # Optimization A: Use round-robin instead of random for better distribution
-        pool_node = _node_pool.get_node_round_robin()
+        # P2C: Power of Two Choices for better load balancing
+        pool_node = _node_pool.get_node_p2c(_node_rate_limiter)
         if pool_node and pool_node not in self._tried_nodes:
             try:
-                print(f"{CLI_CYAN}🔗 Using proven good node: {pool_node}{CLI_CLR}")
+                print(f"{CLI_CYAN}🔗 Using P2C selected node: {pool_node}{CLI_CLR}")
                 self._client = self._create_gonka_client(pool_node)
                 self._current_node = pool_node
                 self._tried_nodes.add(pool_node)
@@ -581,8 +1037,11 @@ class GonkaChatModel(BaseChatModel):
                     GonkaChatModel._last_successful_node = None
                     _node_pool.record_failure(cached_node)
 
-        # Discovery: try fresh nodes
-        nodes = get_available_nodes()
+        # Discovery: try fresh nodes from TopologyManager
+        nodes = _topology_manager.get_nodes()
+        if not nodes:
+            raise NoAvailableNodesError("No inference nodes available from TopologyManager")
+
         random.shuffle(nodes)
         for node in nodes[:5]:
             if node in self._tried_nodes or _node_pool.is_blacklisted(node):
@@ -597,13 +1056,23 @@ class GonkaChatModel(BaseChatModel):
                 _node_pool.record_failure(node)
                 continue
 
-        fallback = random.choice(GENESIS_NODES)
-        self._client = self._create_gonka_client(fallback)
-        self._current_node = fallback
-        self._tried_nodes.add(fallback)
+        # CRITICAL: Do NOT fallback to genesis nodes - they can't do inference!
+        raise NoAvailableNodesError("All inference nodes failed, no fallback available")
 
     def _switch_node(self, hint_node: str = None) -> bool:
-        # Try proven good nodes first
+        # Try P2C selection first for optimal load balancing
+        p2c_node = _node_pool.get_node_p2c(_node_rate_limiter)
+        if p2c_node and p2c_node not in self._tried_nodes and p2c_node != self._current_node:
+            print(f"{CLI_CYAN}🔄 Switching to P2C selected node: {p2c_node}{CLI_CLR}")
+            try:
+                self._client = self._create_gonka_client(p2c_node)
+                self._current_node = p2c_node
+                self._tried_nodes.add(p2c_node)
+                return True
+            except Exception:
+                _node_pool.record_failure(p2c_node)
+
+        # Try proven good nodes
         best_nodes = _node_pool.get_best_nodes(count=5)
         for node in best_nodes:
             if node not in self._tried_nodes and node != self._current_node:
@@ -619,7 +1088,6 @@ class GonkaChatModel(BaseChatModel):
 
         if hint_node:
             print(f"{CLI_CYAN}🔄 Fetching fresh nodes from hint: {hint_node}{CLI_CLR}")
-            from utils import fetch_active_nodes
             fresh_nodes = fetch_active_nodes(source_node=hint_node)
             if fresh_nodes:
                 random.shuffle(fresh_nodes)
@@ -635,7 +1103,8 @@ class GonkaChatModel(BaseChatModel):
                             _node_pool.record_failure(node)
                             continue
 
-        available_nodes = get_available_nodes()
+        # Get nodes from TopologyManager (not genesis!)
+        available_nodes = _topology_manager.get_nodes()
         random.shuffle(available_nodes)
 
         for node in available_nodes:
@@ -650,7 +1119,7 @@ class GonkaChatModel(BaseChatModel):
                     print(f"{CLI_RED}✗ Failed to connect to {node}: {e}{CLI_CLR}")
                     _node_pool.record_failure(node)
 
-        # Last resort
+        # Last resort: try any non-blacklisted node
         non_blacklisted = [n for n in available_nodes if not _node_pool.is_blacklisted(n)]
         if non_blacklisted:
             node = random.choice(non_blacklisted)
@@ -661,7 +1130,8 @@ class GonkaChatModel(BaseChatModel):
             except Exception:
                 pass
 
-        print(f"{CLI_RED}✗ No nodes available for failover{CLI_CLR}")
+        # CRITICAL: Do NOT fallback to genesis nodes - they can't do inference!
+        print(f"{CLI_RED}✗ No inference nodes available for failover{CLI_CLR}")
         return False
 
     def _convert_messages(self, messages: List[BaseMessage]) -> List[Dict]:

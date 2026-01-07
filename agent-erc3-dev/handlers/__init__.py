@@ -33,6 +33,7 @@ from .middleware import (
     BasicLookupDenialGuard,
     ExternalSalaryGuard,
     DataDestructionGuard,
+    ExternalCustomerContactGuard,
     ProjectModificationClarificationGuard,
     ProjectTeamModAuthorizationGuard,
     ProjectStatusChangeAuthGuard,
@@ -75,6 +76,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         BasicLookupDenialGuard(),                     # Catches denied_security for basic org-chart lookups
         ExternalSalaryGuard(),                        # t045: External dept cannot disclose ANY salary info
         DataDestructionGuard(),                       # t084: Destruction requests → none_unsupported, not clarification
+        ExternalCustomerContactGuard(),               # t027: External dept cannot view customer contact details
         SubjectiveQueryGuard(),                       # Blocks ok_answer on subjective queries (cool, best, that)
         VagueQueryNotFoundGuard(),                    # Blocks ok_not_found on vague queries (t005 fix)
         YesNoGuard(),                                 # t022: Enforce English Yes/No

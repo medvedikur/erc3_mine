@@ -9,6 +9,7 @@ __all__ = [
     'GENESIS_NODES',
     'fetch_active_nodes',
     'get_available_nodes',
+    'NoAvailableNodesError',
 ]
 
 # === Genesis Nodes for Gonka Network ===
@@ -107,16 +108,29 @@ def fetch_active_nodes(source_node: str = None, model_filter: str = None) -> Lis
     return []
 
 
+class NoAvailableNodesError(Exception):
+    """Raised when no inference nodes are available."""
+    pass
+
+
 def get_available_nodes(model_filter: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8") -> List[str]:
-    """Get all available nodes: active participants filtered by model + genesis nodes as fallback.
+    """Get all available inference nodes filtered by model.
 
     Args:
         model_filter: Only return nodes supporting this model
+
+    Returns:
+        List of inference node URLs
+
+    Note:
+        CRITICAL: Genesis nodes are gateways/blockchain nodes, NOT inference endpoints.
+        They cannot process LLM requests and will return 404/405 errors.
+        We NEVER return genesis nodes as inference endpoints.
     """
     active = fetch_active_nodes(model_filter=model_filter)
-    # Genesis nodes are gateways, not direct inference - only use as fallback
     if not active:
-        print(f"{CLI_YELLOW}⚠ No active nodes found, falling back to genesis nodes{CLI_CLR}")
-        return list(GENESIS_NODES)
+        # AICODE-NOTE: Do NOT fallback to GENESIS_NODES - they can't do inference!
+        # Genesis nodes are for discovery only, inference requests will fail with 404.
+        print(f"{CLI_YELLOW}⚠ No active inference nodes found for model {model_filter}{CLI_CLR}")
     return active
 

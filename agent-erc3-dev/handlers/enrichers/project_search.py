@@ -323,6 +323,10 @@ class ProjectSearchEnricher:
         - "the X project" (not "the X projects")
         - "this project"
         - "that project"
+
+        AICODE-NOTE: t041 FIX - If task mentions a customer name that uniquely
+        identifies one project, this is NOT ambiguous. Example:
+        "project for AlpineRail Maintenance" + 10 results but only 1 for that customer.
         """
         import re
 
@@ -346,6 +350,53 @@ class ProjectSearchEnricher:
 
         if not is_singular_reference:
             return None
+
+        # AICODE-NOTE: t041 FIX - Multiple disambiguation strategies
+        # If any of these succeed, skip the ambiguity hint
+
+        # Strategy 1: Check if ProjectRankingEnricher found a CLEAR WINNER
+        # (top score >= 70 and gap >= 15 points from second)
+        ranked = self._ranking._rank_projects(projects, query)
+        if len(ranked) >= 2:
+            top_score, _, _, _ = ranked[0]
+            second_score, _, _, _ = ranked[1]
+            gap = top_score - second_score
+            if top_score >= 70 and gap >= 15:
+                return None  # Clear winner - not ambiguous
+
+        # Strategy 2: task says "internal" project → match projects with internal customers
+        if re.search(r'\binternal\b', task_text, re.IGNORECASE):
+            internal_projects = [
+                p for p in projects
+                if 'internal' in (getattr(p, 'customer', '') or '').lower()
+            ]
+            if len(internal_projects) == 1:
+                return None  # Only one internal project - not ambiguous
+
+        # Strategy 3: Check if task mentions a customer name that uniquely identifies a project
+        # Pattern: "for X", "of X", "customer X", "client X" where X is customer name
+        customer_patterns = [
+            r'\bfor\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)\b',  # "for AlpineRail Maintenance"
+            r'\bcustomer\s+(?:in\s+)?([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)\b',  # "customer AlpineRail"
+            r'\bclient\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)\b',  # "client AlpineRail"
+        ]
+
+        for pattern in customer_patterns:
+            match = re.search(pattern, task_text)
+            if match:
+                customer_name_from_task = match.group(1).lower().replace(' ', '')
+                # Filter projects by customer name match
+                matching_customer_projects = []
+                for p in projects:
+                    cust_id = getattr(p, 'customer', '') or ''
+                    # Extract customer name from ID like "cust_alpinerail_maintenance"
+                    cust_name_normalized = cust_id.replace('cust_', '').replace('_', '')
+                    if customer_name_from_task in cust_name_normalized:
+                        matching_customer_projects.append(p)
+
+                # If exactly one project matches the customer from task, not ambiguous
+                if len(matching_customer_projects) == 1:
+                    return None
 
         # Build project list for hint
         proj_names = [

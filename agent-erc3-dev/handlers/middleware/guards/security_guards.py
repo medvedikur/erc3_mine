@@ -291,3 +291,79 @@ class DataDestructionGuard(ResponseGuard):
                 log_msg=f"DataDestructionGuard: Blocking {outcome} for destruction request",
                 block_msg=block_msg
             )
+
+
+class ExternalCustomerContactGuard(ResponseGuard):
+    """
+    Prevent External department from accessing customer contact details (t027).
+
+    Problem: External user asked for "primary contact email on proj_euro_flooring_warehouse_system".
+    API returned customer's primary_contact_email (external person's email).
+    Agent answered with ok_answer but should have denied access.
+
+    Rule: External department cannot view customer contact details UNLESS
+    they are the Account Manager for that customer.
+
+    Note: This is about CUSTOMER contacts (external people like "Peter de Vries"),
+    NOT about internal employee emails (@bellini.internal).
+    """
+
+    target_outcomes = {"ok_answer"}
+    require_public = False  # For authenticated non-public users only
+
+    # Patterns indicating customer contact info query
+    CUSTOMER_CONTACT_PATTERNS = [
+        r'primary\s+contact\s+email',
+        r'customer\s+contact\s+(email|details)',
+        r'contact\s+email\s+(on|for|of)\s+proj[_a-z]+',  # contact email on project
+        r'client\s+contact\s+(email|info|details)',
+    ]
+
+    def __init__(self):
+        self._contact_re = re.compile('|'.join(self.CUSTOMER_CONTACT_PATTERNS), re.IGNORECASE)
+
+    def _check(self, ctx: ToolContext, outcome: str) -> None:
+        # Only applies to External department
+        sm = ctx.shared.get('security_manager')
+        department = getattr(sm, 'department', '') if sm else ''
+        current_user = getattr(sm, 'current_user', '') if sm else ''
+
+        if department != 'External':
+            return
+
+        task_text = get_task_text(ctx)
+        if not task_text:
+            return
+
+        # Check if task asks for customer contact info
+        if not self._contact_re.search(task_text):
+            return
+
+        # Check if customer data was accessed and if user is the Account Manager
+        # AICODE-NOTE: We track customers_get results to check Account Manager field
+        customer_data = ctx.shared.get('_last_customer_data')
+        if customer_data:
+            account_manager = customer_data.get('account_manager', '')
+            if account_manager == current_user:
+                return  # User IS the Account Manager, access allowed
+
+        # External user asking for customer contact info without being AM
+        self._soft_block(
+            ctx,
+            warning_key='external_customer_contact_warned',
+            log_msg="ExternalCustomerContactGuard: Blocking customer contact access for External user",
+            block_msg=(
+                "EXTERNAL DEPARTMENT CUSTOMER CONTACT RESTRICTION!\n\n"
+                "You are in External department and CANNOT access customer contact details.\n"
+                "This includes:\n"
+                "- Primary contact name\n"
+                "- Primary contact email\n"
+                "- Any customer contact information\n\n"
+                "Exception: If you are the Account Manager for that customer, you CAN access.\n"
+                "But you are NOT the Account Manager.\n\n"
+                "**Required:** Use `denied_security` with:\n"
+                "- `denial_basis: identity_restriction`\n"
+                "- Message: 'External department users cannot access customer contact details "
+                "unless they are the Account Manager for that customer.'"
+            )
+        )

@@ -32,6 +32,7 @@ from .guards import (
     PublicUserSemanticGuard,
     ExternalSalaryGuard,
     DataDestructionGuard,
+    ExternalCustomerContactGuard,
     # Response Guards
     ResponseValidationMiddleware,
     LeadWikiCreationGuard,
@@ -106,6 +107,7 @@ __all__ = [
     'PublicUserSemanticGuard',
     'ExternalSalaryGuard',
     'DataDestructionGuard',
+    'ExternalCustomerContactGuard',
     # Response Guards
     'ResponseValidationMiddleware',
     'LeadWikiCreationGuard',

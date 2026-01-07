@@ -15,6 +15,7 @@ from .preprocessors import (
     SendToLocationPreprocessor,
     LocationNameCorrectionPreprocessor,
     CoachingSkillOnlyPreprocessor,
+    WikiUpdateDuplicatePreprocessor,
 )
 from .postprocessors import (
     IdentityPostProcessor,
@@ -32,7 +33,7 @@ from ..enrichers import (
     CustomerProjectsHintEnricher, SearchResultExtractionHintEnricher,
     ProjectNameNormalizationHintEnricher, WorkloadHintEnricher,
     SkillSearchStrategyHintEnricher, CombinedSkillWillHintEnricher, ProjectCustomerSearchHintEnricher,
-    EmployeeNameResolutionHintEnricher,
+    EmployeeNameResolutionHintEnricher, ProjectExpertExclusionHintEnricher,
     SkillComparisonHintEnricher, QuerySubjectHintEnricher, TieBreakerHintEnricher,
     RecommendationQueryHintEnricher, TimeSummaryFallbackHintEnricher,
     ProjectTeamNameResolutionHintEnricher, ProjectSkillsHintEnricher,
@@ -69,6 +70,7 @@ class ActionPipeline:
             LocationNameCorrectionPreprocessor(),  # t012/t086: "City (Country)" -> "City Office – Country"
             SendToLocationPreprocessor(),  # t013 fix: warn about location filter with "send to"
             CoachingSkillOnlyPreprocessor(),  # t077 fix: remove will filter for skill-only coaching
+            WikiUpdateDuplicatePreprocessor(),  # t065 fix: block duplicate wiki_update calls
         ]
 
         # Executor
@@ -99,6 +101,7 @@ class ActionPipeline:
         self._workload_hints = WorkloadHintEnricher()
         self._skill_strategy_hints = SkillSearchStrategyHintEnricher()
         self._name_resolution_hints = EmployeeNameResolutionHintEnricher()
+        self._project_expert_exclusion_hints = ProjectExpertExclusionHintEnricher()
         self._skill_comparison_hints = SkillComparisonHintEnricher()
         self._query_subject_hints = QuerySubjectHintEnricher()
         self._tie_breaker_hints = TieBreakerHintEnricher()
@@ -364,7 +367,7 @@ class ActionPipeline:
             ctx.results.append(hint)
 
         # Employee search hints
-        hint = self._employee_hints.maybe_hint_empty_employees(ctx.model, result)
+        hint = self._employee_hints.maybe_hint_empty_employees(ctx.model, result, ctx)
         if hint:
             ctx.results.append(hint)
 
@@ -385,6 +388,11 @@ class ActionPipeline:
 
         # Employee name resolution hints (t007)
         hint = self._name_resolution_hints.maybe_hint_name_resolution(ctx.model, result, task_text)
+        if hint:
+            ctx.results.append(hint)
+
+        # Project expert exclusion hints (t074) - detect "expert outside of the project" queries
+        hint = self._project_expert_exclusion_hints.maybe_hint_project_exclusion(ctx.model, result, task_text)
         if hint:
             ctx.results.append(hint)
 
@@ -541,6 +549,7 @@ class ActionPipeline:
             if cust_id and customer:
                 contact_name = getattr(customer, 'primary_contact_name', None)
                 contact_email = getattr(customer, 'primary_contact_email', None)
+                account_manager = getattr(customer, 'account_manager', None)
                 if contact_name or contact_email:
                     customer_contacts = ctx.shared.get('customer_contacts', {})
                     customer_contacts[cust_id] = {
@@ -548,6 +557,14 @@ class ActionPipeline:
                         'email': contact_email or ''
                     }
                     ctx.shared['customer_contacts'] = customer_contacts
+                # AICODE-NOTE: t027 FIX - Store full customer data for security guards
+                # ExternalCustomerContactGuard needs account_manager to check access
+                ctx.shared['_last_customer_data'] = {
+                    'id': cust_id,
+                    'contact_name': contact_name or '',
+                    'contact_email': contact_email or '',
+                    'account_manager': account_manager or ''
+                }
 
         # Project customer search hints on wiki_search (t028)
         hint = self._project_customer_search_hints.maybe_hint_project_customer_search(

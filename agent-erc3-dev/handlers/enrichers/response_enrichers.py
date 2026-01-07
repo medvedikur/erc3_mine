@@ -336,7 +336,8 @@ class EmployeeSearchHintEnricher:
     def maybe_hint_empty_employees(
         self,
         model: Any,
-        result: Any
+        result: Any,
+        ctx: Any = None
     ) -> Optional[str]:
         """
         Generate hint for empty employee search.
@@ -344,6 +345,7 @@ class EmployeeSearchHintEnricher:
         Args:
             model: The request model
             result: API response
+            ctx: Optional tool context for checking user permissions
 
         Returns:
             Hint string or None
@@ -355,9 +357,29 @@ class EmployeeSearchHintEnricher:
         if employees:
             return None
 
+        # AICODE-NOTE: t023 FIX - Check if user is PUBLIC (guest)
+        # Public users cannot access employee data, so suggest wiki for location queries
+        is_public = False
+        if ctx and ctx.shared:
+            security_manager = ctx.shared.get('security_manager')
+            if security_manager:
+                is_public = getattr(security_manager, 'is_public', False)
+
         # Check if location filter was used
         location = getattr(model, 'location', None)
         if location:
+            # AICODE-NOTE: t023 FIX - For PUBLIC users, suggest wiki instead
+            if is_public:
+                return (
+                    f"⚠️ PUBLIC USER: You are a GUEST and cannot access employee data!\n"
+                    f"The location filter '{location}' returned empty because guests have NO access to employee registry.\n\n"
+                    f"✅ For PUBLIC location questions (like 'do we have an office in X?'), use WIKI:\n"
+                    f"  1. `wiki_load('company/locations_and_sites.md')` - lists ALL company offices\n"
+                    f"  2. Look for '{location}' in the locations list\n"
+                    f"  3. If found → answer 'Yes'; if not found → answer 'No'\n\n"
+                    f"📌 Wiki is PUBLIC documentation - it contains office location info!"
+                )
+
             # AICODE-NOTE: t012 FIX - Location alias mapping for common city names
             # The wiki says HQ is "between Milan and Bergamo" so Milano=HQ – Italy
             location_lower = location.lower()
@@ -1492,6 +1514,72 @@ class ProjectCustomerSearchHintEnricher:
             "📌 IMPORTANT: Even 'internal' projects have customers!\n"
             "   Internal projects use internal customer entities (e.g., 'cust_..._internal').\n"
             "   The wiki explains project TYPES, but projects_search has the actual project DATA."
+        )
+
+
+class ProjectExpertExclusionHintEnricher:
+    """
+    AICODE-NOTE: t074 FIX - Detect queries asking for expert "outside of the project".
+
+    Problem: Task says "project X needs skill Y expert outside of the project"
+    but agent searches wiki/employees instead of projects_search.
+
+    Solution: Add hint to use projects_search first to identify project team,
+    then exclude team members from skill search.
+    """
+
+    def __init__(self):
+        self._hint_shown = False
+
+    def maybe_hint_project_exclusion(
+        self,
+        model: Any,
+        result: Any,
+        task_text: str
+    ) -> Optional[str]:
+        """
+        Generate hint when task asks for expert outside a project.
+
+        Args:
+            model: The request model
+            result: API response
+            task_text: Task instructions
+
+        Returns:
+            Hint string or None
+        """
+        if self._hint_shown:
+            return None
+
+        # Only trigger for wiki_search or employees_search
+        if not isinstance(model, (client.Req_SearchWiki, client.Req_SearchEmployees)):
+            return None
+
+        task_lower = task_text.lower()
+
+        # Detect pattern: "project" + "outside" / "external expert"
+        has_project = 'project' in task_lower
+        has_exclusion = any(kw in task_lower for kw in [
+            'outside of the project', 'outside the project', 'outside of project',
+            'external expert', 'external to the project', 'not on the project',
+            'not in the project', 'from outside', 'outside expert'
+        ])
+
+        if not (has_project and has_exclusion):
+            return None
+
+        self._hint_shown = True
+        return (
+            "🔍 PROJECT EXPERT EXCLUSION QUERY:\n"
+            "Task asks for an expert 'OUTSIDE of the project'. You MUST first identify the project team!\n\n"
+            "✅ CORRECT APPROACH:\n"
+            "  1. Use `projects_search(query='keywords from task')` to find the project\n"
+            "  2. Use `projects_get(id='proj_xxx')` to get project team members\n"
+            "  3. Search for skill experts with `employees_search(skills=[...])`\n"
+            "  4. EXCLUDE employees who are on the project team from your answer\n\n"
+            "❌ WRONG: Searching wiki for HR project info or directly finding skill experts\n"
+            "   → You'll recommend someone who might already BE on the project!\n\n"
+            "📌 The project registry has the actual team list, not wiki documentation."
         )
 
 
