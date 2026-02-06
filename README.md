@@ -2,6 +2,18 @@
 
 Schema-Guided Reasoning (SGR) agents for ERC3 (Enterprise RAG Challenge Part 3), with a production-focused implementation in `agent-erc3-dev`.
 
+`erc3-prod` is the main benchmark in this repository. It contains **103 tasks** and uses the same API surface as `erc3-test`, while task scenarios and company system data vary per simulation.
+
+Competition context:
+- ERC3 platform: [erc.timetoact-group.at](https://erc.timetoact-group.at)
+- Frozen leaderboard: [erc3.html](https://erc.timetoact-group.at/assets/erc3.html)
+- Example leaderboard phrase translation: `с интегрированными инструментами` -> `with integrated tools`.
+
+Highlights for this solution (`@mishka` session naming):
+- **#2 in Locality Leaderboard** (`@mishka ERC3-Test Agent (Parallel x20)`)
+- **#11 in Ultimate Leaderboard**
+- Built and tuned around an **open-source model strategy** (local-deploy friendly), which was a key differentiator vs many closed-model submissions.
+
 This repository contains:
 - A main ERC3 agent with benchmark runner, guardrails, wiki-aware retrieval, and local test harness.
 - Historical/prototype implementations in `sgr-agent-store`.
@@ -189,7 +201,6 @@ CLI flags:
 ## Pre-Publication Checklist
 
 Before publishing this repository publicly:
-- Add a `LICENSE` file (currently missing).
 - Ensure no secrets are committed (`.env`, API keys, private keys).
 - Remove local virtual environments (`venv*`) from tracked content.
 - Remove or trim heavy local artifacts if not needed for users:
@@ -210,4 +221,4 @@ Recommended contribution workflow:
 
 ## License
 
-License is not defined yet in this repository. Add a `LICENSE` file before public release.
+MIT (see `/LICENSE`).
