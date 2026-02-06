@@ -41,7 +41,7 @@ def parse_args():
     parser.add_argument('-tests_on', '--tests_on', action='store_true',
                         help='Run local tests instead of benchmark tasks')
     parser.add_argument('-benchmark', '--benchmark', type=str, default=None,
-                        help='Benchmark type: erc3-test, erc3-dev, erc3 (overrides config.py)')
+                        help='Benchmark type: erc3-prod, erc3-test, erc3-dev (overrides config.py)')
     return parser.parse_args()
 
 

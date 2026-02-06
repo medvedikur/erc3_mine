@@ -8,8 +8,8 @@ Edit this file to change benchmark, models, and other settings.
 # BENCHMARK SETTINGS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Benchmark type: "erc3-test" (24 tasks), "erc3-dev" (dev tasks), "erc3" (production)
-BENCHMARK = "erc3-test"
+# Benchmark type: "erc3-prod" (production), "erc3-test" (test tasks), "erc3-dev" (dev tasks)
+BENCHMARK = "erc3-prod"
 
 # Workspace name (for organizing sessions)
 WORKSPACE = "test-workspace-1"
