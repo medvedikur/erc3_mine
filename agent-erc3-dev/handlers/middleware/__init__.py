@@ -19,6 +19,7 @@ from .guards import (
     VagueQueryNotFoundGuard,
     YesNoGuard,
     CustomerContactNotFoundGuard,
+    LocationSearchNotFoundGuard,
     # Project Guards
     ProjectSearchReminderMiddleware,
     ProjectModificationClarificationGuard,
@@ -88,6 +89,7 @@ __all__ = [
     'IncompletePaginationGuard',
     'VagueQueryNotFoundGuard',
     'YesNoGuard',
+    'LocationSearchNotFoundGuard',
     'PaginationEnforcementMiddleware',
     'CustomerContactPaginationMiddleware',
     'ProjectSearchOffsetGuard',

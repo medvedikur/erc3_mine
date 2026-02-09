@@ -906,3 +906,83 @@ class CustomerContactNotFoundGuard(ResponseGuard):
             f"Do NOT conclude ok_not_found until you have checked ALL customers!"
         )
         print(f"  {CLI_YELLOW}CustomerContactNotFoundGuard: Blocked - pagination incomplete{CLI_CLR}")
+
+
+class LocationSearchNotFoundGuard(ResponseGuard):
+    """
+    AICODE-NOTE: t012 FIX - Blocks ok_not_found for location-based queries
+    when agent used location filter but didn't try full employee scan.
+
+    Problem: Agent searches employees_search(location="Barcelona"), gets 0 results,
+    then searches wiki for "Barcelona", doesn't find it, and responds ok_not_found.
+    BUT the employee location field may not match wiki's official office list!
+
+    Solution: Block ok_not_found if:
+    1. There was an empty location search (_empty_location_search is set)
+    2. Agent did NOT attempt employees_search without location filter
+       (_employees_search_no_location is NOT set)
+
+    The agent MUST scan all employees to verify no one has that location.
+    """
+
+    target_outcomes = {"ok_not_found"}
+
+    # Location-related task patterns
+    LOCATION_PATTERNS = [
+        r'\bin\s+(\w+)\b',  # "in Barcelona", "in Munich"
+        r'\bat\s+(\w+)\s+office\b',  # "at Barcelona office"
+        r'\bfrom\s+(\w+)\b',  # "from Barcelona"
+        r'\bwho\s+(?:is|works?)\s+in\s+(\w+)\b',  # "who works in Barcelona"
+    ]
+
+    def __init__(self):
+        self._location_re = re.compile('|'.join(self.LOCATION_PATTERNS), re.IGNORECASE)
+
+    def _check(self, ctx: ToolContext, outcome: str) -> None:
+        # Check if there was an empty location search
+        empty_location = ctx.shared.get('_empty_location_search')
+        if not empty_location:
+            return
+
+        # AICODE-NOTE: t012 FIX - On last turns, allow best-effort response
+        # Don't block if agent is running out of time - better to give partial answer
+        current_turn = ctx.shared.get('current_turn', 0)
+        max_turns = ctx.shared.get('max_turns', 20)
+        remaining_turns = max_turns - current_turn - 1
+        if remaining_turns <= 2:
+            print(f"  {CLI_GREEN}✓ LocationSearchNotFoundGuard: Skipped - only {remaining_turns} turns left{CLI_CLR}")
+            return
+
+        # Check if agent attempted full scan (search without location filter)
+        did_full_scan = ctx.shared.get('_employees_search_no_location', False)
+        if did_full_scan:
+            # Agent tried full scan - allow ok_not_found
+            print(f"  {CLI_GREEN}✓ LocationSearchNotFoundGuard: Agent attempted full scan{CLI_CLR}")
+            return
+
+        # Check if task is actually location-related (safety check)
+        task_text = ctx.shared.get('task_text', '')
+        if not task_text:
+            return
+
+        # Soft block: first time warn, second time allow
+        warning_key = '_location_search_not_found_warned'
+        if ctx.shared.get(warning_key):
+            return
+
+        ctx.shared[warning_key] = True
+        ctx.stop_execution = True
+
+        original_location = ctx.shared.get('_empty_location_search_original', empty_location)
+        ctx.results.append(
+            f"⚠️ INCOMPLETE SEARCH: You cannot conclude ok_not_found!\n\n"
+            f"You searched with location='{original_location}' and got 0 results.\n"
+            f"BUT wiki may not list all employee locations - the location field can differ!\n\n"
+            f"**REQUIRED**: Scan ALL employees before concluding 'not found':\n"
+            f"  1. Call `employees_search()` WITHOUT any filters\n"
+            f"  2. Paginate through ALL employees (follow next_offset until -1)\n"
+            f"  3. Check each employee's location field for '{original_location}'\n"
+            f"  4. ONLY then can you conclude ok_not_found if no matches\n\n"
+            f"⚠️ DO NOT trust wiki for employee locations - scan the employee registry!"
+        )
+        print(f"  {CLI_YELLOW}LocationSearchNotFoundGuard: Blocked - no full scan attempted{CLI_CLR}")

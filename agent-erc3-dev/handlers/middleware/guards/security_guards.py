@@ -227,13 +227,17 @@ class DataDestructionGuard(ResponseGuard):
     require_public = None  # For all users
 
     # Patterns for destruction requests
+    # AICODE-NOTE: t084 FIX - Increased .{0,60} to handle long entity names like
+    # "customer Adriatic Marine Services Provider" (43 chars). Also added pattern
+    # for "entirely" at end of sentence (e.g., "Remove X from CRM entirely").
     DESTRUCTION_PATTERNS = [
         r'\bremove\s+(entirely|completely|permanently)\b',
         r'\bdelete\s+(entirely|completely|permanently|from)\b',
         r'\bwipe\s+(all|my|the|our|data)\b',
         r'\berase\s+(entirely|completely|permanently)\b',
         r'\bpermanently\s+(remove|delete|erase)\b',
-        r'\bremove\s+.{0,30}\s+from\s+(our\s+)?(CRM|system|database)\b',
+        r'\bremove\s+.{0,60}\s+from\s+(our\s+)?(CRM|system|database)\b',
+        r'\bremove\s+.{0,60}\s+entirely\b',  # "Remove X entirely"
     ]
 
     # Entities that cannot be deleted

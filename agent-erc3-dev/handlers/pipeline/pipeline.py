@@ -359,6 +359,20 @@ class ActionPipeline:
         if hint:
             ctx.results.append(hint)
 
+        # AICODE-NOTE: t097 FIX - Save found customer IDs for project-customer mismatch detection
+        # When customers_search finds a customer, save it so project_search enricher
+        # can warn if agent picks a project for a DIFFERENT customer
+        if isinstance(ctx.model, client.Req_SearchCustomers):
+            if hasattr(result, 'companies') and result.companies:
+                # Save all found customer IDs
+                found_customers = ctx.shared.get('_found_customers', [])
+                for company in result.companies:
+                    cust_id = getattr(company, 'id', '')
+                    cust_name = getattr(company, 'name', '')
+                    if cust_id and cust_id not in [c['id'] for c in found_customers]:
+                        found_customers.append({'id': cust_id, 'name': cust_name})
+                ctx.shared['_found_customers'] = found_customers
+
         # Key account + exploration deals hints (t042)
         hint = self._key_account_exploration_hints.maybe_hint_key_account_exploration(
             ctx.model, result, task_text

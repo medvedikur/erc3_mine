@@ -21,6 +21,7 @@ from .outcome_guards import (
     VagueQueryNotFoundGuard,
     YesNoGuard,
     CustomerContactNotFoundGuard,
+    LocationSearchNotFoundGuard,
 )
 
 from .project_guards import (
@@ -99,6 +100,7 @@ __all__ = [
     'IncompletePaginationGuard',
     'VagueQueryNotFoundGuard',
     'YesNoGuard',
+    'LocationSearchNotFoundGuard',
     'PaginationEnforcementMiddleware',
     'CustomerContactPaginationMiddleware',
     'ProjectSearchOffsetGuard',

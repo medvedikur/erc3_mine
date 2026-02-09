@@ -353,6 +353,12 @@ class EmployeeSearchHintEnricher:
         if not isinstance(model, client.Req_SearchEmployees):
             return None
 
+        # AICODE-NOTE: t012 FIX - Track employees_search calls WITHOUT location filter
+        # This allows guard to verify if agent attempted full scan before ok_not_found
+        location = getattr(model, 'location', None)
+        if not location and ctx and hasattr(ctx, 'shared') and ctx.shared is not None:
+            ctx.shared['_employees_search_no_location'] = True
+
         employees = getattr(result, 'employees', None) or []
         if employees:
             return None
@@ -396,13 +402,22 @@ class EmployeeSearchHintEnricher:
                     f"   → Use: `employees_search(location=\"Factory – Serbia\")`"
                 )
 
+            # AICODE-NOTE: t012 FIX - Track empty location searches for guard
+            # Guard will block ok_not_found if agent didn't try full scan
+            if ctx and hasattr(ctx, 'shared') and ctx.shared is not None:
+                ctx.shared['_empty_location_search'] = location_lower
+                ctx.shared['_empty_location_search_original'] = location
+
             return (
-                f"EMPTY RESULTS with location='{location}'. "
-                f"Location matching requires EXACT match (e.g., 'Barcelona Office – Spain', not 'Barcelona' or 'Spain'). "
-                f"TRY:\n"
-                f"  1. Use `employees_search()` without location filter, then paginate through ALL employees to find matching locations\n"
-                f"  2. Check `wiki_search('locations')` for exact location format used in this company\n"
-                f"  3. Common formats: 'City Office – Country', 'HQ – Country', 'Country'"
+                f"⚠️ EMPTY RESULTS with location='{location}'. "
+                f"Location matching requires EXACT match (e.g., 'Barcelona Office – Spain', not 'Barcelona' or 'Spain').\n\n"
+                f"**CRITICAL**: Wiki may not list all locations! Employee location field can differ from official office list.\n\n"
+                f"**REQUIRED** (in this order):\n"
+                f"  1. FIRST: Use `employees_search()` WITHOUT location filter\n"
+                f"  2. Paginate through ALL employees (follow next_offset until -1)\n"
+                f"  3. Filter results by checking each employee's location field for '{location}'\n\n"
+                f"⚠️ DO NOT use ok_not_found until you have scanned ALL employees!\n"
+                f"Common location formats: 'City Office – Country', 'HQ – Country', 'Factory – Country'"
                 f"{alias_hint}"
             )
 

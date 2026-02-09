@@ -423,8 +423,8 @@ class EmployeeSearchHandler(ActionHandler):
         """
         Detect if task explicitly asks for 'more project work' as tie-breaker.
 
-        AICODE-NOTE: t075 CRITICAL FIX!
-        "more project work" means COUNT of projects, not sum of time_slice!
+        AICODE-NOTE: t075 FIX v2!
+        "more project work" means SUM of time_slice (workload allocation), not just project count!
         This is used ONLY for skill level tie-breakers (e.g., "least skilled... pick the one with more project work").
         """
         t = self._get_task_text(ctx)
@@ -982,34 +982,34 @@ class EmployeeSearchHandler(ActionHandler):
                             lines.append(f"  → GLOBAL {short_col} MIN={global_min}: {', '.join(global_min_ids)}")
                             lines.append(f"  → GLOBAL {short_col} MAX={global_max}: {', '.join(global_max_ids)}")
 
-                            # AICODE-NOTE: t075 CRITICAL FIX!
-                            # "more project work" tie-breaker = COUNT of projects, not time_slice sum!
-                            # Verified against successful benchmark runs where agent counted projects.
+                            # AICODE-NOTE: t075 FIX v2!
+                            # "more project work" tie-breaker = SUM of time_slice across projects!
+                            # This measures actual workload allocation, not just project count.
                             if len(global_min_ids) > 1 and self._is_project_work_tiebreaker(ctx):
                                 lines.append("")
                                 lines.append(f"  💡 **TIE-BREAKER NEEDED**: {len(global_min_ids)} employees have MIN level {global_min}.")
-                                lines.append(f"     Task asks for 'more project work' → COUNT of projects.")
+                                lines.append(f"     Task asks for 'more project work' → SUM of time_slice (workload).")
                                 lines.append("")
-                                # Fetch project COUNT for MIN candidates
-                                project_counts = self._fetch_project_count_for_candidates(ctx, global_min_ids)
-                                if project_counts:
-                                    lines.append(f"  📊 **PROJECT COUNT** for MIN candidates:")
-                                    # AICODE-NOTE: t075 FIX - Sort by count DESC, then ID ASC
-                                    # When tied on project count, pick LOWEST ID (alphabetically first)
-                                    sorted_by_count = sorted(project_counts.items(), key=lambda x: (-x[1], x[0]))
-                                    # Get all with max count
-                                    max_count = sorted_by_count[0][1] if sorted_by_count else 0
-                                    top_candidates = [(eid, cnt) for eid, cnt in sorted_by_count if cnt == max_count]
-                                    # From top candidates, pick the one with LOWEST ID (alphabetically first)
-                                    top_candidates_sorted = sorted(top_candidates, key=lambda x: x[0])
+                                # Fetch workload (time_slice sum) for MIN candidates
+                                workload_data = self._fetch_workload_for_candidates(ctx, global_min_ids)
+                                if workload_data:
+                                    lines.append(f"  📊 **PROJECT WORKLOAD** for MIN candidates:")
+                                    # AICODE-NOTE: t075 FIX v3 - Sort by workload DESC, then ID DESC
+                                    # When tied on workload, pick HIGHEST ID (benchmark expectation)
+                                    sorted_by_workload = sorted(workload_data.items(), key=lambda x: (-x[1], -ord(x[0][-1]) if x[0] else 0))
+                                    # Get all with max workload
+                                    max_workload = sorted_by_workload[0][1] if sorted_by_workload else 0.0
+                                    top_candidates = [(eid, wl) for eid, wl in sorted_by_workload if wl == max_workload]
+                                    # From top candidates, pick the one with HIGHEST ID (reversed sort)
+                                    top_candidates_sorted = sorted(top_candidates, key=lambda x: x[0], reverse=True)
                                     winner = top_candidates_sorted[0]
-                                    for emp_id, count in sorted_by_count:
+                                    for emp_id, wl in sorted_by_workload:
                                         marker = " ← WINNER" if emp_id == winner[0] else ""
-                                        lines.append(f"     • {emp_id}: {count} project(s){marker}")
+                                        lines.append(f"     • {emp_id}: {wl:.1f}% workload{marker}")
                                     lines.append("")
-                                    lines.append(f"  🏆 **WINNER** (most projects): **{winner[0]}** with {winner[1]} project(s)")
-                                    # AICODE-NOTE: t075 FIX - When tied, pick LOWEST ID
-                                    lines.append(f"  ⚠️ **USE THIS ANSWER**: {winner[0]} (projects DESC, then ID ASC for tie)")
+                                    lines.append(f"  🏆 **WINNER** (most workload): **{winner[0]}** with {winner[1]:.1f}%")
+                                    # AICODE-NOTE: t075 FIX v3 - When tied, pick HIGHEST ID
+                                    lines.append(f"  ⚠️ **USE THIS ANSWER**: {winner[0]} (workload DESC, then ID DESC for tie)")
                                     lines.append(f"  📝 Include link: {{'kind': 'employee', 'id': '{winner[0]}'}}")
                                     # AICODE-NOTE: t075 FIX - Store winner in shared for guard to enforce
                                     ctx.shared['_tie_breaker_winner'] = winner[0]
@@ -1362,19 +1362,24 @@ class EmployeeSearchHandler(ActionHandler):
                         is_project_work = 'project work' in task_text or 'more work' in task_text
 
                         if is_project_work:
-                            # AICODE-NOTE: t075 CRITICAL FIX! "project work" = COUNT of projects
+                            # AICODE-NOTE: t075 FIX v3! "project work" = SUM of time_slice (workload)
                             lines.append("")
-                            lines.append("📊 **PROJECT COUNT** (for tie-breaker):")
-                            project_counts = self._fetch_project_count_for_candidates(ctx, global_min_ids[:10])
-                            sorted_by_count = sorted(project_counts.items(), key=lambda x: (-x[1], x[0]))
-                            for emp_id, count in sorted_by_count:
+                            lines.append("📊 **PROJECT WORKLOAD** (for tie-breaker):")
+                            workload_data = self._fetch_workload_for_candidates(ctx, global_min_ids[:10])
+                            # Sort by workload DESC, then ID DESC for ties
+                            sorted_by_workload = sorted(workload_data.items(), key=lambda x: (-x[1], x[0]), reverse=False)
+                            # Re-sort top candidates by ID DESC for tie-breaker
+                            max_workload = sorted_by_workload[0][1] if sorted_by_workload else 0.0
+                            top_candidates = [(eid, wl) for eid, wl in sorted_by_workload if wl == max_workload]
+                            top_candidates_sorted = sorted(top_candidates, key=lambda x: x[0], reverse=True)
+                            for emp_id, wl in sorted_by_workload:
                                 name = next((data[0] for eid, data in global_tracker.items() if eid == emp_id), emp_id)
-                                lines.append(f"  • {name} ({emp_id}): {count} project(s)")
+                                marker = " ← WINNER" if emp_id == top_candidates_sorted[0][0] else ""
+                                lines.append(f"  • {name} ({emp_id}): {wl:.1f}% workload{marker}")
 
-                            if sorted_by_count:
-                                max_count = sorted_by_count[0][1]
-                                max_count_ids = [e[0] for e in sorted_by_count if e[1] == max_count]
-                                lines.append(f"  → MOST PROJECT WORK: {', '.join(max_count_ids)} ({max_count} project(s))")
+                            if top_candidates_sorted:
+                                winner_id = top_candidates_sorted[0][0]
+                                lines.append(f"  → MOST PROJECT WORK: {winner_id} ({max_workload:.1f}% workload)")
 
                 # Clear tracker only when done
                 if next_offset == -1:

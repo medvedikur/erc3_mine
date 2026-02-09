@@ -67,6 +67,12 @@ class AgentTurnState:
     # Format: {entity_id: location_string}
     entity_locations: Dict[str, str] = field(default_factory=dict)
 
+    # AICODE-NOTE: t012 FIX - Track empty location searches for guard
+    # If location search returns 0 results, guard can require full employee scan
+    empty_location_search: Optional[str] = field(default=None)  # normalized location
+    empty_location_search_original: Optional[str] = field(default=None)  # original location
+    employees_search_no_location: bool = False  # True if search without location was done
+
     # Validation tracking
     missing_tools: List[str] = field(default_factory=list)
     action_types_executed: Set[str] = field(default_factory=set)
@@ -266,6 +272,12 @@ class AgentTurnState:
             'coaching_skill_search_results': self.coaching_skill_search_results,
             # AICODE-NOTE: t013 FIX - Pass entity locations for LocationExclusionGuard
             'entity_locations': self.entity_locations,
+            # AICODE-NOTE: t013 FIX v2 - Pass API reference for guards that need to fetch data
+            '_api_ref': self.api,
+            # AICODE-NOTE: t012 FIX - Pass location search tracking for guard
+            '_empty_location_search': self.empty_location_search,
+            '_empty_location_search_original': self.empty_location_search_original,
+            '_employees_search_no_location': self.employees_search_no_location,
         }
 
     def clear_turn_aggregators(self) -> None:
@@ -403,6 +415,17 @@ class AgentTurnState:
         # Pipeline sets this when project has cust_bellini_internal customer
         if ctx.shared.get('_internal_customer_contact_blocked'):
             self.internal_customer_contact_blocked = True
+
+        # AICODE-NOTE: t012 FIX - Sync location search tracking
+        # Enricher sets these when empty location search occurs or no-filter search
+        empty_loc = ctx.shared.get('_empty_location_search')
+        if empty_loc:
+            self.empty_location_search = empty_loc
+        empty_loc_orig = ctx.shared.get('_empty_location_search_original')
+        if empty_loc_orig:
+            self.empty_location_search_original = empty_loc_orig
+        if ctx.shared.get('_employees_search_no_location'):
+            self.employees_search_no_location = True
 
         # Note: had_mutations, mutation_entities, search_entities are
         # updated directly in the main loop after successful actions

@@ -42,6 +42,7 @@ from .middleware import (
     VagueQueryNotFoundGuard,
     YesNoGuard,
     CustomerContactNotFoundGuard,
+    LocationSearchNotFoundGuard,
     # Pagination Guards
     PaginationEnforcementMiddleware,
     CustomerContactPaginationMiddleware,
@@ -84,6 +85,7 @@ def get_executor(api, wiki_manager: WikiManager, security_manager: SecurityManag
         PaginationEnforcementMiddleware(),            # Blocks analysis tools when pagination is incomplete
         CustomerContactPaginationMiddleware(),        # t087: Blocks customers_get when customers_list incomplete
         CustomerContactNotFoundGuard(),               # t087: Blocks ok_not_found when customers_list pagination incomplete
+        LocationSearchNotFoundGuard(),                # t012: Blocks ok_not_found when location search empty without full scan
         ProjectSearchOffsetGuard(),                   # t069: Validates sequential offsets for projects_search
         EmployeeSearchOffsetGuard(),                  # t075: Validates sequential offsets for employees_search
         CoachingTimeoutGuard(),                       # t077: Force respond on last turns for coaching queries

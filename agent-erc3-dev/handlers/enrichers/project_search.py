@@ -101,6 +101,16 @@ class ProjectSearchEnricher:
         # if active_hint := self._get_active_status_hint(ctx, projects, task_text):
         #     hints.append(active_hint)
 
+        # 9. AICODE-NOTE: t097 FIX - Customer mismatch detection
+        # When agent found customer X but projects don't include any for customer X
+        if customer_mismatch_hint := self._get_customer_mismatch_hint(ctx, projects, task_text):
+            hints.append(customer_mismatch_hint)
+
+        # 10. AICODE-NOTE: t002 FIX - Task keywords vs project name mismatch
+        # When task describes project with specific words but found project doesn't match
+        if keyword_mismatch_hint := self._get_keyword_mismatch_hint(ctx, projects, query, task_text):
+            hints.append(keyword_mismatch_hint)
+
         return hints
 
     def _get_archived_hint(
@@ -470,4 +480,195 @@ class ProjectSearchEnricher:
             f"🔧 REQUIRED: Use `projects_search(status=['active'])` to get only active projects,\n"
             f"   then extract leads from team arrays where role='Lead'.\n\n"
             f"Current results: {active_count} active, {non_active_count} non-active — filter needed!"
+        )
+
+    def _get_customer_mismatch_hint(
+        self,
+        ctx: 'ToolContext',
+        projects: List[Any],
+        task_text: str
+    ) -> Optional[str]:
+        """
+        AICODE-NOTE: t097 FIX - Detect when task mentions customer X but projects are for customer Y.
+
+        Problem: Task says "freezer-room floor system for NordicCold Storage Group".
+        Agent finds customer cust_nordic_cold_storage, but project search returns
+        proj_benelux_fast_cure_floor for cust_benelux_floor_solutions.
+        Agent picks wrong project because it contains "cold warehouses" in name.
+
+        Solution: If we previously found a customer via customers_search, and NONE
+        of the current project results are for that customer, warn agent loudly.
+        """
+        # Check if we have previously found customers
+        found_customers = ctx.shared.get('_found_customers', [])
+        if not found_customers:
+            return None
+
+        if not projects:
+            return None
+
+        # Get customer IDs from found projects
+        project_customers = set()
+        for p in projects:
+            cust_id = getattr(p, 'customer', '')
+            if cust_id:
+                project_customers.add(cust_id)
+
+        # Check if ANY found customer has a matching project
+        found_customer_ids = {c['id'] for c in found_customers}
+        matching_customers = found_customer_ids & project_customers
+
+        if matching_customers:
+            # At least one customer has a project - no mismatch
+            return None
+
+        # MISMATCH: Found customer(s) but no projects for them!
+        customer_names = ', '.join([c['name'] for c in found_customers[:3]])
+        customer_ids = ', '.join([c['id'] for c in found_customers[:3]])
+
+        # Build project list showing wrong customers
+        proj_details = []
+        for p in projects[:5]:
+            p_name = getattr(p, 'name', 'unknown')
+            p_id = getattr(p, 'id', 'unknown')
+            p_cust = getattr(p, 'customer', 'unknown')
+            proj_details.append(f"  • {p_name} ({p_id}) → customer: {p_cust}")
+        proj_list = "\n".join(proj_details)
+
+        return (
+            f"\n🛑 CRITICAL CUSTOMER MISMATCH!\n\n"
+            f"You found customer(s): {customer_names} ({customer_ids})\n"
+            f"But NONE of the projects returned are for this customer!\n\n"
+            f"Projects found (all for DIFFERENT customers):\n{proj_list}\n\n"
+            f"⚠️ PROBLEM: Task mentions '{customer_names}' but these projects belong to OTHER customers!\n"
+            f"   DO NOT pick a project just because its name sounds similar!\n\n"
+            f"🔧 REQUIRED ACTIONS:\n"
+            f"   1. Re-search projects WITH customer filter: `projects_search(customer_id='{found_customers[0]['id']}')`\n"
+            f"   2. If no projects found for that customer → `none_clarification_needed`\n"
+            f"      message: 'No projects found for customer {customer_names}. Did you mean a different project?'\n\n"
+            f"❌ DO NOT proceed with a project for the WRONG customer!"
+        )
+
+    def _get_keyword_mismatch_hint(
+        self,
+        ctx: 'ToolContext',
+        projects: List[Any],
+        query: str,
+        task_text: str
+    ) -> Optional[str]:
+        """
+        AICODE-NOTE: t002 FIX - Detect when task describes project with specific keywords
+        but found project(s) don't contain those keywords.
+
+        Problem: Task says "logistics warehouse floor system for EuroFlooring".
+        Agent searches "EuroFlooring" and finds "Ramp repair and recoating programme".
+        This is WRONG - task clearly mentions "warehouse floor" but that project doesn't.
+
+        Solution: Extract significant keywords from task (warehouse, logistics, floor, etc.)
+        and check if found project names contain them. If not, suggest broader search.
+        """
+        import re
+
+        if not projects:
+            return None
+
+        task_lower = task_text.lower()
+
+        # AICODE-NOTE: t002 - Only trigger for "my role" or specific project queries
+        # This avoids false positives on generic searches
+        role_patterns = [
+            r'\bmy\s+role\b',
+            r'\brole\s+on\b',
+            r'\brole\s+in\b',
+            r'\bam\s+i\s+(?:a\s+member|on|in)\b',
+        ]
+        is_role_query = any(re.search(p, task_lower) for p in role_patterns)
+        if not is_role_query:
+            return None
+
+        # Extract significant keywords from task (excluding common words)
+        stop_words = {
+            'what', 'is', 'my', 'the', 'a', 'an', 'on', 'in', 'for', 'of', 'to',
+            'and', 'or', 'role', 'project', 'customer', 'company', 'system',
+            'i', 'am', 'me', 'we', 'are',
+            # AICODE-NOTE: t002 FIX - Don't treat status words as project keywords
+            'archived', 'active', 'paused', 'exploring', 'idea',
+            # Common project terms that aren't descriptive
+            'root', 'cause', 'audit',
+        }
+
+        # Extract words that look like project/domain keywords
+        task_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', task_lower))
+        significant_keywords = task_words - stop_words
+
+        # Also remove the customer name from keywords (it's expected in search)
+        for p in projects:
+            cust_id = getattr(p, 'customer', '') or ''
+            cust_parts = cust_id.replace('cust_', '').split('_')
+            for part in cust_parts:
+                significant_keywords.discard(part.lower())
+
+        if not significant_keywords:
+            return None
+
+        # Simple stemming function for fuzzy matching
+        def stem(word: str) -> str:
+            """Simple stemming: remove common suffixes."""
+            if word.endswith('ing'):
+                return word[:-3]
+            if word.endswith('ed'):
+                return word[:-2]
+            if word.endswith('s') and len(word) > 4:
+                return word[:-1]
+            return word
+
+        # Check if found project names contain these keywords (with fuzzy matching)
+        unmatched_keywords = set()
+        for keyword in significant_keywords:
+            keyword_stem = stem(keyword)
+            keyword_found = False
+            for p in projects:
+                p_name = (getattr(p, 'name', '') or '').lower()
+                p_desc = (getattr(p, 'description', '') or '').lower() if hasattr(p, 'description') else ''
+                p_id = (getattr(p, 'id', '') or '').lower()
+                combined = p_name + ' ' + p_desc + ' ' + p_id
+                # Check both original and stemmed forms
+                if keyword in combined or keyword_stem in combined:
+                    keyword_found = True
+                    break
+                # Also check if project contains stemmed version of keyword
+                combined_words = combined.split()
+                if any(stem(w) == keyword_stem for w in combined_words):
+                    keyword_found = True
+                    break
+            if not keyword_found:
+                unmatched_keywords.add(keyword)
+
+        # AICODE-NOTE: t002 FIX - Only trigger if MANY keywords don't match (to avoid false positives)
+        # Require at least 3 unmatched keywords AND more than 60% mismatch
+        total_keywords = len(significant_keywords)
+        if total_keywords == 0:
+            return None
+        mismatch_ratio = len(unmatched_keywords) / total_keywords
+        if len(unmatched_keywords) < 3 or mismatch_ratio < 0.6:
+            return None
+
+        # Build hint
+        proj_names = [getattr(p, 'name', 'unknown') for p in projects[:3]]
+        proj_customers = set(getattr(p, 'customer', '') for p in projects if getattr(p, 'customer', ''))
+
+        # Extract customer_id for broader search suggestion
+        customer_id = list(proj_customers)[0] if proj_customers else None
+
+        return (
+            f"\n⚠️ KEYWORD MISMATCH: Task describes project with specific words NOT found in results!\n\n"
+            f"Task mentions: {', '.join(sorted(unmatched_keywords))}\n"
+            f"But found project(s): {', '.join(proj_names)}\n\n"
+            f"🔍 PROBLEM: You may have found the WRONG project!\n"
+            f"   The task explicitly mentions '{', '.join(sorted(unmatched_keywords))}'\n"
+            f"   but your search results don't contain these keywords.\n\n"
+            f"🔧 REQUIRED: Search for ALL projects from this customer:\n"
+            f"   `projects_search(customer_id='{customer_id}')`\n"
+            f"   Then find the project that matches the task description.\n\n"
+            f"❌ DO NOT assume the first result is correct!"
         )
